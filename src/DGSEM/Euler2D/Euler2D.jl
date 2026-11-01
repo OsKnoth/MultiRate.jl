@@ -46,6 +46,7 @@ the contravariant LMARS momentum) and a momentum part (face terms through the LM
            (ρ, Θ, U = Ja^η·m) and a tridiagonal system for the face momentum (cf. CGDycore.jl,
            DGSEM/JacHDGJNeu.jl); factors are recomputed at every re-freeze. The buoyancy is split
            exactly, g J e_z = Ja^ξ D_ξ(gZ) + Ja^η D_η(gZ), into the horizontal and vertical part.
+  :hevi_relax same vertical solve, with an implicitly relaxed horizontal interface momentum.
 """
 module Euler2D
 
@@ -55,7 +56,7 @@ import ..Common: project2d, total2d, output_fields, field_section, sound_speed_m
 using ..Common: open_vtkhdf, write_vtkhdf!, plot_fields
 using ..TimeStepping: AbstractFastOperator, rhs_nonlinear, IMEX_GM
 import ..TimeStepping: rhs_nonlinear!, fast_operator, fast_apply!, fast_rhs_thermo!, fast_rhs_momentum!,
-                       interface_update!, fast_rhs_horizontal!, vertical_apply!, vertical_factor, vertical_solve!
+                       interface_update!, fast_rhs_horizontal!, fast_rhs_horizontal_relaxed!, vertical_apply!, vertical_factor, vertical_solve!
 using ..HDGRelaxTheta: gll, lagrange_basis, gauss_legendre
 import ..HDGRelaxTheta: initial_state, tendency
 using ..SplitExplicitEuler: mass_theta_flux, gravity_mean

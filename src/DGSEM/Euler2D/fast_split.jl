@@ -35,6 +35,39 @@ function interface_momentum!(s::HDGFast2D, q; relax::Bool = false, dt = 0.0)
     return s
 end
 
+"""Horizontal HEVI tendency with an implicitly relaxed horizontal face mass flux."""
+function fast_rhs_horizontal_relaxed!(out, s::HDGFast2D, q, f, dt)
+    M = s.mesh
+    np, w = M.np, M.wg
+    # Start from the ordinary horizontal operator. Only its mass/thermodynamic face flux
+    # changes under the existing interface-momentum relaxation; pressure SATs stay LMARS.
+    fast_kernel!(out, s, q, f, Val(true), Val(false))
+    r = s.eps_if > 0 ? s.eps_if / (s.eps_if + dt) : 0.0
+    @inbounds for ez in 1:M.Nez, ex in 1:M.Nex
+        e = elem(M, ex, ez)
+        eR = elem(M, mod1(ex + 1, M.Nex), ez)
+        for j in 1:np
+            nx, nz = M.Jξx[np, j, e], M.Jξz[np, j, e]
+            target = mhat_face(s, q, np, j, e, 1, j, eR, nx, nz)
+            old = s.Mhx[j, e]
+            relaxed = r * old + (1 - r) * target
+            s.Mhx[j, e] = relaxed
+            δ = target - relaxed
+            kL = node_iq(np, e, 1, np, j)
+            kΘL = node_iq(np, e, 4, np, j)
+            kR = node_iq(np, eR, 1, 1, j)
+            kΘR = node_iq(np, eR, 4, 1, j)
+            vL = w[j] * δ / s.Mdiag[kL]
+            vR = w[j] * δ / s.Mdiag[kR]
+            out[kL] += vL
+            out[kΘL] += s.θ[np, j, e] * vL
+            out[kR] -= vR
+            out[kΘR] -= s.θ[1, j, eR] * vR
+        end
+    end
+    return out
+end
+
 @inline function mhat_face(s, q, iL, jL, eL, iR, jR, eR, nx, nz)
     np = s.mesh.np
     @inbounds begin

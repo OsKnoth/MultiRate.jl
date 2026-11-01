@@ -20,6 +20,7 @@ Run the examples themselves with:
 
 ```sh
 julia --project=examples examples/intro_2d/warm_bubble.jl dg
+EPS_IF=1 julia --project=examples examples/intro_2d/warm_bubble.jl dg - hevi_relax
 julia --project=examples examples/intro_2d/warm_bubble.jl fv
 julia --project=examples examples/intro_2d/agnesi_hills.jl a1
 julia --project=examples examples/intro_2d/agnesi_hills.jl a10
@@ -28,8 +29,10 @@ julia --project=examples examples/intro_2d/agnesi_hills.jl a100
 
 Both bubble paths use MIS4 for the large step and HEVI for the fast part. DG uses its vertical
 column solver; FV uses horizontal Verlet substeps around an implicit vertical Crank–Nicolson solve.
-Set `EPS_IF` to a
-positive relaxation time and select `fb` to exercise the DG HDG face-momentum relaxation.
+Set `EPS_IF` to a positive relaxation time and select `hevi_relax` to keep the HEVI vertical
+column solve while relaxing the horizontal DG face momentum. Compare with `hevi` under the same
+parameters; `EPS_IF=0` makes the variants coincide. `fb` remains available as a separate
+forward-backward method with relaxed face momentum.
 
 `check_bubble.jl` advances a warm bubble on a flat domain with both DGSEM/HDG and the
 finite-volume C-grid, using HEVI for both. FV uses the terrain-aware vertical column solver and a

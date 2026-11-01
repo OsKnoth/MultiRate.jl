@@ -1,7 +1,8 @@
 # Agnesi hills for the split-explicit MIS introduction.
 # Run one of the three scales: a1, a10, a100 (half-widths 1, 10, 100 km).
 # The channel is 40 a wide; the default 50 elements keep nodal Δx = 0.2 a at P = 4.
-# HEVI is the default. `fb` is available to demonstrate the relaxed face-momentum update.
+# HEVI is the default. `hevi_relax` compares HEVI with relaxed horizontal DG face momentum;
+# `fb` demonstrates the separate forward-backward relaxed update.
 #
 #     julia --project=examples examples/intro_2d/agnesi_hills.jl a1  [T|-] [fast] [dg|fv]
 #     julia --project=examples examples/intro_2d/agnesi_hills.jl a10 [T|-] [fast] [dg|fv]
@@ -31,7 +32,7 @@ FAST = length(ARGS) > 2 ? Symbol(ARGS[3]) : fast_default
 NSUB = parse(Int, get(ENV, "NSUB", string(nsub_default)))
 eps_if = parse(Float64, get(ENV, "EPS_IF", "0"))
 if disc == :dg
-    FAST in (:hevi, :fb, :verlet) || error("DG hill fast method must be hevi, fb or verlet")
+    FAST in (:hevi, :hevi_relax, :fb, :verlet) || error("DG hill fast method must be hevi, hevi_relax, fb or verlet")
 else
     FAST in (:hevi, :wrf, :fb, :verlet) || error("FV hill fast method must be hevi, wrf, fb or verlet")
 end

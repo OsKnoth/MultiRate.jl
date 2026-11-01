@@ -40,6 +40,8 @@ function fast_solve!(qout, s::AbstractFastOperator, q0, F_slow, dt, nsteps; meth
         imex_loop!(q, s, f, dt, nsteps, Y, k1, k2)
     elseif method == :hevi
         hevi_loop!(q, s, f, dt, nsteps, Y, k1, k2, tmp, rhs)
+    elseif method == :hevi_relax
+        hevi_loop!(q, s, f, dt, nsteps, Y, k1, k2, tmp, rhs; relax_horizontal = true)
     elseif method == :verlet
         verlet_loop!(q, s, f, dt, nsteps, k1, k2)
     elseif method == :fb
@@ -47,7 +49,7 @@ function fast_solve!(qout, s::AbstractFastOperator, q0, F_slow, dt, nsteps; meth
     elseif method == :wrf
         wrf_loop!(q, s, f, dt, nsteps, Y, k1, k2, tmp, rhs)
     else
-        error("unknown fast method $method (available: :imex, :hevi, :verlet, :fb, :wrf)")
+        error("unknown fast method $method (available: :imex, :hevi, :hevi_relax, :verlet, :fb, :wrf)")
     end
     qout .= q
     return qout
@@ -67,17 +69,25 @@ function imex_loop!(q, s, f, dt, nsteps, Y, k1, k2)
 end
 
 """HEVI with the IMEX tableau: horizontal part explicit, vertical part implicit."""
-function hevi_loop!(q, s, f, dt, nsteps, Y, k1, k2, tmp, rhs)
+function hevi_loop!(q, s, f, dt, nsteps, Y, k1, k2, tmp, rhs; relax_horizontal = false)
     F = vertical_factor(s, dt * IMEX_GM)
     a21 = IMEX_AE[2, 1]
     a31 = IMEX_AE[3, 1]
     a32 = IMEX_AE[3, 2]
     i32 = IMEX_AI[3, 2]
     for _ in 1:nsteps
-        fast_rhs_horizontal!(k1, s, q, f)                # explicit stage 1 (Y1 = q)
+        if relax_horizontal
+            fast_rhs_horizontal_relaxed!(k1, s, q, f, dt)
+        else
+            fast_rhs_horizontal!(k1, s, q, f)
+        end
         @. rhs = q + (dt * a21) * k1
         vertical_solve!(Y, s, F, rhs)                    # implicit stage 2
-        fast_rhs_horizontal!(k2, s, Y, f)
+        if relax_horizontal
+            fast_rhs_horizontal_relaxed!(k2, s, Y, f, dt)
+        else
+            fast_rhs_horizontal!(k2, s, Y, f)
+        end
         vertical_apply!(tmp, s, Y)
         @. rhs = q + dt * (a31 * k1 + a32 * k2 + i32 * tmp)
         vertical_solve!(q, s, F, rhs)                    # stage 3 = new state

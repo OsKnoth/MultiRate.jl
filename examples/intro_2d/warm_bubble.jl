@@ -1,7 +1,7 @@
 # Warm bubble at constant pressure in a stably stratified atmosphere.
 # Compare DGSEM + HDG (including optional face relaxation) with the finite-volume C-grid.
 #
-#     julia --project=examples examples/intro_2d/warm_bubble.jl dg [T] [hevi|fb|verlet]
+#     julia --project=examples examples/intro_2d/warm_bubble.jl dg [T] [hevi|hevi_relax|fb|verlet]
 #     julia --project=examples examples/intro_2d/warm_bubble.jl fv [T] [hevi|wrf|fb|verlet]
 #
 # Configure with LX, H, NEX, NEZ, P, BUBBLE_X, BUBBLE_Z, BUBBLE_RX, BUBBLE_RZ,

@@ -32,6 +32,7 @@ function fast_apply! end
 function fast_rhs_thermo! end
 function fast_rhs_momentum! end
 function fast_rhs_horizontal! end
+function fast_rhs_horizontal_relaxed! end
 function vertical_apply! end
 function vertical_factor end
 function vertical_solve! end
@@ -44,3 +45,5 @@ interface_update!(s::AbstractFastOperator, q; relax::Bool = false, dt = 0.0) = s
 fast_forcing(s::AbstractFastOperator) = s.fb
 fast_mass(s::AbstractFastOperator) = s.Mdiag
 fast_workspace(s::AbstractFastOperator) = s.work
+fast_rhs_horizontal_relaxed!(out, s::AbstractFastOperator, q, f, dt) =
+    error("relaxed horizontal HEVI is not implemented for $(typeof(s))")

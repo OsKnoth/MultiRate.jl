@@ -93,16 +93,16 @@ function fast_step(model::E2.Euler2DModel, q, fast; cfl = nothing, safety = 0.85
     M = model.mesh
     if cfl === nothing
         lim = get(CFL_LIMITS, M.p, (0.05, 3.15 / (M.p + 1), 2.2 / (M.p + 1), 0.05))
-        cfl = safety * (fast == :verlet ? lim[2] : fast == :fb ? lim[3] : fast == :hevi ? lim[4] : lim[1])
+        cfl = safety * (fast == :verlet ? lim[2] : fast == :fb ? lim[3] : fast in (:hevi, :hevi_relax) ? lim[4] : lim[1])
     end
     hz = minimum(M.Z[:, end, :] .- M.Z[:, 1, :])
-    h = fast == :hevi ? M.Lx / M.Nex : min(M.Lx / M.Nex, hz)
+    h = fast in (:hevi, :hevi_relax) ? M.Lx / M.Nex : min(M.Lx / M.Nex, hz)
     return cfl * h / ((2M.p + 1) * sound_speed_max(model, q))
 end
 
 function fast_step(model::FV.FVModel, q, fast; cfl = nothing, safety = 0.85)
     g = model.grid
-    fast in (:wrf, :hevi, :verlet, :fb) || error("FV: use :wrf, :hevi, :verlet or :fb (:imex is unstable on the C-grid)")
+    fast in (:wrf, :hevi, :verlet, :fb) || error("FV: use :wrf, :hevi, :verlet or :fb (:imex and :hevi_relax are unavailable on the C-grid)")
     lim = fast == :wrf ? 1.0 : 0.92
     cfl === nothing && (cfl = safety * lim)
     dzmin = minimum(g.Jc) * g.dz
