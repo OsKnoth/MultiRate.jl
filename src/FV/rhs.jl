@@ -11,6 +11,7 @@ end
 
 """In-place N(q); allocation-free (uses the model's FVCache)."""
 function rhs_nonlinear!(out, m::FVModel, q::AbstractVector)
+    m.grid.terrain && return rhs_terrain!(out, m, q)
     g = m.grid
     nx = g.nx
     nz = g.nz
@@ -25,7 +26,7 @@ function rhs_nonlinear!(out, m::FVModel, q::AbstractVector)
     @inbounds for k in 1:nz, i in 1:nx
         ρ = q[iρ(g, i, k)]
         θ[i, k] = q[iΘ(g, i, k)] / ρ
-        pp[i, k] = pressure(m.gas, q[iΘ(g, i, k)]) - m.pref[k]
+        pp[i, k] = pressure(m.gas, q[iΘ(g, i, k)]) - m.pref[i, k]
         u[i, k] = q[iU(g, i, k)] / (0.5 * (q[iρ(g, i - 1, k)] + ρ))
     end
     @inbounds for i in 1:nx
@@ -81,8 +82,117 @@ function rhs_nonlinear!(out, m::FVModel, q::AbstractVector)
         # pressure gradient and gravity (deviations from the reference)
         out[iU(g, i, k)] -= (pp[i, k] - pp[ip(g, i - 1), k]) / dx
         if k > 1
-            ρw = 0.5 * (q[iρ(g, i, k - 1)] - m.ρref[k-1] + q[iρ(g, i, k)] - m.ρref[k])
+            ρw = 0.5 * (q[iρ(g, i, k - 1)] - m.ρref[i, k-1] + q[iρ(g, i, k)] - m.ρref[i, k])
             out[iW(g, i, k)] -= (pp[i, k] - pp[i, k-1]) / dz + grav * ρw
+        end
+    end
+    @inbounds for j in eachindex(out)
+        out[j] -= m.damp[j] * (q[j] - m.qtarget[j])
+    end
+    return out
+end
+
+# Gal-Chen mapped finite-volume tendencies. State values remain physical (unweighted); each
+# conservative flux divergence is divided by J = dz/dη. The sigma flux is Fz - z_x Fx.
+@inline function fv_u_center(g, q, i, k)
+    0.5 * (q[iU(g, i, k)] + q[iU(g, i+1, k)])
+end
+
+@inline function fv_mz_face(g, q, i, k)
+    k == 1 && return 0.5 * (q[iU(g, i, 1)] + q[iU(g, i+1, 1)]) * g.zx_f[i, 1]
+    k == g.nz + 1 && return 0.0
+    return q[iW(g, i, k)]
+end
+
+@inline function fv_ux_at_sigma(g, q, i, k)
+    if k == 1
+        return 0.5 * (q[iU(g, i, 1)] + q[iU(g, i+1, 1)])
+    elseif k == g.nz + 1
+        return 0.5 * (q[iU(g, i, g.nz)] + q[iU(g, i+1, g.nz)])
+    end
+    return 0.25 * (q[iU(g, i, k-1)] + q[iU(g, i+1, k-1)] + q[iU(g, i, k)] + q[iU(g, i+1, k)])
+end
+
+function rhs_terrain!(out, m::FVModel, q)
+    g, c = m.grid, m.cache
+    nx, nz, dx, dη = g.nx, g.nz, g.dx, g.dz
+    @inbounds for k in 1:nz, i in 1:nx
+        ρ = q[iρ(g, i, k)]
+        c.θ[i, k] = q[iΘ(g, i, k)] / ρ
+        c.pp[i, k] = pressure(m.gas, q[iΘ(g, i, k)]) - m.pref[i, k]
+        c.u[i, k] = q[iU(g, i, k)] / (0.5 * (q[iρ(g, i-1, k)] + ρ))
+    end
+    @inbounds for i in 1:nx
+        for k in 2:nz
+            ρf = 0.5 * (q[iρ(g, i, k-1)] + q[iρ(g, i, k)])
+            c.w[i, k] = q[iW(g, i, k)] / ρf
+        end
+        ρb = q[iρ(g, i, 1)]
+        ub = fv_u_center(g, q, i, 1) / ρb
+        c.w[i, 1] = g.zx_f[i, 1] * ub
+        c.w[i, nz+1] = 0.0
+    end
+    fill!(out, 0.0)
+    @inbounds for k in 1:nz, i in 1:nx
+        ir = ip(g, i+1)
+        J = g.Jc[i]
+        U0, U1 = q[iU(g, i, k)], q[iU(g, i+1, k)]
+        Fx0, Fx1 = g.Jx[i] * U0, g.Jx[ir] * U1
+        for (kf, sg) in ((k, -1.0), (k+1, 1.0))
+            mz = fv_mz_face(g, q, i, kf)
+            Uc = fv_ux_at_sigma(g, q, i, kf)
+            Vσ = mz - g.zx_f[i, kf] * Uc
+            out[iρ(g, i, k)] -= sg * Vσ / (J * dη)
+            θσ = kf == 1 ? c.θ[i, 1] : kf == nz+1 ? c.θ[i, nz] :
+                  interp2(c.θ[i, kf-1], c.θ[i, kf])
+            out[iΘ(g, i, k)] -= sg * θσ * Vσ / (J * dη)
+        end
+        out[iρ(g, i, k)] -= (Fx1 - Fx0) / (J * dx)
+        θx0 = interp3(c.θ[ip(g, i-2), k], c.θ[ip(g, i-1), k], c.θ[i, k], c.θ[ip(g, i+1), k], U0)
+        θx1 = interp3(c.θ[ip(g, i-1), k], c.θ[i, k], c.θ[ir, k], c.θ[ip(g, i+2), k], U1)
+        out[iΘ(g, i, k)] -= (g.Jx[ir] * θx1 * U1 - g.Jx[i] * θx0 * U0) / (J * dx)
+
+        # x-momentum control volume centred on x-face i, including the terrain pressure metric.
+        im = ip(g, i-1)
+        mxm, mxp = fv_u_center(g, q, im, k), fv_u_center(g, q, i, k)
+        um = 0.5 * (c.u[im, k] + c.u[i, k])
+        up = 0.5 * (c.u[i, k] + c.u[ir, k])
+        pleft = c.pp[im, k]
+        pright = c.pp[i, k]
+        FxL = g.Jc[im] * (mxm * um + pleft)
+        FxR = g.Jc[i] * (mxp * up + pright)
+        FσL, FσR = 0.0, 0.0
+        for (kf, dest) in ((k, 1), (k+1, 2))
+            wface = 0.5 * (c.w[im, kf] + c.w[i, kf])
+            uface = c.u[i, k]
+            zxs = g.zx_xf[i, kf]
+            pface = 0.5 * ((kf == 1 ? c.pp[im, 1] : kf == nz+1 ? c.pp[im, nz] : 0.5*(c.pp[im,kf-1]+c.pp[im,kf])) +
+                           (kf == 1 ? c.pp[i, 1] : kf == nz+1 ? c.pp[i, nz] : 0.5*(c.pp[i,kf-1]+c.pp[i,kf])))
+            Fσ = q[iU(g, i, k)] * (wface - zxs * uface) - zxs * pface
+            dest == 1 ? (FσL = Fσ) : (FσR = Fσ)
+        end
+        out[iU(g, i, k)] = -((FxR - FxL) / dx + (FσR - FσL) / dη) / g.Jx[i]
+
+        # Vertical-momentum control volume centred at sigma-face k.
+        if k > 1
+            W = q[iW(g, i, k)]
+            # horizontal fluxes at x-faces, with u interpolated to the sigma-face
+            uL = 0.5 * (c.u[i, k-1] + c.u[i, k])
+            uR = 0.5 * (c.u[ir, k-1] + c.u[ir, k])
+            mzL = 0.5 * (q[iW(g, i, k)] + q[iW(g, im, k)])
+            mzR = 0.5 * (q[iW(g, i, k)] + q[iW(g, ir, k)])
+            divx = (g.Jx[ir] * mzR * uR - g.Jx[i] * mzL * uL) / dx
+            Fsbot, Fstop = 0.0, 0.0
+            for (kc, dest) in ((k-1, 1), (k, 2))
+                mb = 0.5 * (fv_mz_face(g, q, i, kc) + fv_mz_face(g, q, i, kc+1))
+                wb = 0.5 * (c.w[i, kc] + c.w[i, kc+1])
+                ub = 0.5 * (c.u[i, kc] + c.u[ir, kc])
+                p = c.pp[i, kc]
+                Fs = mb * (wb - g.zx_c[i, kc] * ub) + p
+                dest == 1 ? (Fsbot = Fs) : (Fstop = Fs)
+            end
+            ρpert = 0.5 * (q[iρ(g, i, k-1)] - m.ρref[i, k-1] + q[iρ(g, i, k)] - m.ρref[i, k])
+            out[iW(g, i, k)] = -(divx + (Fstop - Fsbot) / dη) / J - m.gas.g * ρpert
         end
     end
     @inbounds for j in eachindex(out)

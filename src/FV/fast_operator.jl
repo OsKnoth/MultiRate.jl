@@ -52,18 +52,35 @@ function refreeze!(s::FVFast, m::FVModel, q, pfac)
         θl = q[iΘ(g, i - 1, k)] / q[iρ(g, i - 1, k)]
         θr = q[iΘ(g, i, k)] / q[iρ(g, i, k)]
         s.θx[i, k] = 0.5 * (θl + θr)
+        k == 1 && (s.θz[i, 1] = θr)
         if k > 1
             θb = q[iΘ(g, i, k - 1)] / q[iρ(g, i, k - 1)]
             s.θz[i, k] = 0.5 * (θb + θr)
         end
+        k == nz && (s.θz[i, nz+1] = θr)
     end
     fill!(s.fb, 0.0)
     grav = m.gas.g
     @inbounds for k in 1:nz, i in 1:nx
-        s.fb[iU(g, i, k)] = -(s.b[i, k] - s.b[ip(g, i - 1), k]) / g.dx
+        if g.terrain
+            im = ip(g, i - 1)
+            bbot = k == 1 ? 0.5 * (s.b[im, 1] + s.b[i, 1]) :
+                   0.25 * (s.b[im,k-1] + s.b[im,k] + s.b[i,k-1] + s.b[i,k])
+            btop = k == nz ? 0.5 * (s.b[im, nz] + s.b[i, nz]) :
+                   0.25 * (s.b[im,k] + s.b[im,k+1] + s.b[i,k] + s.b[i,k+1])
+            s.fb[iU(g, i, k)] = -(g.Jc[i] * s.b[i, k] - g.Jc[im] * s.b[im, k]) / (g.Jx[i] * g.dx) +
+                (g.zx_xf[i,k+1] * btop - g.zx_xf[i,k] * bbot) / (g.Jx[i] * g.dz)
+        else
+            s.fb[iU(g, i, k)] = -(s.b[i, k] - s.b[ip(g, i - 1), k]) / g.dx
+        end
         if k > 1
-            s.fb[iW(g, i, k)] = -(s.b[i, k] - s.b[i, k-1]) / g.dz + (m.pref[k] - m.pref[k-1]) / g.dz +
-                                grav * 0.5 * (m.ρref[k-1] + m.ρref[k])
+            if g.terrain
+                s.fb[iW(g, i, k)] = (-(s.b[i, k] - s.b[i, k-1]) + (m.pref[i, k] - m.pref[i, k-1])) /
+                    (g.Jc[i] * g.dz) + grav * 0.5 * (m.ρref[i, k-1] + m.ρref[i, k])
+            else
+                s.fb[iW(g, i, k)] = -(s.b[i, k] - s.b[i, k-1]) / g.dz + (m.pref[i, k] - m.pref[i, k-1]) / g.dz +
+                                    grav * 0.5 * (m.ρref[i, k-1] + m.ρref[i, k])
+            end
         end
     end
     for (c, F) in s.lucache
@@ -79,6 +96,7 @@ Fast tendency: horizontal (hor) and/or vertical (ver) part of the rows selected 
 rows = (ρ, U, W, Θ), plus the forcing f on the rows selected by frows; all other rows are zero.
 """
 function fv_fast!(out, s::FVFast, q, f, hor::Bool, ver::Bool, rows::NTuple{4,Bool}, frows::NTuple{4,Bool})
+    s.grid.terrain && return fv_fast_terrain!(out, s, q, f, hor, ver, rows, frows)
     g = s.grid
     nx = g.nx
     nz = g.nz
@@ -126,6 +144,61 @@ const THERMO = (true, false, false, true)
 const MOMENTUM = (false, true, true, false)
 const HMOM = (false, true, false, false)
 const NOT_HMOM = (true, false, true, true)
+
+function fv_fast_terrain!(out, s::FVFast, q, f, hor, ver, rows, frows)
+    g = s.grid
+    nx, nz, dx, dη = g.nx, g.nz, g.dx, g.dz
+    grav = s.gas.g
+    rρ, rU, rW, rΘ = rows
+    fill!(out, 0.0)
+    @inbounds for k in 1:nz, i in 1:nx
+        im, ir = ip(g, i-1), ip(g, i+1)
+        J = g.Jc[i]
+        Ul, Ur = q[iU(g, i, k)], q[iU(g, i+1, k)]
+        θl, θr = s.θx[i,k], s.θx[ir,k]
+        if hor
+            rρ && (out[iρ(g,i,k)] -= (g.Jx[ir]*Ur - g.Jx[i]*Ul) / (J*dx))
+            rΘ && (out[iΘ(g,i,k)] -= (g.Jx[ir]*θr*Ur - g.Jx[i]*θl*Ul) / (J*dx))
+            rU && (out[iU(g,i,k)] -= (g.Jc[i]*s.a[i,k]*q[iΘ(g,i,k)] -
+                                       g.Jc[im]*s.a[im,k]*q[iΘ(g,im,k)]) / (g.Jx[i]*dx))
+            if rU
+                aΘb = k == 1 ? 0.5*(s.a[im,k]*q[iΘ(g,im,k)] + s.a[i,k]*q[iΘ(g,i,k)]) :
+                       0.25*(s.a[im,k-1]*q[iΘ(g,im,k-1)] + s.a[i,k-1]*q[iΘ(g,i,k-1)] +
+                             s.a[im,k]*q[iΘ(g,im,k)] + s.a[i,k]*q[iΘ(g,i,k)])
+                aΘt = k == nz ? 0.5*(s.a[im,k]*q[iΘ(g,im,k)] + s.a[i,k]*q[iΘ(g,i,k)]) :
+                       0.25*(s.a[im,k]*q[iΘ(g,im,k)] + s.a[i,k]*q[iΘ(g,i,k)] +
+                             s.a[im,k+1]*q[iΘ(g,im,k+1)] + s.a[i,k+1]*q[iΘ(g,i,k+1)])
+                out[iU(g,i,k)] += (g.zx_xf[i,k+1]*aΘt - g.zx_xf[i,k]*aΘb)/(g.Jx[i]*dη)
+            end
+        end
+        if ver
+            Wb = k == 1 ? g.zx_f[i,1]*0.5*(Ul+Ur) : q[iW(g,i,k)]
+            Wt = k == nz ? 0.0 : q[iW(g,i,k+1)]
+            Ub = k == 1 ? 0.5*(Ul+Ur) : 0.25*(q[iU(g,i,k-1)]+q[iU(g,i+1,k-1)]+Ul+Ur)
+            Ut = k == nz ? 0.5*(Ul+Ur) : 0.25*(Ul+Ur+q[iU(g,i,k+1)]+q[iU(g,i+1,k+1)])
+            Vb = Wb - g.zx_f[i,k]*Ub
+            Vt = Wt - g.zx_f[i,k+1]*Ut
+            rρ && (out[iρ(g,i,k)] -= (Vt-Vb)/(J*dη))
+            if rΘ
+                θb = s.θz[i,k]
+                θt = s.θz[i,k+1]
+                out[iΘ(g,i,k)] -= (θt*Vt-θb*Vb)/(J*dη)
+            end
+            if rW && k > 1
+                out[iW(g,i,k)] -= (s.a[i,k]*q[iΘ(g,i,k)] - s.a[i,k-1]*q[iΘ(g,i,k-1)])/(J*dη) +
+                                    grav*0.5*(q[iρ(g,i,k-1)] + q[iρ(g,i,k)])
+            end
+        end
+    end
+    fρ, fU, fW, fΘ = frows
+    @inbounds for k in 1:nz, i in 1:nx
+        fρ && (out[iρ(g,i,k)] += f[iρ(g,i,k)])
+        fU && (out[iU(g,i,k)] += f[iU(g,i,k)])
+        fΘ && (out[iΘ(g,i,k)] += f[iΘ(g,i,k)])
+        fW && k > 1 && (out[iW(g,i,k)] += f[iW(g,i,k)])
+    end
+    return out
+end
 
 # TimeStepping interface
 fast_apply!(out, s::FVFast, q, f) = fv_fast!(out, s, q, f, true, true, ALL, ALL)

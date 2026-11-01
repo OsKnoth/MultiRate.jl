@@ -12,6 +12,31 @@ end
 MISWork(nq::Int, ns::Int) = MISWork([zeros(nq) for _ in 1:ns], [zeros(nq) for _ in 1:ns],
                                     zeros(nq), zeros(nq), zeros(nq), zeros(nq))
 
+"""Configuration for split-explicit MIS, independent of the spatial model being integrated.
+
+`fast` selects the fast-system integrator (`:hevi` uses explicit horizontal and implicit
+vertical tendencies). `fast_options` are passed to the model's `fast_operator` constructor.
+The model-specific fast operator and work arrays are allocated by `run_mis`.
+"""
+struct MISStepper{K<:NamedTuple}
+    tableau::MISTableau
+    nsub::Int
+    fast::Symbol
+    refreeze::Bool
+    refreeze_every::Int
+    fast_options::K
+    function MISStepper(tableau::MISTableau, nsub::Integer, fast::Symbol, refreeze::Bool,
+                        refreeze_every::Integer, fast_options::NamedTuple)
+        nsub > 0 || throw(ArgumentError("nsub must be positive"))
+        refreeze_every > 0 || throw(ArgumentError("refreeze_every must be positive"))
+        new{typeof(fast_options)}(tableau, Int(nsub), fast, refreeze, Int(refreeze_every), fast_options)
+    end
+end
+
+MISStepper(; tab::MISTableau = mis_tableau(:MIS4a), nsub::Integer = 12, fast::Symbol = :imex,
+           refreeze::Bool = true, refreeze_every::Integer = 1, fast_options::NamedTuple = NamedTuple()) =
+    MISStepper(tab, nsub, fast, refreeze, refreeze_every, fast_options)
+
 """Fast substeps per MIS stage: n_i = max(1, round(d_i nsub)); for WSRK3 nsub/3, nsub/2, nsub (WRF)."""
 stage_substeps(tab::MISTableau, nsub::Int) = [max(1, round(Int, d * nsub)) for d in tab.d]
 
@@ -64,28 +89,36 @@ function mis_step(model, q::AbstractVector, Δt::Real, tab::MISTableau; nsub::In
 end
 
 """
+    run_mis(model, q0, Δt, nsteps, stepper::MISStepper; monitor=nothing, every=1)
     run_mis(model, q0, Δt, nsteps; tab=mis_tableau(:MIS4a), nsub=12, fast=:imex,
             refreeze=true, refreeze_every=1, monitor=nothing, every=1, kwargs...)
 
 Split-explicit integration with `nsub` fast substeps per large step (ratio fast/slow; WRF uses
-6 or 12 with RK3; keep it ≤ 24). The fast operator is re-frozen at the current state every
-`refreeze_every` large steps; refreeze = false keeps it frozen at q0. Further keyword
-arguments (e.g. pfac, eps, tau_scale) are passed to `fast_operator`.
+6 or 12 with RK3; keep it ≤ 24). Prefer a `MISStepper` when reusing the integration policy;
+the keyword form remains as a convenience wrapper. The fast operator is re-frozen at the current
+state every `refreeze_every` large steps; `fast_options` (e.g. pfac, eps, tau_scale) are passed to
+`fast_operator`.
 """
-function run_mis(model, q0, Δt, nsteps; tab::MISTableau = mis_tableau(:MIS4a), nsub::Int = 12,
-                 fast::Symbol = :imex, refreeze::Bool = true,
-                 refreeze_every::Int = 1, monitor = nothing, every::Int = 1, kwargs...)
+function run_mis(model, q0, Δt, nsteps, stepper::MISStepper; monitor = nothing, every::Int = 1)
+    nsub, fast = stepper.nsub, stepper.fast
     nsub > 24 && @warn "nsub = $nsub fast steps per slow step (ratio > 24)"
     q = Vector{Float64}(q0)
-    sF = fast_operator(model, q; fast = fast, kwargs...)
-    w = MISWork(length(q), nstages(tab))
+    sF = fast_operator(model, q; fast = fast, stepper.fast_options...)
+    w = MISWork(length(q), nstages(stepper.tableau))
     for n in 1:nsteps
-        refreeze && n > 1 && (n - 1) % refreeze_every == 0 &&
-            (sF = fast_operator(model, q; fast = fast, kwargs...))
-        mis_step!(q, model, q, Δt, tab, sF, w; nsub = nsub, fast = fast)
+        stepper.refreeze && n > 1 && (n - 1) % stepper.refreeze_every == 0 &&
+            (sF = fast_operator(model, q; fast = fast, stepper.fast_options...))
+        mis_step!(q, model, q, Δt, stepper.tableau, sF, w; nsub = nsub, fast = fast)
         monitor !== nothing && n % every == 0 && monitor(n, q)
     end
     return q
+end
+
+function run_mis(model, q0, Δt, nsteps; tab::MISTableau = mis_tableau(:MIS4a), nsub::Int = 12,
+                 fast::Symbol = :imex, refreeze::Bool = true, refreeze_every::Int = 1,
+                 monitor = nothing, every::Int = 1, kwargs...)
+    stepper = MISStepper(; tab, nsub, fast, refreeze, refreeze_every, fast_options = (; kwargs...))
+    return run_mis(model, q0, Δt, nsteps, stepper; monitor, every)
 end
 
 """Classical RK4 on the full nonlinear operator (reference solution)."""

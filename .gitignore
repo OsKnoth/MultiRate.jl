@@ -11,4 +11,6 @@
 Manifest.toml
 # simulation output and editor files
 *.vtkhdf
+*.png
+*.svg
 *.swp

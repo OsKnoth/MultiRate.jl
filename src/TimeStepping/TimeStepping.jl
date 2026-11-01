@@ -1,7 +1,9 @@
 """
     TimeStepping
 
-Time integrators shared by all spatial discretizations (DGSEM, FV):
+Time integrators shared by all spatial discretizations (DGSEM, FV). A spatial model owns the
+nonlinear RHS and constructs its frozen fast operator; `MISStepper` holds only integration
+policy, so it can be reused with a model implementing this interface:
 
   * split-explicit MIS / Wicker–Skamarock RK3 (`run_mis`, `mis_step!`) for q' = N(q) with
     the fast part L_n (frozen at qⁿ) and the slow part S = N - L_n,
@@ -19,7 +21,7 @@ export AbstractFastOperator,
        fast_rhs_horizontal!, vertical_apply!, vertical_factor, vertical_solve!,
        fast_rhs_hmomentum!, fast_rhs_hthermo!,
        fast_solve!, IMEX_GM, IMEX_DL, IMEX_AE, IMEX_AI, WRF_BETA,
-       MISTableau, mis_tableau, nstages, MISWork, stage_substeps, mis_step!, mis_step, run_mis, run_rk4
+       MISTableau, mis_tableau, nstages, MISStepper, MISWork, stage_substeps, mis_step!, mis_step, run_mis, run_rk4
 
 include("interface.jl")
 include("fast.jl")

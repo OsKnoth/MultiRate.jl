@@ -12,22 +12,21 @@ const TS = HDGEulerGravity.TimeStepping
 const E2 = HDGEulerGravity.Euler2D
 const FV = HDGEulerGravity.FV2D
 
-"""Default split-explicit settings per discretization: (table, nsub, fast)."""
-default_scheme(disc) = disc == :fv ? (:WSRK3, 6, :wrf) : (:MIS4, 12, :hevi)
+"""Default split-explicit settings per discretization: (MIS tableau, nsub, fast solver)."""
+default_scheme(disc) = (:MIS4, 12, :hevi)
 
 """
     model = build_model(disc; L, H, P=4, NEX, NEZ, ρr, Θr, gas=Gas(), zs=x->0)
 
 DG: NEX × NEZ elements of degree P (terrain zs). FV: (P NEX) × (P NEZ) cells, i.e. the same
-number of unknowns per direction as the DG nodes (flat only).
+number of unknowns per direction as the DG nodes; FV uses the mapped terrain metric.
 """
 function build_model(disc; L, H, P = 4, NEX, NEZ, ρr, Θr, gas = Gas(), zs = x -> 0.0)
     if disc == :dg
         mesh = E2.Mesh2D(NEX, NEZ, P, L, H; zs = zs)
         return E2.Euler2DModel(mesh, gas, ρr, Θr)
     elseif disc == :fv
-        zs(L / 2) == 0 || error("FV2D is flat (no terrain yet)")
-        return FV.FVModel(FV.FVGrid(P * NEX, P * NEZ, L, H), gas, ρr, Θr)
+        return FV.FVModel(FV.FVGrid(P * NEX, P * NEZ, L, H; zs = zs), gas, ρr, Θr)
     end
     error("unknown discretization $disc (:dg or :fv)")
 end
@@ -46,7 +45,8 @@ Split-explicit run over [0, T] with `nsub` fast substeps per large step; writes 
 (initial state and `nout` further outputs) and `name.png` (final state). Returns (q, wall time).
 """
 function run_with_output(model, q0; name, Δt, T, nsub, table, fast, nout = 10,
-                         refreeze_every = 1, plot_names = ["theta_prime", "w"], zoom = nothing)
+                         refreeze_every = 1, fast_options::NamedTuple = NamedTuple(),
+                         plot_names = ["theta_prime", "w"], zoom = nothing)
     nsteps = round(Int, T / Δt)
     every = max(1, nsteps ÷ nout)
     @printf("%s: %s, Δt = %.3f s (%d steps), fast = %s, nsub = %d (dτ ≈ %.3f s), re-freeze every %d\n",
@@ -60,8 +60,9 @@ function run_with_output(model, q0; name, Δt, T, nsub, table, fast, nout = 10,
                 extrema(F["theta_prime"])..., maximum(abs, F["w"]), (total2d(model, q, 1) - mass0) / mass0)
         write_vtkhdf!(vtk, model, q, n * Δt)
     end
-    t = @elapsed q = TS.run_mis(model, q0, Δt, nsteps; tab = TS.mis_tableau(table), nsub = nsub, fast = fast,
-                                refreeze_every = refreeze_every, monitor = monitor, every = every)
+    stepper = TS.MISStepper(; tab = TS.mis_tableau(table), nsub = nsub, fast = fast,
+                            refreeze_every = refreeze_every, fast_options = fast_options)
+    t = @elapsed q = TS.run_mis(model, q0, Δt, nsteps, stepper; monitor = monitor, every = every)
     close(vtk)
     fig = plot_fields(model, q; names = plot_names, zoom = zoom,
                       title = @sprintf("%s, t = %.0f s", name, nsteps * Δt))
@@ -81,7 +82,8 @@ by dτ = CFL h / ((2p+1) c), h = element size; HEVI: horizontal element size, as
 The explicit part of the IMEX/HEVI tableau is RK2, unstable on the imaginary axis; only the LMARS
 dissipation stabilizes it.
 FV (C-grid, no dissipation in the fast operator): verlet, fb: c dτ/min(Δx, Δz) ≤ 0.92;
-wrf: c dτ/Δx ≤ 1.0 (vertically implicit); imex and hevi are unstable for every dτ.
+wrf: c dτ/Δx ≤ 1.0 (vertically implicit); HEVI uses horizontal Verlet plus implicit vertical
+Crank–Nicolson, with c dτ/Δx ≤ 0.92. The generic IMEX RK2 fast update is unstable.
 """
 const CFL_LIMITS = Dict(2 => (1.07, 1.05, 0.77, 0.98), 3 => (0.24, 0.79, 0.56, 0.28),
                         4 => (0.088, 0.63, 0.44, 0.075), 5 => (0.050, 0.52, 0.36, 0.060))
@@ -100,10 +102,11 @@ end
 
 function fast_step(model::FV.FVModel, q, fast; cfl = nothing, safety = 0.85)
     g = model.grid
-    fast in (:wrf, :verlet, :fb) || error("FV: use :wrf, :verlet or :fb (:imex and :hevi are unstable on the C-grid)")
+    fast in (:wrf, :hevi, :verlet, :fb) || error("FV: use :wrf, :hevi, :verlet or :fb (:imex is unstable on the C-grid)")
     lim = fast == :wrf ? 1.0 : 0.92
     cfl === nothing && (cfl = safety * lim)
-    h = fast == :wrf ? g.dx : min(g.dx, g.dz)
+    dzmin = minimum(g.Jc) * g.dz
+    h = fast in (:wrf, :hevi) ? g.dx : min(g.dx, dzmin)
     return cfl * h / sound_speed_max(model, q)
 end
 

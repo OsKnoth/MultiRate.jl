@@ -3,7 +3,7 @@
 """Work arrays of the nonlinear operator (velocities and pressure deviation)."""
 struct FVCache
     u::Matrix{Float64}       # at x-faces (nx, nz)
-    w::Matrix{Float64}       # at z-faces (nx, nz+1), zero at the walls
+    w::Matrix{Float64}       # at mapped vertical faces (nx, nz+1), wall values from no-normal flow
     θ::Matrix{Float64}       # at centres
     pp::Matrix{Float64}      # p - p̄ at centres
 end
@@ -13,9 +13,9 @@ struct FVModel
     grid::FVGrid
     gas::Gas
     nq::Int
-    ρref::Vector{Float64}     # at the centres (nz)
-    Θref::Vector{Float64}
-    pref::Vector{Float64}
+    ρref::Matrix{Float64}     # at cell centres (nx, nz)
+    Θref::Matrix{Float64}
+    pref::Matrix{Float64}
     damp::Vector{Float64}     # Rayleigh damping rate per unknown (sponge)
     qtarget::Vector{Float64}
     cache::FVCache
@@ -28,8 +28,8 @@ end
 Hydrostatic reference given by functions of z (evaluated at the cell centres).
 """
 function FVModel(grid::FVGrid, gas::Gas, ρref, Θref)
-    R = ρref.(grid.zc)
-    T = Θref.(grid.zc)
+    R = ρref.(grid.Zc)
+    T = Θref.(grid.Zc)
     nq = nunknowns(grid)
     return FVModel(grid, gas, nq, R, T, pressure.(Ref(gas), T), zeros(nq), zeros(nq), FVCache(grid), Ref{Any}(nothing))
 end
@@ -52,10 +52,10 @@ function with_sponge(m::FVModel, qtarget::AbstractVector; zD::Real, αtop::Real 
     end
     damp = zeros(m.nq)
     for k in 1:g.nz, i in 1:g.nx
-        damp[iρ(g, i, k)] = rate(g.xc[i], g.zc[k])
-        damp[iΘ(g, i, k)] = rate(g.xc[i], g.zc[k])
-        damp[iU(g, i, k)] = rate(g.xf[i], g.zc[k])
-        k > 1 && (damp[iW(g, i, k)] = rate(g.xc[i], g.zf[k]))
+        damp[iρ(g, i, k)] = rate(g.xc[i], g.Zc[i, k])
+        damp[iΘ(g, i, k)] = rate(g.xc[i], g.Zc[i, k])
+        damp[iU(g, i, k)] = rate(g.xf[i], g.Zx[i, k])
+        k > 1 && (damp[iW(g, i, k)] = rate(g.xc[i], g.Zf[i, k]))
     end
     return FVModel(g, m.gas, m.nq, m.ρref, m.Θref, m.pref, damp, Vector{Float64}(qtarget), m.cache, m.fastref)
 end
@@ -70,11 +70,11 @@ function project2d(m::FVModel, fun)
     g = m.grid
     q = zeros(m.nq)
     for k in 1:g.nz, i in 1:g.nx
-        v = fun(g.xc[i], g.zc[k])
+        v = fun(g.xc[i], g.Zc[i, k])
         q[iρ(g, i, k)] = v[1]
         q[iΘ(g, i, k)] = v[4]
-        q[iU(g, i, k)] = fun(g.xf[i], g.zc[k])[2]
-        k > 1 && (q[iW(g, i, k)] = fun(g.xc[i], g.zf[k])[3])
+        q[iU(g, i, k)] = fun(g.xf[i], g.Zx[i, k])[2]
+        k > 1 && (q[iW(g, i, k)] = fun(g.xc[i], g.Zf[i, k])[3])
     end
     return q
 end
@@ -83,13 +83,13 @@ end
 function total2d(m::FVModel, q, r)
     g = m.grid
     if r == 1
-        return sum(q[iρ(g, i, k)] for i in 1:g.nx, k in 1:g.nz) * g.dx * g.dz
+        return sum(g.Jc[i] * q[iρ(g, i, k)] for i in 1:g.nx, k in 1:g.nz) * g.dx * g.dz
     elseif r == 2
-        return sum(q[iU(g, i, k)] for i in 1:g.nx, k in 1:g.nz) * g.dx * g.dz
+        return sum(g.Jx[i] * q[iU(g, i, k)] for i in 1:g.nx, k in 1:g.nz) * g.dx * g.dz
     elseif r == 3
-        return sum(q[iW(g, i, k)] for i in 1:g.nx, k in 2:g.nz) * g.dx * g.dz
+        return sum(g.Jc[i] * q[iW(g, i, k)] for i in 1:g.nx, k in 2:g.nz) * g.dx * g.dz
     else
-        return sum(q[iΘ(g, i, k)] for i in 1:g.nx, k in 1:g.nz) * g.dx * g.dz
+        return sum(g.Jc[i] * q[iΘ(g, i, k)] for i in 1:g.nx, k in 1:g.nz) * g.dx * g.dz
     end
 end
 
@@ -99,19 +99,25 @@ function output_fields(m::FVModel, q)
     ρ = [q[iρ(g, i, k)] for i in 1:g.nx, k in 1:g.nz]
     Θ = [q[iΘ(g, i, k)] for i in 1:g.nx, k in 1:g.nz]
     U = [0.5 * (q[iU(g, i, k)] + q[iU(g, i + 1, k)]) for i in 1:g.nx, k in 1:g.nz]
-    W = [0.5 * (Wface(g, q, i, k) + Wface(g, q, i, k + 1)) for i in 1:g.nx, k in 1:g.nz]
+    W = [begin
+             Wb = k == 1 && g.terrain ? g.zx_f[i,1] * 0.5 * (q[iU(g,i,1)] + q[iU(g,i+1,1)]) : Wface(g,q,i,k)
+             Wt = Wface(g,q,i,k+1)
+             0.5 * (Wb + Wt)
+         end for i in 1:g.nx, k in 1:g.nz]
     θref = m.Θref ./ m.ρref
     return ["rho" => ρ, "u" => U ./ ρ, "w" => W ./ ρ, "theta" => Θ ./ ρ,
-            "rho_prime" => ρ .- m.ρref', "theta_prime" => Θ ./ ρ .- θref',
-            "p_prime" => pressure.(Ref(m.gas), Θ) .- m.pref']
+            "rho_prime" => ρ .- m.ρref, "theta_prime" => Θ ./ ρ .- θref,
+            "p_prime" => pressure.(Ref(m.gas), Θ) .- m.pref]
 end
 
 """(x, values, zlevel) of an output field at the cell row nearest to height z."""
 function field_section(m::FVModel, q, name, z)
     g = m.grid
-    k = argmin(abs.(g.zc .- z))
     F = Dict(output_fields(m, q))[name]
-    return g.xc, F[:, k], g.zc[k]
+    ks = [argmin(abs.(g.Zc[i, :] .- z)) for i in 1:g.nx]
+    values = [F[i, ks[i]] for i in 1:g.nx]
+    zlevel = sum(g.Zc[i, ks[i]] for i in 1:g.nx) / g.nx
+    return g.xc, values, zlevel
 end
 
 sound_speed_max(m::FVModel, q) =

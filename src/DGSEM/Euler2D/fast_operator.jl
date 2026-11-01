@@ -72,14 +72,18 @@ end
 """
     fast_operator(model, q; pfac=γ, eps=0.0, tau_scale=1.0, fast=:imex, reuse=true)
 
-Fast operator with coefficients frozen at the full 2D state q (matrix-free). With reuse = true
-the operator stored in the model is re-frozen in place (no reallocation); fast = :hevi also
-(re)builds the vertical implicit operator.
+Fast operator with coefficients frozen at the full 2D state q (matrix-free). `eps_if` is the
+relaxation time for the face momentum used by `:fb`. With reuse = true the operator stored in
+the model is re-frozen in place (no reallocation); fast = :hevi also (re)builds the vertical
+implicit operator.
 """
-function fast_operator(m::Euler2DModel, q; pfac = m.gas.γ, eps = 0.0, tau_scale = 1.0, fast::Symbol = :imex,
+function fast_operator(m::Euler2DModel, q; pfac = m.gas.γ, eps = 0.0, eps_if = 0.0, tau_scale = 1.0, fast::Symbol = :imex,
                        reuse::Bool = true)
     eps == 0 || error("the 2D fast operator eliminates the traces (eps = 0)")
+    eps_if >= 0 || throw(ArgumentError("eps_if must be nonnegative"))
     s = reuse && m.fastref[] isa HDGFast2D ? m.fastref[]::HDGFast2D : HDGFast2D(m; tau_scale = tau_scale)
+    s.tau = Float64(tau_scale)
+    s.eps_if = Float64(eps_if)
     s.hevi |= fast == :hevi
     refreeze!(s, m, q, pfac)
     reuse && (m.fastref[] = s)

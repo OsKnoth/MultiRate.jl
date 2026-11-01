@@ -169,7 +169,7 @@ function open_vtkhdf(filename::AbstractString, m::FVModel)
     pts = zeros(3, npts)
     for l in 1:nz+1, j in 1:nx+1
         pts[1, j + (l - 1) * (nx + 1)] = g.x0 + (j - 1) * g.dx
-        pts[2, j + (l - 1) * (nx + 1)] = g.zf[l]
+        pts[2, j + (l - 1) * (nx + 1)] = g.Zv[j, l]
     end
     pid(j, l) = (j - 1) + (l - 1) * (nx + 1)
     conn = Int64[]

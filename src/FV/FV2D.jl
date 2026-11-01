@@ -11,9 +11,13 @@ Euler equations with gravity in an x–z slice, flux form, potential-temperature
 
 with p' = p - p̄(z), ρ' = ρ - ρ̄(z) relative to a hydrostatic reference (rest state exact).
 
-Grid: Arakawa C, uniform cells Δx × Δz, periodic in x, walls (W = 0) at z = 0 and z = H
-(flat; terrain later). ρ, Θ at cell centres, U = ρu at x-faces, W = ρw at interior z-faces.
-Advection: 3rd-order upwind-biased fluxes (WRF flux3), 2nd order next to the walls.
+Grid: Arakawa C with periodic x and a Gal-Chen vertical map
+z = zs(x) + η (H-zs(x))/H. The mapped Jacobian J and terrain slope zx enter conservative fluxes
+as J Fx horizontally and Fz - zx Fx vertically. The lower wall imposes zero normal flux.
+ρ, Θ are at cell centres, U = ρu at x-faces, W = ρw at interior mapped z-faces. On a sloping
+wall the physical vertical velocity can be nonzero while the normal flux remains zero.
+Advection: 3rd-order upwind-biased fluxes (WRF flux3) on flat grids; mapped terrain tendencies
+use the metric-consistent C-grid flux form.
 
 Fast operator (frozen at qⁿ): acoustic-gravity part linearized about qⁿ,
     ρ_t = -∂x U - ∂z W,   Θ_t = -∂x(θ̄ U) - ∂z(θ̄ W),
@@ -34,7 +38,7 @@ using ..Common: open_vtkhdf, write_vtkhdf!, plot_fields
 using ..TimeStepping: AbstractFastOperator, rhs_nonlinear
 import ..TimeStepping: rhs_nonlinear!, fast_operator, fast_apply!, fast_rhs_thermo!, fast_rhs_momentum!,
                        fast_rhs_horizontal!, vertical_apply!, vertical_factor, vertical_solve!,
-                       fast_rhs_hmomentum!, fast_rhs_hthermo!
+                       fast_rhs_hmomentum!, fast_rhs_hthermo!, hevi_loop!
 
 export FVGrid, FVModel, FVFast, with_sponge, project2d, total2d, output_fields, sound_speed_max,
        rhs_nonlinear, rhs_nonlinear!, fast_operator, fast_matrix, stratified_reference,

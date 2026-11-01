@@ -22,13 +22,15 @@
 include(joinpath(@__DIR__, "euler2d_common.jl"))
 
 case = isempty(ARGS) ? "a10" : ARGS[1]
-a = Dict("a1" => 1e3, "a10" => 10e3, "a100" => 100e3)[case]
+a_default = Dict("a1" => 1e3, "a10" => 10e3, "a100" => 100e3)[case]
+a = parse(Float64, get(ENV, "HILL_A", string(a_default))) # Agnesi half-width [m]
 
 # ------------------------------------------------------------------ parameters
 const U, NBV, θ0 = 10.0, 0.01, 300.0
 const h0 = parse(Float64, get(ENV, "H0", "400.0"))   # hill height (paper: 400 m); H0=1 for the linear regime
 const P = 4
-const L = 40a                          # periodic, no lateral sponge
+const LFACTOR = parse(Float64, get(ENV, "LFACTOR", "40"))
+const L = parse(Float64, get(ENV, "LX", string(LFACTOR * a))) # periodic horizontal domain [m]
 # horizontal elements: (p+1) NEX = 50 points over 40 a suffice for p = 4 (element 4 a); the
 # paper's Δx = 0.2 a corresponds to NEX = 50. Override with the environment variable NEX.
 const NEX = parse(Int, get(ENV, "NEX", "10"))
@@ -38,6 +40,9 @@ const NSUB = 12                        # fast substeps per large step
 const T = length(ARGS) > 1 && ARGS[2] != "-" ? parse(Float64, ARGS[2]) : 21.6a / U
 const FAST = length(ARGS) > 2 ? Symbol(ARGS[3]) : :hevi
 const ZCMP = 3e3                       # comparison level for w
+const RUNNAME = (haskey(ENV, "LX") || haskey(ENV, "LFACTOR") || haskey(ENV, "HILL_A")) ?
+    "hills_$(case)_a$(round(Int, a / 1e3))km_L$(round(Int, L / 1e3))km_$(FAST)_nex$(NEX)" :
+    "hills_$(case)_$(FAST)_nex$(NEX)"
 # crest at the element centre nearest L/2 (CREST=face: at L/2, an element face for even NEX)
 xm = get(ENV, "CREST", "center") == "center" ? (floor(NEX / 2) + 0.5) * L / NEX : L / 2
 cgz = U * min(1.0, U / (NBV * a))
@@ -61,7 +66,7 @@ model = E2.with_sponge(model0, q0; zD = ZD, αtop = αsponge)
 @printf("domain %.0f km × %.1f km, p = %d, %d × %d elements, Δx(node) = %.0f m, unknowns = %d, T = %.0f s, sponge α = %.1e 1/s\n",
         L / 1e3, H / 1e3, P, NEX, NEZ, L / (NEX * P), model.nq, T, αsponge)
 
-q, _ = run_with_output(model, q0; name = "hills_$(case)_$(FAST)_nex$NEX", Δt = Δt, T = T, nsub = NSUB, table = :MIS4, fast = FAST,
+q, _ = run_with_output(model, q0; name = RUNNAME, Δt = Δt, T = T, nsub = NSUB, table = :MIS4, fast = FAST,
                        nout = 10, refreeze_every = 10, plot_names = ["w", "theta_prime"],
                        zoom = ((xm - 10a, xm + 10a), (0.0, 10e3)))
 
@@ -94,7 +99,7 @@ wl = [w_linear(x, z) for (x, z) in zip(xs, zs_)]
 jump = maximum((abs(wm[k+1] - wm[k]) for k in 1:length(xs)-1 if abs(xs[k+1] - xs[k]) < 1e-6 * L); init = 0.0)
 @printf("w at z ≈ %.0f m, |x - xm| < 15 a: max|w_model| = %.3e, max|w_linear| = %.3e, rel. L2 difference = %.2f, max jump at element faces = %.2e\n",
         ZCMP, maximum(abs, wm), maximum(abs, wl), sqrt(sum(abs2, wm .- wl) / sum(abs2, wl)), jump)
-open("hills_$(case)_$(FAST)_nex$(NEX)_w.csv", "w") do f
+open("$(RUNNAME)_w.csv", "w") do f
     println(f, "x,z,w_model,w_linear")
     foreach(k -> println(f, xs[k], ",", zs_[k], ",", wm[k], ",", wl[k]), eachindex(xs))
 end
@@ -103,5 +108,5 @@ ax = Axis(fig[1, 1]; xlabel = "x - xm [km]", ylabel = "w [m/s]", title = "hill $
 lines!(ax, (xs .- xm) ./ 1e3, wl; label = "linear theory", color = :black)
 scatter!(ax, (xs .- xm) ./ 1e3, wm; label = "model", markersize = 5, color = :tomato)
 axislegend(ax)
-save("hills_$(case)_$(FAST)_nex$(NEX)_w.png", fig)
-println("wrote hills_$(case)_$(FAST)_nex$(NEX)_w.csv, hills_$(case)_$(FAST)_nex$(NEX)_w.png")
+save("$(RUNNAME)_w.png", fig)
+println("wrote $(RUNNAME)_w.csv, $(RUNNAME)_w.png")
