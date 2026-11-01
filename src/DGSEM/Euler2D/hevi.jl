@@ -8,13 +8,14 @@
 # functions of U_b - M̂ (ñ = outward Ja^η, κ = c/|ñ|, w = horizontal weight):
 #   ρ: w (U_b - M̂),  Θ: θ̄ w (U_b - M̂),  m: -w κ ñ (U_b - M̂)    [p_b - P̂ = -κ (U_b - M̂)]
 #   face: κ (U_L + U_R - 2 M̂) = a (Θ_R - Θ_L);  walls: M̂ = 0.
-# Per node column (ex, i): (I - dt γ M⁻¹A_v) Y = Ys is solved by element-local elimination of
-# (ρ, Θ, U) (dense 3(p+1) LU per element column), a tridiagonal system for M̂ at the Nez-1
+# Per node column (ex, i): (I - dt γ M⁻¹A_v) Y = Ys is solved by element-local Schur
+# elimination of (ρ, Θ) (dense p+1 LU for U per element column), a tridiagonal system for M̂ at the Nez-1
 # interior faces (Thomas), and back substitution; m ← m_s + Ja^η (U - U_s)/|Ja^η|².
 # ---------------------------------------------------------------------------
 mutable struct HeviFactor
-    A::Array{Float64,3}        # (3np, 3np, nblk) LU factors, block b = (column-1) Nez + ez
-    piv::Matrix{Int}           # (3np, nblk)
+    A::Array{Float64,3}        # (3np, 3np, nblk) local block coefficients
+    S::Array{Float64,3}        # (np, np, nblk) local Schur LU for U
+    piv::Matrix{Int}           # (np, nblk)
     zb::Matrix{Float64}        # A⁻¹ B_bot (3np, nblk)
     zt::Matrix{Float64}        # A⁻¹ B_top
     cp::Matrix{Float64}        # Thomas: c' (Nez-1, ncol)
@@ -98,11 +99,39 @@ function factor_hevi!(F::HeviFactor, s::HDGFast2D, c)
                     end
                 end
             end
-            _, ipiv, info = LAPACK.getrf!(A)
-            info == 0 || error("singular HEVI element block")
+            # Locally condense (ρ, Θ), whose diagonal blocks are identities, leaving the
+            # Schur system for U: S = A_UU - A_Uρ A_ρU - A_UΘ A_ΘU.
+            S = view(F.S, :, :, b)
+            @inbounds for j in 1:np, k in 1:np
+                v = A[2np+j, 2np+k]
+                for l in 1:np
+                    v -= A[2np+j, l] * A[l, 2np+k]
+                    v -= A[2np+j, np+l] * A[np+l, 2np+k]
+                end
+                S[j, k] = v
+            end
+            # Factor only the reduced U block. Keep the original local block in `A` long
+            # enough to transform face and stage right-hand sides through the condensation.
+            _, ipiv, info = LAPACK.getrf!(S)
+            info == 0 || error("singular HEVI local Schur block")
             F.piv[:, b] .= ipiv
-            LAPACK.getrs!('N', A, view(F.piv, :, b), Bb)
-            LAPACK.getrs!('N', A, view(F.piv, :, b), Bt)
+            for rhs in (Bb, Bt)
+                @inbounds for j in 1:np
+                    v = rhs[2np+j]
+                    for l in 1:np
+                        v -= A[2np+j, l] * rhs[l]
+                        v -= A[2np+j, np+l] * rhs[np+l]
+                    end
+                    rhs[2np+j] = v
+                end
+                LAPACK.getrs!('N', S, view(F.piv, :, b), view(rhs, 2np+1:3np))
+                @inbounds for j in 1:np
+                    for l in 1:np
+                        rhs[j] -= A[j, 2np+l] * rhs[2np+l]
+                        rhs[np+j] -= A[np+j, 2np+l] * rhs[2np+l]
+                    end
+                end
+            end
         end
         # tridiagonal system for M̂_f, f = 1..Nez-1 (face between ez = f and f+1):
         #   κ (U_top(f) + U_bot(f+1)) + a (Θ_top(f) - Θ_bot(f+1)) - 2κ M̂_f = 0
@@ -131,7 +160,7 @@ function hevi_factor(s::HDGFast2D, c)
         n3 = 3M.np
         nblk = hevi_ncol(M) * M.Nez
         nf = max(M.Nez - 1, 1)
-        F = HeviFactor(zeros(n3, n3, nblk), zeros(Int, n3, nblk), zeros(n3, nblk), zeros(n3, nblk),
+        F = HeviFactor(zeros(n3, n3, nblk), zeros(M.np, M.np, nblk), zeros(Int, M.np, nblk), zeros(n3, nblk), zeros(n3, nblk),
                        zeros(nf, hevi_ncol(M)), zeros(nf, hevi_ncol(M)), zeros(nf, hevi_ncol(M)),
                        zeros(n3, nblk), zeros(nf), zeros(nf))
         factor_hevi!(F, s, c)
@@ -152,7 +181,23 @@ function hevi_solve!(Y, s::HDGFast2D, F::HeviFactor, Ys)
                 F.y[np+j, b] = Ys[node_iq(np, e, 4, i, j)]
                 F.y[2np+j, b] = M.Jηx[i, j, e] * Ys[node_iq(np, e, 2, i, j)] + M.Jηz[i, j, e] * Ys[node_iq(np, e, 3, i, j)]
             end
-            LAPACK.getrs!('N', view(F.A, :, :, b), view(F.piv, :, b), view(F.y, :, b))
+            A = view(F.A, :, :, b)
+            S = view(F.S, :, :, b)
+            @inbounds for j in 1:np
+                v = F.y[2np+j, b]
+                for k in 1:np
+                    v -= A[2np+j, k] * F.y[k, b]
+                    v -= A[2np+j, np+k] * F.y[np+k, b]
+                end
+                F.y[2np+j, b] = v
+            end
+            LAPACK.getrs!('N', S, view(F.piv, :, b), view(F.y, 2np+1:3np, b))
+            @inbounds for j in 1:np
+                for k in 1:np
+                    F.y[j, b] -= A[j, 2np+k] * F.y[2np+k, b]
+                    F.y[np+j, b] -= A[np+j, 2np+k] * F.y[2np+k, b]
+                end
+            end
         end
         # Thomas for M̂ (right-hand side: -F_f(y))
         for f in 1:Nez-1
