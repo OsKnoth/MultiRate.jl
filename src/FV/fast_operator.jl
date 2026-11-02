@@ -30,6 +30,7 @@ Fast operator frozen at q: a = pfac p/Θ, b = (1 - pfac) p, θ̄ = Θ/ρ average
 With reuse = true the operator stored in the model is re-frozen in place.
 """
 function fast_operator(m::FVModel, q; pfac = m.gas.γ, fast::Symbol = :imex, reuse::Bool = true, kwargs...)
+    m.grid isa CutCellFVGrid && return cutcell_fast_operator(m,q;pfac,fast,reuse,kwargs...)
     s = reuse && m.fastref[] isa FVFast ? m.fastref[]::FVFast : FVFast(m)
     refreeze!(s, m, q, pfac)
     reuse && (m.fastref[] = s)

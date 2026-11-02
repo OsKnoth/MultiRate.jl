@@ -1,4 +1,4 @@
-# Short terrain-following Agnesi smoke checks: DGSEM/HDG/HEVI and FV/HEVI.
+# Short terrain-following and cut-cell Agnesi smoke checks, including DGSEM/HDG and FV/HEVI.
 using HDGEulerGravity
 using LinearAlgebra
 
@@ -52,3 +52,38 @@ fvstepper = TS.MISStepper(; tab = TS.mis_tableau(:MIS4), nsub = 12, fast = :hevi
 qfv1 = TS.run_mis(fvmodel, qfv, 0.02, 2, fvstepper)
 all(isfinite, qfv1) || error("FV/WRF Agnesi state is not finite")
 println("Agnesi hill MIS/HEVI check passed for the terrain-following FV grid")
+
+gcut = FV.CutCellFVGrid(40, 8, L, H; zs = zs)
+mcut = FV.FVModel(gcut, gas, ρr, Θr)
+qcut_rest = FV.project2d(mcut, (x,z) -> (ρr(z), 0.0, 0.0, Θr(z)))
+maximum(abs, FV.rhs_nonlinear(mcut, qcut_rest)) < 1e-12 || error("cut-cell FV rest state is not balanced")
+qcut = FV.project2d(mcut, (x,z) -> (ρr(z), 10ρr(z), 0.0, Θr(z)))
+rcut = FV.rhs_nonlinear(mcut, qcut)
+abs(FV.total2d(mcut, rcut, 1)) < 1e-12 * FV.total2d(mcut, qcut, 1) || error("cut-cell mass tendency is not conservative")
+abs(FV.total2d(mcut, rcut, 4)) < 1e-12 * FV.total2d(mcut, qcut, 4) || error("cut-cell Θ tendency is not conservative")
+scut = FV.fast_operator(mcut, qcut; fast = :hevi, reuse = false)
+Acut = zeros(mcut.nq, mcut.nq)
+ec = zeros(mcut.nq); colc = similar(ec)
+for j in eachindex(ec)
+    ec[j] = 1.0
+    FV.vertical_apply!(colc, scut, ec)
+    Acut[:,j] .= colc
+    ec[j] = 0.0
+end
+ccut = 0.01
+Yscut = copy(qcut); Ycut = similar(Yscut)
+FV.vertical_solve!(Ycut, scut, FV.vertical_factor(scut, ccut), Yscut)
+norm(Ycut - (I - ccut*Acut) \ Yscut) < 1e-9 * norm(Ycut) || error("cut-cell HEVI column solve disagrees with its vertical operator")
+cut_nsub = 8
+cut_hmin = minimum(2gcut.Vol[i,k] / (gcut.FU[i,k] + gcut.FU[i+1,k] + gcut.FW[i,k] + gcut.FW[i,k+1])
+                    for i in 1:gcut.nx, k in 1:gcut.nz if gcut.Vol[i,k] > 0)
+cut_dt_hevi = min(0.02, cut_nsub * 0.2 * 0.85 * 0.92 * cut_hmin / FV.sound_speed_max(mcut,qcut))
+cut_hevi = TS.MISStepper(; tab = TS.mis_tableau(:MIS4), nsub = cut_nsub, fast = :hevi)
+qcut_hevi = TS.run_mis(mcut, qcut, cut_dt_hevi, 2, cut_hevi)
+all(isfinite, qcut_hevi) || error("cut-cell FV/HEVI Agnesi state is not finite at its small-cell step")
+cut_amf = TS.MISStepper(; tab = TS.mis_tableau(:MIS4), nsub = cut_nsub, fast = :rosenbrock_amf)
+qcut_amf = TS.run_mis(mcut, qcut, 0.02, 2, cut_amf)
+all(isfinite, qcut_amf) || error("cut-cell FV/Rosenbrock-W AMF Agnesi state is not finite")
+abs(FV.total2d(mcut,qcut_amf,1)-FV.total2d(mcut,qcut,1)) < 1e-10*FV.total2d(mcut,qcut,1) ||
+    error("cut-cell FV/Rosenbrock-W AMF lost mass")
+println("Agnesi cut-cell geometry, conservation, column solve, small-step HEVI and large-step AMF MIS checks passed")

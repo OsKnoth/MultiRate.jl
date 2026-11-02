@@ -11,6 +11,7 @@ end
 
 """In-place N(q); allocation-free (uses the model's FVCache)."""
 function rhs_nonlinear!(out, m::FVModel, q::AbstractVector)
+    m.grid isa CutCellFVGrid && return rhs_cutcell!(out,m,q)
     m.grid.terrain && return rhs_terrain!(out, m, q)
     g = m.grid
     nx = g.nx

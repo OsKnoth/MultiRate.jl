@@ -24,7 +24,10 @@ q0 (qout may alias q0). Methods:
   :wrf     WRF acoustic step: horizontal momentum forward, then (ρ, Θ, vertical momentum)
            vertically implicit, off-centred Crank–Nicolson (β = WRF_BETA), divergence damping
            by the pressure extrapolation of WRF (γd = WRF_SMDIV)
-Allocation-free for operators with a cached `fast_workspace` (7 vectors).
+  :rosenbrock_amf model-specific Rosenbrock-W fast integration with approximate matrix factors
+The standard explicit and HEVI loops are allocation-free for operators with a cached
+`fast_workspace` (7 vectors); model-specific Rosenbrock-W implementations may build additional
+factors when their fast operator is frozen.
 """
 function fast_solve!(qout, s::AbstractFastOperator, q0, F_slow, dt, nsteps; method::Symbol = :imex)
     f, q, Y, k1, k2, tmp, rhs = fast_workspace(s)
@@ -48,8 +51,11 @@ function fast_solve!(qout, s::AbstractFastOperator, q0, F_slow, dt, nsteps; meth
         fb_loop!(q, s, f, dt, nsteps, k1, k2)
     elseif method == :wrf
         wrf_loop!(q, s, f, dt, nsteps, Y, k1, k2, tmp, rhs)
+    elseif method == :rosenbrock_amf
+        fast_rosenbrock_amf!(qout, s, q0, f, dt, nsteps)
+        return qout
     else
-        error("unknown fast method $method (available: :imex, :hevi, :hevi_relax, :verlet, :fb, :wrf)")
+        error("unknown fast method $method (available: :imex, :hevi, :hevi_relax, :verlet, :fb, :wrf, :rosenbrock_amf)")
     end
     qout .= q
     return qout

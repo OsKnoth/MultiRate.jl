@@ -1,4 +1,4 @@
-# Shared helpers for the 2D examples, for both discretizations (disc = :dg or :fv):
+# Shared helpers for the 2D examples, for DG, terrain-following FV, and cut-cell FV:
 # model construction, split-explicit run with VTKHDF time series (ParaView) and Makie PNG, and
 # the Skamarock–Klemp gravity-wave setup used by the short and the long channel.
 #
@@ -27,8 +27,10 @@ function build_model(disc; L, H, P = 4, NEX, NEZ, ρr, Θr, gas = Gas(), zs = x 
         return E2.Euler2DModel(mesh, gas, ρr, Θr)
     elseif disc == :fv
         return FV.FVModel(FV.FVGrid(P * NEX, P * NEZ, L, H; zs = zs), gas, ρr, Θr)
+    elseif disc == :fvc
+        return FV.FVModel(FV.CutCellFVGrid(P * NEX, P * NEZ, L, H; zs = zs), gas, ρr, Θr)
     end
-    error("unknown discretization $disc (:dg or :fv)")
+    error("unknown discretization $disc (:dg, :fv or :fvc)")
 end
 
 grid_info(m::E2.Euler2DModel) = @sprintf("DG p = %d, %d × %d elements (node spacing ≈ %.0f m × %.0f m), unknowns = %d",
@@ -36,6 +38,9 @@ grid_info(m::E2.Euler2DModel) = @sprintf("DG p = %d, %d × %d elements (node spa
                                          m.mesh.H / (m.mesh.Nez * m.mesh.p), m.nq)
 grid_info(m::FV.FVModel) = @sprintf("FV C-grid %d × %d cells (Δx = %.0f m, Δz = %.0f m), unknowns = %d",
                                     m.grid.nx, m.grid.nz, m.grid.dx, m.grid.dz, m.nq)
+grid_info(m::FV.FVModel{<:FV.CutCellFVGrid}) = @sprintf("FV cut-cell C-grid %d × %d cells (Δx = %.0f m, Δz = %.0f m, cut cells = %d), unknowns = %d",
+                                    m.grid.nx, m.grid.nz, m.grid.dx, m.grid.dz,
+                                    count((m.grid.alpha .> 0) .& (m.grid.alpha .< 1)), m.nq)
 
 """
     run_with_output(model, q0; name, Δt, T, nsub, table, fast, nout=10, refreeze_every=1,
@@ -108,6 +113,20 @@ function fast_step(model::FV.FVModel, q, fast; cfl = nothing, safety = 0.85)
     dzmin = minimum(g.Jc) * g.dz
     h = fast in (:wrf, :hevi) ? g.dx : min(g.dx, dzmin)
     return cfl * h / sound_speed_max(model, q)
+end
+
+function fast_step(model::FV.FVModel{<:FV.CutCellFVGrid}, q, fast; cfl = nothing, safety = 0.85)
+    fast in (:hevi, :verlet, :fb, :rosenbrock_amf) || error("FV cut-cell: use :hevi, :verlet, :fb or :rosenbrock_amf")
+    g = model.grid
+    cfl === nothing && (cfl = safety * (fast in (:hevi, :rosenbrock_amf) ? 0.92 : 0.70))
+    if fast == :rosenbrock_amf
+        # Vertical acoustics and masked cut-cell terms are implicit; the remaining horizontal
+        # acoustic modes are limited by the regular Cartesian spacing.
+        return cfl * g.dx / sound_speed_max(model, q)
+    end
+    hmin = minimum(2g.Vol[i,k] / (g.FU[i,k] + g.FU[i+1,k] + g.FW[i,k] + g.FW[i,k+1])
+                   for i in 1:g.nx, k in 1:g.nz if g.Vol[i,k] > 0)
+    return cfl * hmin / sound_speed_max(model, q)
 end
 
 """

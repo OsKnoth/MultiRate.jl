@@ -9,7 +9,7 @@ module HDGEulerGravityMakieExt
 using Makie
 using HDGEulerGravity.Common: output_fields
 using HDGEulerGravity.Euler2D: Euler2DModel
-using HDGEulerGravity.FV2D: FVModel
+using HDGEulerGravity.FV2D: FVModel, CutCellFVGrid
 using HDGEulerGravity.HDGRelaxTheta: lagrange_basis
 import HDGEulerGravity.Common: plot_fields
 
@@ -117,6 +117,54 @@ function plot_fields(m::FVModel, q; names = ["theta_prime", "w"], title = "", zo
             ylims!(ax, zoom[2] .* zscale)
         end
         Colorbar(fig[row, 2], hm)
+    end
+    return fig
+end
+
+"""FV2D cut-cell fields drawn on the actual clipped fluid polygons."""
+function plot_fields(m::FVModel{<:CutCellFVGrid}, q; names = ["theta_prime", "w"], title = "", zoom = nothing,
+                     xscale = 1e-3, zscale = 1e-3, size = (1100, 380 * length(names)))
+    g=m.grid; F=Dict(output_fields(m,q))
+    active=[(i,k) for k in 1:g.nz for i in 1:g.nx if g.Vol[i,k]>0 && length(g.polygons[i,k])>=3]
+    npts=sum(length(g.polygons[i,k]) for (i,k) in active)
+    ntri=sum(length(g.polygons[i,k])-2 for (i,k) in active)
+    pts=zeros(Float32,npts,2); faces=zeros(Int,ntri,3)
+    vertex_values(vals)=begin
+        out=zeros(Float32,npts); point=0
+        for (i,k) in active
+            poly=g.polygons[i,k]
+            for _ in poly
+                point+=1; out[point]=Float32(vals[i,k])
+            end
+        end
+        out
+    end
+    point=0; face=0
+    for (i,k) in active
+        poly=g.polygons[i,k]; first=point+1
+        for (x,z) in poly
+            point+=1; pts[point,:].=(x*xscale,z*zscale)
+        end
+        for j in 2:length(poly)-1
+            face+=1; faces[face,:].=(first,first+j-1,first+j)
+        end
+    end
+    fig=Figure(;size=size)
+    for (row,name) in enumerate(names)
+        haskey(F,name) || error("unknown field $name")
+        vals=F[name]
+        if name in DIVERGING
+            a=maximum(abs,vals); a=a>0 ? a : 1.0; cmap,crange=:balance,(-a,a)
+        else
+            cmap,crange=:viridis,extrema(vals)
+        end
+        ax=Axis(fig[row,1];title=row==1 && !isempty(title) ? "$title — $name" : name,
+                xlabel=xscale==1e-3 ? "x [km]" : "x",ylabel=zscale==1e-3 ? "z [km]" : "z")
+        hm=mesh!(ax,pts,faces;color=vertex_values(vals),colormap=cmap,colorrange=crange,shading=NoShading)
+        if zoom!==nothing
+            xlims!(ax,zoom[1].*xscale); ylims!(ax,zoom[2].*zscale)
+        end
+        Colorbar(fig[row,2],hm)
     end
     return fig
 end

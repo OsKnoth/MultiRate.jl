@@ -1,8 +1,9 @@
 # Warm bubble at constant pressure in a stably stratified atmosphere.
-# Compare DGSEM + HDG (including optional face relaxation) with the finite-volume C-grid.
+# Compare DGSEM + HDG, terrain-following FV, and Cartesian cut-cell FV.
 #
 #     julia --project=examples examples/intro_2d/warm_bubble.jl dg [T] [hevi|hevi_relax|fb|verlet]
 #     julia --project=examples examples/intro_2d/warm_bubble.jl fv [T] [hevi|wrf|fb|verlet]
+#     julia --project=examples examples/intro_2d/warm_bubble.jl fvc [T] [hevi|verlet|fb|rosenbrock_amf]
 #
 # Configure with LX, H, NEX, NEZ, P, BUBBLE_X, BUBBLE_Z, BUBBLE_RX, BUBBLE_RZ,
 # DELTA_THETA, N, U, NSUB and EPS_IF. Both use MIS4 with HEVI fast steps by default.
@@ -10,7 +11,7 @@
 include(joinpath(@__DIR__, "../euler2d_common.jl"))
 
 disc = isempty(ARGS) ? :dg : Symbol(ARGS[1])
-disc in (:dg, :fv) || error("discretization must be dg or fv")
+disc in (:dg, :fv, :fvc) || error("discretization must be dg, fv or fvc")
 LX = parse(Float64, get(ENV, "LX", "20000"))
 H = parse(Float64, get(ENV, "H", "10000"))
 P = parse(Int, get(ENV, "P", "4"))
@@ -27,12 +28,21 @@ T = length(ARGS) > 1 && ARGS[2] != "-" ? parse(Float64, ARGS[2]) : 120.0
 table, nsub_default, fast_default = default_scheme(disc)
 NSUB = parse(Int, get(ENV, "NSUB", string(nsub_default)))
 FAST = length(ARGS) > 2 ? Symbol(ARGS[3]) : fast_default
+disc == :fvc && !(FAST in (:hevi, :verlet, :fb, :rosenbrock_amf)) && error("cut-cell FV supports hevi, verlet, fb or rosenbrock_amf")
 eps_if = parse(Float64, get(ENV, "EPS_IF", "0"))
 0 <= zc <= H || error("BUBBLE_Z must lie between 0 and H")
 
 gas = Gas()
 ρr, Θr, θr = E2.stratified_reference(gas; θ0 = 300.0, N = N)
-model = build_model(disc; L = LX, H = H, P, NEX, NEZ, ρr, Θr, gas)
+zs = x -> 0.0
+if disc == :fvc
+    a_cut = parse(Float64, get(ENV, "CUT_A", "1000"))
+    h_cut = parse(Float64, get(ENV, "CUT_H0", "500"))
+    xm_cut = LX / 2
+    Δx_periodic(x) = mod(x - xm_cut + LX/2, LX) - LX/2
+    zs = x -> h_cut / (1 + (Δx_periodic(x) / a_cut)^2)
+end
+model = build_model(disc; L = LX, H = H, P, NEX, NEZ, ρr, Θr, gas, zs)
 q0 = project2d(model, (x, z) -> begin
     θ = θr(z) + Δθ * exp(-((x - xc) / rx)^2 - ((z - zc) / rz)^2)
     (Θr(z) / θ, U * Θr(z) / θ, 0.0, Θr(z))

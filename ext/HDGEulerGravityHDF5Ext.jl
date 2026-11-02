@@ -13,12 +13,13 @@ module HDGEulerGravityHDF5Ext
 using HDF5
 using HDGEulerGravity.Common: output_fields
 using HDGEulerGravity.Euler2D: Euler2DModel
-using HDGEulerGravity.FV2D: FVModel
+using HDGEulerGravity.FV2D: FVModel, CutCellFVGrid
 using HDGEulerGravity.HDGRelaxTheta: lagrange_basis
 import HDGEulerGravity.Common: open_vtkhdf, write_vtkhdf!
 
 const VTK_LAGRANGE_QUADRILATERAL = UInt8(70)
 const VTK_QUAD = UInt8(9)
+const VTK_POLYGON = UInt8(7)
 
 mutable struct VTKHDFFile
     file::HDF5.File
@@ -196,6 +197,42 @@ end
 function write_vtkhdf!(vtk::VTKHDFFile, m::FVModel, q, t::Real)
     values = [name => vec(F) for (name, F) in output_fields(m, q)]     # cell (i, k) at i + (k-1) nx
     return append_step!(vtk, values, t)
+end
+
+# Cartesian cut cells are exported as their clipped fluid polygons, omitting fully solid cells.
+function open_vtkhdf(filename::AbstractString, m::FVModel{<:CutCellFVGrid})
+    g=m.grid
+    active=[(i,k) for k in 1:g.nz for i in 1:g.nx if g.Vol[i,k]>0]
+    npts=sum(length(g.polygons[i,k]) for (i,k) in active)
+    ncells=length(active)
+    pts=zeros(3,npts); conn=Int64[]; offsets=Int64[]; types=fill(VTK_POLYGON,ncells)
+    point=0
+    for (i,k) in active
+        poly=g.polygons[i,k]
+        for (x,z) in poly
+            push!(conn,point)
+            pts[1,point+1]=x; pts[2,point+1]=z
+            point+=1
+        end
+        push!(offsets,length(conn))
+    end
+    f=h5open(filename,"w"); G=create_group(f,"VTKHDF")
+    attributes(G)["Version"]=Int64[2,0]
+    ascii_attribute(G,"Type","UnstructuredGrid")
+    G["NumberOfPoints"]=Int64[npts]
+    G["NumberOfCells"]=Int64[ncells]
+    G["NumberOfConnectivityIds"]=Int64[length(conn)]
+    G["Points"]=pts; G["Offsets"]=offsets; G["Connectivity"]=conn; G["Types"]=types
+    data_groups!(G,m,ncells,"CellData")
+    flush(f)
+    return VTKHDFFile(f,ncells,0,zeros(0,0),"CellData")
+end
+
+function write_vtkhdf!(vtk::VTKHDFFile,m::FVModel{<:CutCellFVGrid},q,t::Real)
+    g=m.grid
+    values=[name=>[F[i,k] for k in 1:g.nz for i in 1:g.nx if g.Vol[i,k]>0]
+            for (name,F) in output_fields(m,q)]
+    return append_step!(vtk,values,t)
 end
 
 Base.close(vtk::VTKHDFFile) = close(vtk.file)

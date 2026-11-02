@@ -32,23 +32,28 @@ State vector q = [ρ (nx nz); U (nx nz); W (nx (nz-1)); Θ (nx nz)], cell (i, k)
 module FV2D
 
 using LinearAlgebra
+using SparseArrays
 using ..Common: Gas, pressure, stratified_reference
 import ..Common: project2d, total2d, output_fields, field_section, sound_speed_max, with_sponge
 using ..Common: open_vtkhdf, write_vtkhdf!, plot_fields
 using ..TimeStepping: AbstractFastOperator, rhs_nonlinear
 import ..TimeStepping: rhs_nonlinear!, fast_operator, fast_apply!, fast_rhs_thermo!, fast_rhs_momentum!,
                        fast_rhs_horizontal!, vertical_apply!, vertical_factor, vertical_solve!,
-                       fast_rhs_hmomentum!, fast_rhs_hthermo!, hevi_loop!
+                       fast_rhs_hmomentum!, fast_rhs_hthermo!, hevi_loop!, fast_forcing, fast_mass,
+                       fast_workspace, fast_rosenbrock_amf!
 
-export FVGrid, FVModel, FVFast, with_sponge, project2d, total2d, output_fields, sound_speed_max,
+export FVGrid, CutCellFVGrid, FVModel, FVFast, CutCellFVAMF, with_sponge, project2d, total2d, output_fields, sound_speed_max,
        rhs_nonlinear, rhs_nonlinear!, fast_operator, fast_matrix, stratified_reference,
        iρ, iU, iW, iΘ, field_section, open_vtkhdf, write_vtkhdf!, plot_fields
 
 include("grid.jl")
+include("cutcell_grid.jl")
 include("model.jl")
 include("advection.jl")
 include("rhs.jl")
 include("fast_operator.jl")
 include("vertical.jl")
+include("cutcell_solver.jl")
+include("cutcell_amf.jl")
 
 end # module

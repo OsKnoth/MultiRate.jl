@@ -6,11 +6,24 @@ struct FVCache
     w::Matrix{Float64}       # at mapped vertical faces (nx, nz+1), wall values from no-normal flow
     θ::Matrix{Float64}       # at centres
     pp::Matrix{Float64}      # p - p̄ at centres
+    mx::Matrix{Float64}
+    mz::Matrix{Float64}
+    fx::Matrix{Float64}
+    fz::Matrix{Float64}
+    fxu::Matrix{Float64}
+    fxw::Matrix{Float64}
+    fzu::Matrix{Float64}
+    fzw::Matrix{Float64}
+    mdx::Matrix{Float64}
+    mdz::Matrix{Float64}
 end
-FVCache(g::FVGrid) = FVCache(zeros(g.nx, g.nz), zeros(g.nx, g.nz + 1), zeros(g.nx, g.nz), zeros(g.nx, g.nz))
+FVCache(g) = FVCache(zeros(g.nx,g.nz),zeros(g.nx,g.nz+1),zeros(g.nx,g.nz),zeros(g.nx,g.nz),
+                     zeros(g.nx,g.nz),zeros(g.nx,g.nz),zeros(g.nx+1,g.nz),zeros(g.nx,g.nz+1),
+                     zeros(g.nx+1,g.nz),zeros(g.nx+1,g.nz),zeros(g.nx,g.nz+1),zeros(g.nx,g.nz+1),
+                     zeros(g.nx,g.nz),zeros(g.nx,g.nz))
 
-struct FVModel
-    grid::FVGrid
+struct FVModel{G}
+    grid::G
     gas::Gas
     nq::Int
     ρref::Matrix{Float64}     # at cell centres (nx, nz)
@@ -30,6 +43,14 @@ Hydrostatic reference given by functions of z (evaluated at the cell centres).
 function FVModel(grid::FVGrid, gas::Gas, ρref, Θref)
     R = ρref.(grid.Zc)
     T = Θref.(grid.Zc)
+    nq = nunknowns(grid)
+    return FVModel(grid, gas, nq, R, T, pressure.(Ref(gas), T), zeros(nq), zeros(nq), FVCache(grid), Ref{Any}(nothing))
+end
+
+function FVModel(grid::CutCellFVGrid, gas::Gas, ρref, Θref)
+    Zref = [cutcell_sample_z(grid,i,k) for i in 1:grid.nx, k in 1:grid.nz]
+    R = ρref.(Zref)
+    T = Θref.(Zref)
     nq = nunknowns(grid)
     return FVModel(grid, gas, nq, R, T, pressure.(Ref(gas), T), zeros(nq), zeros(nq), FVCache(grid), Ref{Any}(nothing))
 end
@@ -79,9 +100,53 @@ function project2d(m::FVModel, fun)
     return q
 end
 
+function project2d(m::FVModel{<:CutCellFVGrid}, fun)
+    g = m.grid
+    q = zeros(m.nq)
+    @inbounds for k in 1:g.nz, i in 1:g.nx
+        # Use the cell centre when it lies in fluid, otherwise sample halfway through the
+        # fluid portion of the cut cell. Fully solid cells retain the reference state so
+        # coefficient evaluation remains finite; their open volume and faces are zero.
+        zsample = cutcell_sample_z(g,i,k)
+        vals = fun(g.xc[i], zsample)
+        if g.Vol[i,k] > 0
+            q[iρ(g, i, k)] = vals[1]
+            q[iΘ(g, i, k)] = vals[4]
+        else
+            q[iρ(g, i, k)] = m.ρref[i,k]
+            q[iΘ(g, i, k)] = m.Θref[i,k]
+        end
+    end
+    @inbounds for k in 1:g.nz, i in 1:g.nx
+        if g.FU[i,k] > 0
+            z = (max(g.zf[k], g.zs(g.xf[i])) + g.zf[k+1]) / 2
+            q[iU(g, i, k)] = fun(g.xf[i], z)[2]
+        end
+    end
+    @inbounds for k in 2:g.nz, i in 1:g.nx
+        if g.FW[i,k] > 0
+            q[iW(g, i, k)] = fun(g.xc[i], g.zf[k])[3]
+        end
+    end
+    return q
+end
+
 """Discrete integral of variable r (1 ρ, 2 ρu, 3 ρw, 4 Θ)."""
 function total2d(m::FVModel, q, r)
     g = m.grid
+    if g isa CutCellFVGrid
+        if r == 1
+            return sum(g.Vol[i,k] * q[iρ(g,i,k)] for i in 1:g.nx, k in 1:g.nz)
+        elseif r == 4
+            return sum(g.Vol[i,k] * q[iΘ(g,i,k)] for i in 1:g.nx, k in 1:g.nz)
+        elseif r == 2
+            return sum(g.Vol[i,k] * 0.5 * (q[iU(g,i,k)] + q[iU(g,i+1,k)]) for i in 1:g.nx, k in 1:g.nz)
+        else
+            return sum(g.Vol[i,k] * 0.5 * (g.FW[i,k] * Wface(g,q,i,k) / max(g.FW[i,k], eps()) +
+                                           g.FW[i,k+1] * Wface(g,q,i,k+1) / max(g.FW[i,k+1], eps()))
+                       for i in 1:g.nx, k in 1:g.nz)
+        end
+    end
     if r == 1
         return sum(g.Jc[i] * q[iρ(g, i, k)] for i in 1:g.nx, k in 1:g.nz) * g.dx * g.dz
     elseif r == 2
@@ -104,6 +169,18 @@ function output_fields(m::FVModel, q)
              Wt = Wface(g,q,i,k+1)
              0.5 * (Wb + Wt)
          end for i in 1:g.nx, k in 1:g.nz]
+    θref = m.Θref ./ m.ρref
+    return ["rho" => ρ, "u" => U ./ ρ, "w" => W ./ ρ, "theta" => Θ ./ ρ,
+            "rho_prime" => ρ .- m.ρref, "theta_prime" => Θ ./ ρ .- θref,
+            "p_prime" => pressure.(Ref(m.gas), Θ) .- m.pref]
+end
+
+function output_fields(m::FVModel{<:CutCellFVGrid}, q)
+    g = m.grid
+    ρ = [q[iρ(g,i,k)] for i in 1:g.nx, k in 1:g.nz]
+    Θ = [q[iΘ(g,i,k)] for i in 1:g.nx, k in 1:g.nz]
+    U = [0.5 * (q[iU(g,i,k)] + q[iU(g,i+1,k)]) for i in 1:g.nx, k in 1:g.nz]
+    W = [0.5 * (Wface(g,q,i,k) + Wface(g,q,i,k+1)) for i in 1:g.nx, k in 1:g.nz]
     θref = m.Θref ./ m.ρref
     return ["rho" => ρ, "u" => U ./ ρ, "w" => W ./ ρ, "theta" => Θ ./ ρ,
             "rho_prime" => ρ .- m.ρref, "theta_prime" => Θ ./ ρ .- θref,

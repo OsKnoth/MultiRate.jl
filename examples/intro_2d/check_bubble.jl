@@ -40,4 +40,22 @@ fv_stepper = TS.MISStepper(; tab = TS.mis_tableau(:MIS4), nsub = 12, fast = :hev
 q_fv_end = TS.run_mis(fv, q_fv, 0.05, 2, fv_stepper)
 all(isfinite, q_fv_end) || error("FV/HEVI bubble state is not finite")
 
-println("warm-bubble MIS checks passed for DGSEM/HDG/HEVI, relaxed HEVI, and FV/HEVI")
+zs_cut(x) = 500.0 / (1 + ((x - 5e3) / 1e3)^2)
+fvc = FV.FVModel(FV.CutCellFVGrid(10, 6, 10e3, 6e3; zs = zs_cut), gas, ρr, Θr)
+q_fvc = bubble_state(fvc, FV.project2d)
+fvc_mass0 = FV.total2d(fvc, q_fvc, 1)
+fvc_stepper = TS.MISStepper(; tab = TS.mis_tableau(:MIS4), nsub = 8, fast = :hevi)
+q_fvc_end = TS.run_mis(fvc, q_fvc, 0.05, 2, fvc_stepper)
+all(isfinite, q_fvc_end) || error("cut-cell FV/HEVI bubble state is not finite")
+abs(FV.total2d(fvc, q_fvc_end, 1) - fvc_mass0) < 1e-11 * abs(fvc_mass0) ||
+    error("cut-cell FV/HEVI bubble mass is not conservative")
+fvc_amf = FV.FVModel(FV.CutCellFVGrid(10, 6, 10e3, 6e3; zs = zs_cut), gas, ρr, Θr)
+q_fvc_amf = bubble_state(fvc_amf, FV.project2d)
+fvc_amf_mass0 = FV.total2d(fvc_amf, q_fvc_amf, 1)
+fvc_amf_stepper = TS.MISStepper(; tab = TS.mis_tableau(:MIS4), nsub = 8, fast = :rosenbrock_amf)
+q_fvc_amf_end = TS.run_mis(fvc_amf, q_fvc_amf, 0.05, 2, fvc_amf_stepper)
+all(isfinite, q_fvc_amf_end) || error("cut-cell FV/Rosenbrock-W AMF bubble state is not finite")
+abs(FV.total2d(fvc_amf, q_fvc_amf_end, 1) - fvc_amf_mass0) < 1e-11 * abs(fvc_amf_mass0) ||
+    error("cut-cell FV/Rosenbrock-W AMF bubble mass is not conservative")
+
+println("warm-bubble MIS checks passed for DGSEM/HDG/HEVI, relaxed HEVI, terrain FV, and cut-cell FV HEVI/AMF")
