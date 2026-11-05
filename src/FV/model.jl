@@ -16,11 +16,13 @@ struct FVCache
     fzw::Matrix{Float64}
     mdx::Matrix{Float64}
     mdz::Matrix{Float64}
+    cc::Vector{Matrix{Float64}}   # cut-cell third-order advection work arrays, (nx, nz) each
 end
 FVCache(g) = FVCache(zeros(g.nx,g.nz),zeros(g.nx,g.nz+1),zeros(g.nx,g.nz),zeros(g.nx,g.nz),
                      zeros(g.nx,g.nz),zeros(g.nx,g.nz),zeros(g.nx+1,g.nz),zeros(g.nx,g.nz+1),
                      zeros(g.nx+1,g.nz),zeros(g.nx+1,g.nz),zeros(g.nx,g.nz+1),zeros(g.nx,g.nz+1),
-                     zeros(g.nx,g.nz),zeros(g.nx,g.nz))
+                     zeros(g.nx,g.nz),zeros(g.nx,g.nz),
+                     g isa CutCellFVGrid ? [zeros(g.nx,g.nz) for _ in 1:10] : Matrix{Float64}[])
 
 struct FVModel{G}
     grid::G

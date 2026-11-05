@@ -133,6 +133,119 @@ end
 
 @inline cut_upwind(v, left, right) = v >= 0 ? left : right
 
+# ---------------------------------------------------------------------------------------------
+# Third-order cut-cell advection after MATLAB `AdvectionCutThird`, `ShiftFaceCellCut` and
+# `ShiftCellFaceCut`. Mixing ratios c/ρ are reconstructed upwind with the volume-weighted
+# coefficients k1, k2 (1/3 and 1/6 on a uniform grid). The MATLAB ratio form (k1 r + k2)(cC-cL)
+# with r = (cR-cC)/(cC-cL) is written as k1 (cR-cC) + k2 (cC-cL). Neighbours smaller than the
+# upwind cell are blended towards cC, and the correction is switched off when the upwind cell's
+# opposite face is closed. Walls act as ghosts equal to the upwind cell; the bottom wall
+# aperture counts as closed (MATLAB sets FW(:,1) = 0).
+# ---------------------------------------------------------------------------------------------
+
+@inline cut_k1(hL, hC, hR) = (hC / (hC + hR + eps())) * ((hL + hC) / (hL + hC + hR + eps()))
+@inline cut_k2(hL, hC, hR) = (hC / (hL + hC + eps())) * (hR / (hL + hC + hR + eps()))
+@inline cut_fw(g::CutCellFVGrid, i, k) = k == 1 ? 0.0 : g.FW[i,k]
+
+"""Face value reconstructed in upwind cell C from upstream U and downstream D (mixing ratios,
+volumes) with open fraction `open` of C's upstream face."""
+@inline function cut_face3(cU, cC, cD, VU, VC, VD, open)
+    VU < VC && (cU = ((VC - VU) * cC + VU * cU) / VC)
+    VD < VC && (cD = ((VC - VD) * cC + VD * cD) / VC)
+    return cC + open * (cut_k1(VU, VC, VD) * (cD - cC) + cut_k2(VU, VC, VD) * (cC - cU))
+end
+
+"""Advective tendency -(1/V) ∮ (ρv·n) (c/ρ) of the cell quantity `c` (nx, nz) into `fc`,
+using the face momenta in `q` and the third-order upwind face values."""
+function cut_advect3!(fc, c, q, g::CutCellFVGrid)
+    nx, nz = g.nx, g.nz
+    fill!(fc, 0.0)
+    r(i, k) = c[i,k] / (q[iρ(g,i,k)] + eps())
+    @inbounds for k in 1:nz, f in 1:nx            # x-face f between cells f-1 and f
+        A = g.FU[f,k]; A > 0 || continue
+        U = q[iU(g,f,k)]
+        il, ir = ip(g,f-1), f
+        if U >= 0       # upwind il: upstream il-1, downstream ir; upstream face of il is f-1
+            iu = ip(g,il-1)
+            cf = cut_face3(r(iu,k), r(il,k), r(ir,k), g.Vol[iu,k], g.Vol[il,k], g.Vol[ir,k],
+                           g.FU[ip(g,f-1),k] / (g.FU[ip(g,f-1),k] + eps()))
+        else            # upwind ir: upstream ir+1, downstream il; upstream face of ir is f+1
+            iu = ip(g,ir+1)
+            cf = cut_face3(r(iu,k), r(ir,k), r(il,k), g.Vol[iu,k], g.Vol[ir,k], g.Vol[il,k],
+                           g.FU[f+1,k] / (g.FU[f+1,k] + eps()))
+        end
+        F = A * U * cf
+        fc[il,k] -= F; fc[ir,k] += F
+    end
+    @inbounds for k in 2:nz, i in 1:nx            # z-face k between cells k-1 and k
+        A = g.FW[i,k]; A > 0 || continue
+        W = q[iW(g,i,k)]
+        kb, kt = k-1, k
+        if W >= 0       # upwind kb: upstream kb-1 (ghost at the bottom wall), face k-1
+            ku = max(kb-1, 1)
+            Vu = kb == 1 ? g.Vol[i,kb] : g.Vol[i,ku]
+            cf = cut_face3(r(i,ku), r(i,kb), r(i,kt), Vu, g.Vol[i,kb], g.Vol[i,kt],
+                           cut_fw(g,i,k-1) / (cut_fw(g,i,k-1) + eps()))
+        else            # upwind kt: upstream kt+1 (ghost at the top wall), face k+1
+            ku = min(kt+1, nz)
+            Vu = kt == nz ? g.Vol[i,kt] : g.Vol[i,ku]
+            cf = cut_face3(r(i,ku), r(i,kt), r(i,kb), Vu, g.Vol[i,kt], g.Vol[i,kb],
+                           g.FW[i,k+1] / (g.FW[i,k+1] + eps()))
+        end
+        F = A * W * cf
+        fc[i,kb] -= F; fc[i,kt] += F
+    end
+    @inbounds for k in 1:nz, i in 1:nx
+        fc[i,k] = g.Vol[i,k] > 0 ? fc[i,k] / g.Vol[i,k] : 0.0
+    end
+    return fc
+end
+
+@inline function cut_shiftvel(AL, AR, vL, vR)
+    AL > AR ? (vL, (AR * vR + (AL - AR) * vL) / (AL + eps())) :
+              ((AL * vL + (AR - AL) * vR) / (AR + eps()), vR)
+end
+
+"""Cell-centred left/right momentum parts from face momenta (MATLAB `ShiftFaceCellCut`)."""
+function cut_face_to_cell!(uCL, uCR, wCL, wCR, q, g::CutCellFVGrid)
+    @inbounds for k in 1:g.nz, i in 1:g.nx
+        uCL[i,k], uCR[i,k] = cut_shiftvel(g.FU[i,k], g.FU[i+1,k], q[iU(g,i,k)], q[iU(g,i+1,k)])
+        wCL[i,k], wCR[i,k] = cut_shiftvel(cut_fw(g,i,k), g.FW[i,k+1], Wface(g,q,i,k), Wface(g,q,i,k+1))
+    end
+    return nothing
+end
+
+"""Volume-weighted face tendency from the cell tendencies of the two adjacent momentum parts
+(MATLAB `ShiftCellFaceCut`): x-face f uses FuCL of cell f and FuCR of cell f-1."""
+@inline function cut_cell_to_uface(g::CutCellFVGrid, FuCL, FuCR, f, k)
+    il, ir = ip(g,f-1), f
+    A = g.FU[f,k]
+    VR = g.Vol[ir,k] * A / (A + g.FU[f+1,k] + eps())
+    VL = g.Vol[il,k] * A / (A + g.FU[ip(g,f-1),k] + eps())
+    return (VR * FuCL[ir,k] + VL * FuCR[il,k]) / (VL + VR + eps())
+end
+
+@inline function cut_cell_to_wface(g::CutCellFVGrid, FwCL, FwCR, i, k)
+    A = g.FW[i,k]
+    VR = g.Vol[i,k] * A / (A + g.FW[i,k+1] + eps())
+    VL = g.Vol[i,k-1] * A / (A + cut_fw(g,i,k-1) + eps())
+    return (VR * FwCL[i,k] + VL * FwCR[i,k-1]) / (VL + VR + eps())
+end
+
+"""Third-order advective tendencies of Θ and the momentum parts into the cache arrays."""
+function cut_advection_third!(m, q)
+    g = m.grid; cc = m.cache.cc
+    uCL, uCR, wCL, wCR, FuCL, FuCR, FwCL, FwCR, Fθ, Θc = cc
+    @inbounds for k in 1:g.nz, i in 1:g.nx
+        Θc[i,k] = q[iΘ(g,i,k)]
+    end
+    cut_advect3!(Fθ, Θc, q, g)
+    cut_face_to_cell!(uCL, uCR, wCL, wCR, q, g)
+    cut_advect3!(FuCL, uCL, q, g); cut_advect3!(FuCR, uCR, q, g)
+    cut_advect3!(FwCL, wCL, q, g); cut_advect3!(FwCR, wCR, q, g)
+    return nothing
+end
+
 function rhs_cutcell!(out,m::FVModel{<:CutCellFVGrid},q)
     g=m.grid; nx=g.nx; nz=g.nz
     c=m.cache; θ=c.θ; p=c.pp; u=c.u; w=c.w; mx=c.mx; mz=c.mz
@@ -174,6 +287,8 @@ function rhs_cutcell!(out,m::FVModel{<:CutCellFVGrid},q)
         end
     end
     fill!(out,0.0)
+    third = g.advection == :third
+    third && cut_advection_third!(m,q)
     @inbounds for k in 1:nz, i in 1:nx
         V=g.Vol[i,k]
         V>0 || continue
@@ -181,6 +296,10 @@ function rhs_cutcell!(out,m::FVModel{<:CutCellFVGrid},q)
         Fxl=fx[i,k]; Fxr=fx[i+1,k]
         Fzb=fz[i,k]; Fzt=fz[i,k+1]
         out[iρ(g,i,k)]=-(Fxr-Fxl+Fzt-Fzb)/V
+        if third
+            out[iΘ(g,i,k)]=c.cc[9][i,k]
+            continue
+        end
         θl=cut_upwind(q[iU(g,i,k)],θ[il,k],θ[i,k])
         θr=cut_upwind(q[iU(g,i+1,k)],θ[i,k],θ[ir,k])
         θb=k==1 ? θ[i,k] : cut_upwind(Wface(g,q,i,k),θ[i,k-1],θ[i,k])
@@ -194,14 +313,16 @@ function rhs_cutcell!(out,m::FVModel{<:CutCellFVGrid},q)
         if g.FU[i,k]>0
             vl,vr=g.Vol[il,k],g.Vol[ir,k]
             den=vl+vr
-            adv=den>0 ? (vl*mdx[il,k]+vr*mdx[ir,k])/den : 0.0
+            adv=third ? cut_cell_to_uface(g,c.cc[5],c.cc[6],i,k) :
+                den>0 ? (vl*mdx[il,k]+vr*mdx[ir,k])/den : 0.0
             force=-(p[ir,k]-p[il,k])/g.dx
             out[iU(g,i,k)]=adv+force
         end
         if 1<k<=nz && g.FW[i,k]>0
             vb,vt=g.Vol[i,k-1],g.Vol[i,k]
             den=vb+vt
-            adv=den>0 ? (vb*mdz[i,k-1]+vt*mdz[i,k])/den : 0.0
+            adv=third ? cut_cell_to_wface(g,c.cc[7],c.cc[8],i,k) :
+                den>0 ? (vb*mdz[i,k-1]+vt*mdz[i,k])/den : 0.0
             ρpb=q[iρ(g,i,k-1)]-m.ρref[i,k-1]
             ρpt=q[iρ(g,i,k)]-m.ρref[i,k]
             force=-(p[i,k]-p[i,k-1])/g.dz-m.gas.g*0.5*(ρpb+ρpt)

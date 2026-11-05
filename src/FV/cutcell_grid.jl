@@ -35,6 +35,7 @@ struct CutCellFVGrid
     polygons::Matrix{Vector{NTuple{2,Float64}}}
     terrain::Bool
     zs::Any
+    advection::Symbol          # :third (MATLAB AdvectionCutThird) or :upwind1 (donor cell)
 end
 
 ncell(g::CutCellFVGrid) = g.nx * g.nz
@@ -132,10 +133,13 @@ Construct Cartesian cut-cell areas and apertures for fluid above `z = zs(x)`. Ho
 periodic in the FV equations; `zs` should therefore be periodic over `Lx` (or negligible at the
 domain endpoints). Geometry is computed once when the grid is built. `mask` selects the
 heuristic AMF implicit region (`:diag`, `:cut`, `:cut4`, `:cut8`; `:all` for diagnostics).
+`advection` selects `:third` (MATLAB `AdvectionCutThird`, default) or first-order `:upwind1`.
 """
 function CutCellFVGrid(nx::Int, nz::Int, Lx::Real, H::Real; x0::Real = 0.0, z0::Real = 0.0,
-                       zs = x -> 0.0, mask::Symbol = :diag)
+                       zs = x -> 0.0, mask::Symbol = :diag,
+                       advection::Symbol = :third)
     nx > 1 && nz > 1 || throw(ArgumentError("CutCellFVGrid needs nx,nz > 1"))
+    advection in (:third, :upwind1) || throw(ArgumentError("advection must be :third or :upwind1"))
     Lx > 0 && H > z0 || throw(ArgumentError("invalid cut-cell domain dimensions"))
     dx, dz = Float64(Lx) / nx, (Float64(H) - Float64(z0)) / nz
     xc = [x0 + (i - 0.5) * dx for i in 1:nx]
@@ -193,5 +197,6 @@ function CutCellFVGrid(nx::Int, nz::Int, Lx::Real, H::Real; x0::Real = 0.0, z0::
     polygons = [cut_polygon(zs, xf[i], xf[i+1], zf[k], zf[k+1]) for i in 1:nx, k in 1:nz]
     return CutCellFVGrid(nx, nz, Float64(x0), Float64(z0), Float64(Lx), Float64(H), dx, dz,
                          xc, zc, xf, zf, Zc, Zf, Zx, Zv, Vol, FU, FW, alpha, alphaU, alphaW,
-                         MaskVol, MaskU, MaskW, polygons, any(x -> !iszero(x), zs.(xc)), zs)
+                         MaskVol, MaskU, MaskW, polygons, any(x -> !iszero(x), zs.(xc)), zs,
+                         advection)
 end
