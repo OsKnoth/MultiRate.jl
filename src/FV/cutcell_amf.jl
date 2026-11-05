@@ -38,35 +38,89 @@ function cutcell_amf_operator(m::FVModel{<:CutCellFVGrid}, q; pfac=m.gas.γ, reu
     return s
 end
 
-function cutcell_amf_indices(g::CutCellFVGrid)
-    nx,nz=g.nx,g.nz
-    cellactive=falses(nx,nz)
-    for k in 1:nz, i in 1:nx
-        cellactive[i,k] = g.Vol[i,k] > 0 && (g.alpha[i,k] < 1-64eps(Float64) || g.MaskVol[i,k])
+# Simplified masked advection Jacobian (MATLAB `JacAdvecCut`, `JacCACut`): first-order upwind
+# transport of conserved cell quantities c = ρφ with face momenta and ρ frozen at qⁿ, restricted
+# to masked open faces. ρ and Θ use it directly; the momenta are split into cell parts, advected
+# with the same matrix and mapped back to the faces (`JacShiftFaceCellCut`/`JacShiftCellFaceCut`).
+# It only approximates the third-order right-hand side; the W-method order does not depend on it.
+
+@inline cut_cell(g::CutCellFVGrid, i, k) = ip(g,i) + (k - 1) * g.nx
+@inline cut_ul(g::CutCellFVGrid, f, k) = ip(g,f) + (k - 1) * g.nx      # U face f = 1..nx+1
+@inline cut_wl(g::CutCellFVGrid, i, k) = i + (k - 2) * g.nx            # W face k = 2..nz
+
+"""Cell-to-cell upwind transport matrix on masked faces, frozen at state `q`."""
+function cutcell_transport_matrix(g::CutCellFVGrid, q)
+    I = Int[]; J = Int[]; V = Float64[]
+    function add!(cl, cr, flux, cup)   # flux > 0 from cl to cr; cup upwind cell index pair
+        iu, ku = cup
+        a = flux / max(q[iρ(g,iu,ku)], eps())
+        g.Vol[cl...] > 0 && (push!(I, cut_cell(g, cl...)); push!(J, cut_cell(g, iu, ku)); push!(V, -a / g.Vol[cl...]))
+        g.Vol[cr...] > 0 && (push!(I, cut_cell(g, cr...)); push!(J, cut_cell(g, iu, ku)); push!(V,  a / g.Vol[cr...]))
     end
-    rows=BitSet(); cols=BitSet()
-    for k in 1:nz, i in 1:nx
-        cellactive[i,k] || continue
-        push!(rows,iρ(g,i,k)); push!(rows,iΘ(g,i,k))
-        # One-cell stencil closure for the frozen first-order advection Jacobian.
-        for dk in -1:1, di in -1:1
-            kk=k+dk; 1<=kk<=nz || continue
-            ii=ip(g,i+di)
-            push!(cols,iρ(g,ii,kk)); push!(cols,iΘ(g,ii,kk))
-            push!(cols,iU(g,ii,kk)); push!(cols,iU(g,ii+1,kk))
-            1<kk<=nz && push!(cols,iW(g,ii,kk))
-            1<kk+1<=nz && push!(cols,iW(g,ii,kk+1))
-        end
+    @inbounds for k in 1:g.nz, f in 1:g.nx
+        g.MaskU[f,k] && g.FU[f,k] > 0 || continue
+        U = q[iU(g,f,k)]; il = ip(g,f-1)
+        add!((il,k), (f,k), g.FU[f,k] * U, U >= 0 ? (il,k) : (f,k))
     end
-    for k in 1:nz, f in 1:nx
-        if g.MaskU[f,k] && g.FU[f,k]>0
-            push!(rows,iU(g,f,k)); push!(cols,iU(g,f,k))
-        end
+    @inbounds for k in 2:g.nz, i in 1:g.nx
+        g.MaskW[i,k] && g.FW[i,k] > 0 || continue
+        W = q[iW(g,i,k)]
+        add!((i,k-1), (i,k), g.FW[i,k] * W, W >= 0 ? (i,k-1) : (i,k))
+    end
+    nc = g.nx * g.nz
+    return sparse(I, J, V, nc, nc)
+end
+
+"""Linear maps face momenta → cell parts [left; right] and back (MATLAB shift Jacobians)."""
+function cutcell_shift_matrices(g::CutCellFVGrid)
+    nx, nz = g.nx, g.nz; nc = nx * nz; nU = nx * nz; nW = nx * (nz - 1)
+    coef(AL, AR) = AL > AR ? ((1.0, 0.0), ((AL - AR) / (AL + eps()), AR / (AL + eps()))) :
+                             ((AL / (AR + eps()), (AR - AL) / (AR + eps())), (0.0, 1.0))
+    Iu = Int[]; Ju = Int[]; Vu = Float64[]; Iw = Int[]; Jw = Int[]; Vw = Float64[]
+    push3!(I, J, V, r, c, v) = (v != 0 && (push!(I, r); push!(J, c); push!(V, v)))
+    for k in 1:nz, i in 1:nx
+        c = cut_cell(g, i, k)
+        (lL, lR), (rL, rR) = coef(g.FU[i,k], g.FU[i+1,k])      # uCL = lL UL + lR UR, uCR = rL UL + rR UR
+        push3!(Iu, Ju, Vu, c, cut_ul(g,i,k), lL);      push3!(Iu, Ju, Vu, c, cut_ul(g,i+1,k), lR)
+        push3!(Iu, Ju, Vu, nc + c, cut_ul(g,i,k), rL); push3!(Iu, Ju, Vu, nc + c, cut_ul(g,i+1,k), rR)
+        (lL, lR), (rL, rR) = coef(cut_fw(g,i,k), g.FW[i,k+1])
+        k > 1  && (push3!(Iw, Jw, Vw, c, cut_wl(g,i,k), lL);  push3!(Iw, Jw, Vw, nc + c, cut_wl(g,i,k), rL))
+        k < nz && (push3!(Iw, Jw, Vw, c, cut_wl(g,i,k+1), lR); push3!(Iw, Jw, Vw, nc + c, cut_wl(g,i,k+1), rR))
+    end
+    Sfu = sparse(Iu, Ju, Vu, 2nc, nU); Sfw = sparse(Iw, Jw, Vw, 2nc, nW)
+    Iu = Int[]; Ju = Int[]; Vu = Float64[]; Iw = Int[]; Jw = Int[]; Vw = Float64[]
+    for k in 1:nz, f in 1:nx                                   # x-face: FuCL of cell f, FuCR of f-1
+        A = g.FU[f,k]; A > 0 || continue
+        il = ip(g,f-1)
+        VR = g.Vol[f,k] * A / (A + g.FU[f+1,k] + eps()); VL = g.Vol[il,k] * A / (A + g.FU[il,k] + eps())
+        den = VL + VR + eps(); r = cut_ul(g,f,k)
+        push3!(Iu, Ju, Vu, r, cut_cell(g,f,k), VR / den); push3!(Iu, Ju, Vu, r, nc + cut_cell(g,il,k), VL / den)
     end
     for k in 2:nz, i in 1:nx
-        g.MaskW[i,k] && g.FW[i,k]>0 && push!(rows,iW(g,i,k))
+        A = g.FW[i,k]; A > 0 || continue
+        VR = g.Vol[i,k] * A / (A + g.FW[i,k+1] + eps()); VL = g.Vol[i,k-1] * A / (A + cut_fw(g,i,k-1) + eps())
+        den = VL + VR + eps(); r = cut_wl(g,i,k)
+        push3!(Iw, Jw, Vw, r, cut_cell(g,i,k), VR / den); push3!(Iw, Jw, Vw, r, nc + cut_cell(g,i,k-1), VL / den)
     end
-    return collect(rows), collect(cols)
+    return Sfu, sparse(Iu, Ju, Vu, nU, 2nc), Sfw, sparse(Iw, Jw, Vw, nW, 2nc)
+end
+
+"""Assemble the simplified masked advection Jacobian in global unknown ordering."""
+function cutcell_advection_jacobian(g::CutCellFVGrid, q, nq)
+    nc = g.nx * g.nz
+    A = cutcell_transport_matrix(g, q)
+    A2 = blockdiag(A, A)
+    Sfu, Scu, Sfw, Scw = cutcell_shift_matrices(g)
+    Auu = Scu * A2 * Sfu
+    Aww = Scw * A2 * Sfw
+    # global offsets (see iρ, iU, iW, iΘ): ρ cells, U faces, W faces, Θ cells
+    oρ, oU, oW, oΘ = 0, nc, 2nc, 2nc + g.nx * (g.nz - 1)
+    I = Int[]; J = Int[]; V = Float64[]
+    for (M, ro, co) in ((A, oρ, oρ), (A, oΘ, oΘ), (Auu, oU, oU), (Aww, oW, oW))
+        Ii, Jj, Vv = findnz(M)
+        append!(I, Ii .+ ro); append!(J, Jj .+ co); append!(V, Vv)
+    end
+    return sparse(I, J, V, nq, nq)
 end
 
 function cutcell_masked_horizontal_acoustics(s::CutCellFVAMF)
@@ -92,32 +146,10 @@ function cutcell_masked_horizontal_acoustics(s::CutCellFVAMF)
 end
 
 function build_cutcell_amf!(s::CutCellFVAMF,q)
-    m=s.model; base=s.acoustic; n=length(q)
-    rows,cols=cutcell_amf_indices(base.grid)
-    r0=similar(q); a0=similar(q); z=s.work[9]
-    rhs_cutcell!(r0,m,q)
-    fill!(z,0.0); fast_apply!(a0,base,q,z)
-    @. r0 = r0 - a0 - base.fb
-    I=Int[]; J=Int[]; V=Float64[]
-    qp=copy(q); rp=similar(q); ap=similar(q)
-    @inbounds for j in cols
-        h=cbrt(eps(Float64))*max(abs(q[j]),1.0)
-        qp[j]=q[j]+h
-        rhs_cutcell!(rp,m,qp)
-        fill!(z,0.0); fast_apply!(ap,base,qp,z)
-        for i in rows
-            value=((rp[i]-ap[i]-base.fb[i])-r0[i])/h
-            abs(value)>1e-11 && (push!(I,i); push!(J,j); push!(V,value))
-        end
-        qp[j]=q[j]
-    end
-    s.Aadv=sparse(I,J,V,n,n)
-    advvalue=s.work[8]
-    mul!(advvalue,s.Aadv,q)
-    s.advforcing.=base.fb
-    @inbounds for i in rows
-        s.advforcing[i]+=r0[i]-advvalue[i]
-    end
+    s.Aadv=cutcell_advection_jacobian(s.acoustic.grid,q,length(q))
+    # A constant fast forcing cancels in the MIS stage (it enters S = N - L q - f as well), so
+    # the acoustic forcing is sufficient.
+    s.advforcing.=s.acoustic.fb
     s.Hmask=cutcell_masked_horizontal_acoustics(s)
     return s
 end
