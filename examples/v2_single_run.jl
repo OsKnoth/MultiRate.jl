@@ -12,7 +12,7 @@
 #   mass drift ~ 4e-12 (total 7.5372e+03), ρθ drift ~ 5e-10 (total 2.2846e+06),
 #   E(T)/E(0) - 1 = -3.29e-06
 
-using HDGEulerGravity.HDGRelaxTheta
+using MultiRate.HDGRelaxTheta
 using Printf
 
 # ------------------------------------------------------------------ parameters

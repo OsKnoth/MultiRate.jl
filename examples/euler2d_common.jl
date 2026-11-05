@@ -4,13 +4,13 @@
 #
 # Loaded by euler2d_gravity_wave.jl, euler2d_gravity_wave_long.jl and euler2d_hills.jl.
 
-using HDGEulerGravity
-using HDGEulerGravity.Common
+using MultiRate
+using MultiRate.Common
 using HDF5, CairoMakie            # activate the VTKHDF and Makie package extensions
 using Printf
-const TS = HDGEulerGravity.TimeStepping
-const E2 = HDGEulerGravity.Euler2D
-const FV = HDGEulerGravity.FV2D
+const TS = MultiRate.TimeStepping
+const E2 = MultiRate.Euler2D
+const FV = MultiRate.FV2D
 
 """Default split-explicit settings per discretization: (MIS tableau, nsub, fast solver)."""
 default_scheme(disc) = (:MIS4, 12, :hevi)

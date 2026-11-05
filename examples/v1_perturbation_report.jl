@@ -5,7 +5,7 @@
 # Reference values from the Python implementation (same algorithm) are given in
 # the comments of each test; Julia should agree to ~3-4 significant digits.
 
-using HDGEulerGravity.HDGRelaxEuler
+using MultiRate.HDGRelaxEuler
 using LinearAlgebra, Printf
 
 fmt(v) = join([@sprintf("%.3e", x) for x in v], "  ")

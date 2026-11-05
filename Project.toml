@@ -1,4 +1,4 @@
-name = "HDGEulerGravity"
+name = "MultiRate"
 uuid = "6618ee61-23c6-49fa-af9e-3e7fc963e7f5"
 version = "0.1.0"
 authors = ["Oswald Knoth <oswald.knoth@gmail.com>"]
@@ -14,8 +14,8 @@ SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
 Makie = "ee78f7c6-11fb-53f2-987a-cfe4a2b5a57a"
 
 [extensions]
-HDGEulerGravityHDF5Ext = "HDF5"
-HDGEulerGravityMakieExt = "Makie"
+MultiRateHDF5Ext = "HDF5"
+MultiRateMakieExt = "Makie"
 
 [compat]
 CairoMakie = "0.15.16"

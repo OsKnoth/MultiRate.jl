@@ -1,10 +1,10 @@
 # Short warm-bubble smoke check for the DGSEM/HDG and finite-volume MIS paths.
-using HDGEulerGravity
+using MultiRate
 
-const TS = HDGEulerGravity.TimeStepping
-const E2 = HDGEulerGravity.Euler2D
-const FV = HDGEulerGravity.FV2D
-const CM = HDGEulerGravity.Common
+const TS = MultiRate.TimeStepping
+const E2 = MultiRate.Euler2D
+const FV = MultiRate.FV2D
+const CM = MultiRate.Common
 
 gas = CM.Gas()
 ρr, Θr, θr = E2.stratified_reference(gas; θ0 = 300.0, N = 0.01)

@@ -1,10 +1,10 @@
 """
-    HDGEulerGravity
+    MultiRate
 
 Split-explicit time integration of the compressible Euler equations with gravity in
 potential-temperature form, with two spatial discretizations sharing the time steppers.
 
-Submodules (load with e.g. `using HDGEulerGravity.Euler2D`):
+Submodules (load with e.g. `using MultiRate.Euler2D`):
   Common              gas, pressure, reference atmospheres
   TimeStepping        MIS / WS-RK3 split-explicit stepper, fast integrators (:imex, :hevi,
                       :verlet, :fb, :wrf), RK4 reference; interface for the discretizations
@@ -17,7 +17,7 @@ Submodules (load with e.g. `using HDGEulerGravity.Euler2D`):
   Legacy:
     HDGRelaxEuler     v1: modal DG, linearized perturbation equations
 """
-module HDGEulerGravity
+module MultiRate
 
 include("Common/Common.jl")
 include("TimeStepping/TimeStepping.jl")

@@ -4,14 +4,14 @@ drawn as a triangle mesh with per-vertex colours, so curved terrain-following el
 polynomial solution inside each element are shown without an intermediate regular grid.
 Works with any Makie backend (CairoMakie for files, GLMakie for screens).
 """
-module HDGEulerGravityMakieExt
+module MultiRateMakieExt
 
 using Makie
-using HDGEulerGravity.Common: output_fields
-using HDGEulerGravity.Euler2D: Euler2DModel
-using HDGEulerGravity.FV2D: FVModel, CutCellFVGrid
-using HDGEulerGravity.HDGRelaxTheta: lagrange_basis
-import HDGEulerGravity.Common: plot_fields
+using MultiRate.Common: output_fields
+using MultiRate.Euler2D: Euler2DModel
+using MultiRate.FV2D: FVModel, CutCellFVGrid
+using MultiRate.HDGRelaxTheta: lagrange_basis
+import MultiRate.Common: plot_fields
 
 const DIVERGING = ("u_prime", "w", "rho_prime", "theta_prime", "p_prime")
 

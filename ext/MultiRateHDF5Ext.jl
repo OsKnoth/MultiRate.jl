@@ -8,14 +8,14 @@ VTK_LAGRANGE_QUADRILATERAL of order p with the DG polynomial resampled to equisp
 (exact), so ParaView sees the high-order solution and the curved terrain-following elements.
 Points are (x, z, 0). FV2D: one VTK_QUAD per cell with cell data.
 """
-module HDGEulerGravityHDF5Ext
+module MultiRateHDF5Ext
 
 using HDF5
-using HDGEulerGravity.Common: output_fields
-using HDGEulerGravity.Euler2D: Euler2DModel
-using HDGEulerGravity.FV2D: FVModel, CutCellFVGrid
-using HDGEulerGravity.HDGRelaxTheta: lagrange_basis
-import HDGEulerGravity.Common: open_vtkhdf, write_vtkhdf!
+using MultiRate.Common: output_fields
+using MultiRate.Euler2D: Euler2DModel
+using MultiRate.FV2D: FVModel, CutCellFVGrid
+using MultiRate.HDGRelaxTheta: lagrange_basis
+import MultiRate.Common: open_vtkhdf, write_vtkhdf!
 
 const VTK_LAGRANGE_QUADRILATERAL = UInt8(70)
 const VTK_QUAD = UInt8(9)

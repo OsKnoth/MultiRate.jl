@@ -5,7 +5,7 @@
 #
 # Writes mis_convergence.csv, mis_stability_function.csv, mis_long_run.csv.
 
-using HDGEulerGravity.SplitExplicitEuler, LinearAlgebra, Printf
+using MultiRate.SplitExplicitEuler, LinearAlgebra, Printf
 
 const ATM = Atmosphere(T0 = 288.0, Γ = 0.0065)
 const TABLES = (:WSRK3, :MIS2, :MIS4, :MIS4a)

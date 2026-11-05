@@ -1,11 +1,11 @@
 # Short terrain-following and cut-cell Agnesi smoke checks, including DGSEM/HDG and FV/HEVI.
-using HDGEulerGravity
+using MultiRate
 using LinearAlgebra
 
-const TS = HDGEulerGravity.TimeStepping
-const E2 = HDGEulerGravity.Euler2D
-const FV = HDGEulerGravity.FV2D
-const CM = HDGEulerGravity.Common
+const TS = MultiRate.TimeStepping
+const E2 = MultiRate.Euler2D
+const FV = MultiRate.FV2D
+const CM = MultiRate.Common
 
 gas = CM.Gas()
 ρr, Θr, _ = E2.stratified_reference(gas; θ0 = 300.0, N = 0.01)

@@ -2,16 +2,16 @@
 #
 #     julia --project -e 'using Pkg; Pkg.test()'
 
-using HDGEulerGravity
+using MultiRate
 using LinearAlgebra, Random, Test
 
-const V1 = HDGEulerGravity.HDGRelaxEuler
-const V2 = HDGEulerGravity.HDGRelaxTheta
-const V3 = HDGEulerGravity.SplitExplicitEuler
-const E2 = HDGEulerGravity.Euler2D
-const FV = HDGEulerGravity.FV2D
-const TS = HDGEulerGravity.TimeStepping
-const CM = HDGEulerGravity.Common
+const V1 = MultiRate.HDGRelaxEuler
+const V2 = MultiRate.HDGRelaxTheta
+const V3 = MultiRate.SplitExplicitEuler
+const E2 = MultiRate.Euler2D
+const FV = MultiRate.FV2D
+const TS = MultiRate.TimeStepping
+const CM = MultiRate.Common
 
 rate(e1, e2) = log2(e1 / e2)
 
@@ -29,7 +29,7 @@ function jacobian_max_re(f, q0)
     return maximum(real.(eigvals(J)))
 end
 
-@testset "HDGEulerGravity" begin
+@testset "MultiRate" begin
 
 @testset "v1 HDGRelaxEuler: periodic normal mode" begin
     atm = V1.Atmosphere(T0 = 250.0, Γ = 0.0)

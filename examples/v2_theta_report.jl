@@ -3,7 +3,7 @@
 # Time integration: explicit IMEX (DIRK was removed); Python reference values in the comments
 # were obtained with DIRK and are kept for orientation.
 
-using HDGEulerGravity.HDGRelaxTheta
+using MultiRate.HDGRelaxTheta
 using LinearAlgebra, Printf, Random
 
 fmt(v) = join([@sprintf("%.3e", x) for x in v], "  ")
