@@ -38,7 +38,35 @@ mutable struct HDGFast2D <: AbstractFastOperator
     ψ::Matrix{Float64}
     Iint::Matrix{Float64}
     dssbuf::Vector{Float64}
+    # split-consistent linearization of N (see `DG_SPLIT_FAST`): frozen density and the
+    # two-point means of the split form along η-lines [j,k,i,e] and ξ-lines [i,k,j,e]
+    split::Bool
+    ρ0::Array{Float64,3}
+    Mv1::Array{Float64,4}; Mv4::Array{Float64,4}; Gv1::Array{Float64,4}; Gv2::Array{Float64,4}
+    Mh1::Array{Float64,4}; Mh4::Array{Float64,4}; Gh1::Array{Float64,4}; Gh2::Array{Float64,4}
+    splitok::Bool                   # fast solver uses fast_kernel!/column solver only (:hevi, :hevi_verlet, :hevi_relax)
+    vadv::Bool                      # vertical momentum transport by the fast velocity (DG_VADV_FAST)
+    u0::Array{Float64,3}
+    w0::Array{Float64,3}
 end
+
+"""
+Include in the vertical fast part the transport of momentum by the fast vertical mass flux,
+m_t ∋ -∂_η(ρ̄ w'·v̄) (linearized split form, frozen velocity v̄; SAT accordingly). Without it
+this term sits in the explicit slow part and couples the slow step to the vertical acoustics
+with Δt·|v̄|·∂_z (DG Agnesi a100 instability). Needs `DG_SPLIT_FAST`; both apply to the
+fast solvers :hevi, :hevi_verlet and :hevi_relax only.
+"""
+const DG_VADV_FAST = Ref(true)
+
+"""
+Build the fast operator as the linearization of the split-form N (two-point means of mass,
+Θ and gravity, frozen at qⁿ) instead of pointwise products. The two differ in the highest
+polynomial mode of each element, which leaves a purely imaginary mode ≈ 0.02 (p+1) s⁻¹ in the
+explicitly treated slow part N - L. The vertical part uses the nodal metric Ja^η_j, so the
+column solver still sees the momentum only through U = Ja^η·m.
+"""
+const DG_SPLIT_FAST = Ref(true)
 
 function HDGFast2D(m::Euler2DModel; tau_scale = 1.0)
     M = m.mesh
@@ -66,7 +94,8 @@ function HDGFast2D(m::Euler2DModel; tau_scale = 1.0)
                      gZξ, gZη, false, Dict{Float64,Any}(),
                      zeros(np, Ne), zeros(np, M.Nex * (M.Nez + 1)), 0.0,
                      [zeros(nq) for _ in 1:7], zeros(np, np), zeros(np, np), zeros(np, np), Iint,
-                     zeros(length(M.mult)))
+                     zeros(length(M.mult)),
+                     false, arr(), (zeros(np, np, np, Ne) for _ in 1:8)..., false, false, arr(), arr())
 end
 
 """
@@ -85,6 +114,8 @@ function fast_operator(m::Euler2DModel, q; pfac = m.gas.γ, eps = 0.0, eps_if = 
     s.tau = Float64(tau_scale)
     s.eps_if = Float64(eps_if)
     s.hevi |= fast in (:hevi, :hevi_relax, :hevi_verlet)
+    # fb, verlet and imex integrate their own pointwise kernels; N - L must use the same L
+    s.splitok = fast in (:hevi, :hevi_verlet, :hevi_relax)
     refreeze!(s, m, q, pfac)
     reuse && (m.fastref[] = s)
     return s
@@ -149,8 +180,38 @@ function refreeze!(s::HDGFast2D, m::Euler2DModel, q, pfac)
         s.fb[node_iq(np, e, 2, i, j)] = -W * (M.Jξx[i, j, e] * dξb + M.Jηx[i, j, e] * dηb)
         s.fb[node_iq(np, e, 3, i, j)] = -W * (M.Jξz[i, j, e] * dξb + M.Jηz[i, j, e] * dηb)
     end
+    s.split = DG_SPLIT_FAST[] && s.splitok
+    s.split && refreeze_split!(s, m, q)
+    s.vadv = s.split && DG_VADV_FAST[]
     for (c, F) in s.lucache
         factor_hevi!(F, s, c)
+    end
+    return s
+end
+
+"""Two-point means of the split form at the frozen state (unit normal velocity) and the
+derivatives of the gravity density mean."""
+function refreeze_split!(s::HDGFast2D, m, q)
+    M = m.mesh
+    np, γ, vf, gf = M.np, m.gas.γ, m.vflux, m.gflux
+    gd(ρa, ρb) = begin
+        h = 1e-6 * ρa
+        (gravity_mean(gf, ρa + h, ρb, γ) - gravity_mean(gf, ρa - h, ρb, γ)) / 2h
+    end
+    @inbounds for e in 1:M.Ne, j in 1:np, i in 1:np
+        s.ρ0[i, j, e] = q[node_iq(np, e, 1, i, j)]
+        s.u0[i, j, e] = q[node_iq(np, e, 2, i, j)] / s.ρ0[i, j, e]
+        s.w0[i, j, e] = q[node_iq(np, e, 3, i, j)] / s.ρ0[i, j, e]
+    end
+    @inbounds for e in 1:M.Ne, i in 1:np, j in 1:np, k in 1:np
+        ρa, Θa = q[node_iq(np, e, 1, i, j)], q[node_iq(np, e, 4, i, j)]
+        ρb, Θb = q[node_iq(np, e, 1, i, k)], q[node_iq(np, e, 4, i, k)]       # η-line pair (j, k)
+        s.Mv1[j, k, i, e], s.Mv4[j, k, i, e] = mass_theta_flux(vf, ρa, Θa, ρb, Θb, 1.0, γ)
+        s.Gv1[j, k, i, e], s.Gv2[j, k, i, e] = gd(ρa, ρb), gd(ρb, ρa)
+        ρa, Θa = q[node_iq(np, e, 1, j, i)], q[node_iq(np, e, 4, j, i)]
+        ρb, Θb = q[node_iq(np, e, 1, k, i)], q[node_iq(np, e, 4, k, i)]       # ξ-line pair (j, k) at row i
+        s.Mh1[j, k, i, e], s.Mh4[j, k, i, e] = mass_theta_flux(vf, ρa, Θa, ρb, Θb, 1.0, γ)
+        s.Gh1[j, k, i, e], s.Gh2[j, k, i, e] = gd(ρa, ρb), gd(ρb, ρa)
     end
     return s
 end
@@ -177,7 +238,7 @@ end
 end
 
 """SAT contribution of an interior face node pair L (outward ñ) / R, traces = averages."""
-@inline function sat_face!(out, s, q, iL, jL, eL, iR, jR, eR, nx, nz, we)
+@inline function sat_face!(out, s, q, iL, jL, eL, iR, jR, eR, nx, nz, we, adv::Bool = false)
     np = s.mesh.np
     @inbounds begin
         d2 = 0.5 * (q[node_iq(np, eL, 2, iL, jL)] - q[node_iq(np, eR, 2, iR, jR)])
@@ -187,12 +248,17 @@ end
         # L: (A_ñ - T) d;  R: (A_{-ñ} - T)(-d) = (A_ñ + T) d
         add4!(out, np, eL, iL, jL, we, Ad[1] - Td[1], Ad[2] - Td[2], Ad[3] - Td[3], Ad[4] - Td[4])
         add4!(out, np, eR, iR, jR, we, Ad[1] + Td[1], Ad[2] + Td[2], Ad[3] + Td[3], Ad[4] + Td[4])
+        if adv
+            cL, cR = Ad[1] - Td[1], Ad[1] + Td[1]
+            add4!(out, np, eL, iL, jL, we, 0.0, cL * s.u0[iL, jL, eL], cL * s.w0[iL, jL, eL], 0.0)
+            add4!(out, np, eR, iR, jR, we, 0.0, cR * s.u0[iR, jR, eR], cR * s.w0[iR, jR, eR], 0.0)
+        end
     end
     return nothing
 end
 
 """SAT at a wall node: q - q̂ = (0, n̂ (n̂·m), 0)."""
-@inline function sat_wall!(out, s, q, i, j, e, nx, nz, we)
+@inline function sat_wall!(out, s, q, i, j, e, nx, nz, we, adv::Bool = false)
     np = s.mesh.np
     @inbounds begin
         h = hypot(nx, nz)
@@ -200,6 +266,10 @@ end
         mn = n1 * q[node_iq(np, e, 2, i, j)] + n2 * q[node_iq(np, e, 3, i, j)]
         Ad, Td = sat_parts(s.a[i, j, e], s.θ[i, j, e], nx, nz, n1 * mn, n2 * mn, 0.0, s.tau)
         add4!(out, np, e, i, j, we, Ad[1] - Td[1], Ad[2] - Td[2], Ad[3] - Td[3], Ad[4] - Td[4])
+        if adv
+            cL = Ad[1] - Td[1]
+            add4!(out, np, e, i, j, we, 0.0, cL * s.u0[i, j, e], cL * s.w0[i, j, e], 0.0)
+        end
     end
     return nothing
 end
@@ -230,7 +300,24 @@ function fast_kernel!(out, s::HDGFast2D, q, f, ::Val{HP}, ::Val{VP}) where {HP,V
             aΘθ = s.a[i, j, e] * Θ / θ
             iφ = 1 / s.φ[i, j, e]
             r1 = r2 = r3 = r4 = 0.0
-            if HP
+            if HP && s.split
+                d1 = d4 = pg = gg = 0.0
+                for k in 1:np
+                    ax = 0.5 * (M.Jξx[i, j, e] + M.Jξx[k, j, e])
+                    az = 0.5 * (M.Jξz[i, j, e] + M.Jξz[k, j, e])
+                    vn = ax * (mx / s.ρ0[i, j, e] + q[node_iq(np, e, 2, k, j)] / s.ρ0[k, j, e]) +
+                         az * (mz / s.ρ0[i, j, e] + q[node_iq(np, e, 3, k, j)] / s.ρ0[k, j, e])
+                    d1 += D[i, k] * s.Mh1[i, k, j, e] * vn
+                    d4 += D[i, k] * s.Mh4[i, k, j, e] * vn
+                    dp = s.a[i, j, e] * Θ + s.a[k, j, e] * q[node_iq(np, e, 4, k, j)]
+                    gr = g * (M.Z[k, j, e] - M.Z[i, j, e]) *
+                         (s.Gh1[i, k, j, e] * ρ + s.Gh2[i, k, j, e] * q[node_iq(np, e, 1, k, j)])
+                    r2 -= D[i, k] * ax * (dp + gr)
+                    r3 -= D[i, k] * az * (dp + gr)
+                end
+                r1 -= d1
+                r4 -= d4
+            elseif HP
                 div = dψ = 0.0
                 for k in 1:np
                     div += D[i, k] * Fξ[k, j]
@@ -245,7 +332,27 @@ function fast_kernel!(out, s::HDGFast2D, q, f, ::Val{HP}, ::Val{VP}) where {HP,V
                 r2 += bξ * M.Jξx[i, j, e]
                 r3 += bξ * M.Jξz[i, j, e]
             end
-            if VP
+            if VP && s.split
+                d1 = d4 = pg = 0.0
+                Uj = Fη[i, j] / s.ρ0[i, j, e]
+                for k in 1:np
+                    vn = Uj + Fη[i, k] / s.ρ0[i, k, e]
+                    t1 = D[j, k] * s.Mv1[j, k, i, e] * vn
+                    d1 += t1
+                    if s.vadv
+                        r2 -= t1 * 0.5 * (s.u0[i, j, e] + s.u0[i, k, e])
+                        r3 -= t1 * 0.5 * (s.w0[i, j, e] + s.w0[i, k, e])
+                    end
+                    d4 += D[j, k] * s.Mv4[j, k, i, e] * vn
+                    pg += D[j, k] * (s.a[i, k, e] * q[node_iq(np, e, 4, i, k)] +
+                                     g * (M.Z[i, k, e] - M.Z[i, j, e]) *
+                                     (s.Gv1[j, k, i, e] * ρ + s.Gv2[j, k, i, e] * q[node_iq(np, e, 1, i, k)]))
+                end
+                r1 -= d1
+                r4 -= d4
+                r2 -= M.Jηx[i, j, e] * pg
+                r3 -= M.Jηz[i, j, e] * pg
+            elseif VP
                 div = dψ = 0.0
                 for k in 1:np
                     div += D[j, k] * Fη[i, k]
@@ -278,11 +385,11 @@ function fast_kernel!(out, s::HDGFast2D, q, f, ::Val{HP}, ::Val{VP}) where {HP,V
         if VP
             for i in 1:np
                 if ez < M.Nez
-                    sat_face!(out, s, q, i, np, e, i, 1, elem(M, ex, ez + 1), M.Jηx[i, np, e], M.Jηz[i, np, e], w[i])
+                    sat_face!(out, s, q, i, np, e, i, 1, elem(M, ex, ez + 1), M.Jηx[i, np, e], M.Jηz[i, np, e], w[i], s.vadv)
                 else
-                    sat_wall!(out, s, q, i, np, e, M.Jηx[i, np, e], M.Jηz[i, np, e], w[i])
+                    sat_wall!(out, s, q, i, np, e, M.Jηx[i, np, e], M.Jηz[i, np, e], w[i], s.vadv)
                 end
-                ez == 1 && sat_wall!(out, s, q, i, 1, e, -M.Jηx[i, 1, e], -M.Jηz[i, 1, e], w[i])
+                ez == 1 && sat_wall!(out, s, q, i, 1, e, -M.Jηx[i, 1, e], -M.Jηz[i, 1, e], w[i], s.vadv)
             end
         end
     end

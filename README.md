@@ -122,6 +122,14 @@ files are ignored by git.
     100 s for a10.
   - The AMF fast-step CFL is 0.65 of the regular-grid limit, because of the explicit horizontal
     acoustics inside the W-method.
+- **DGSEM with `hevi_verlet`** (horizontal Störmer–Verlet around a vertical Crank–Nicolson column
+  solve) runs all three Agnesi hills at the regular horizontal acoustic step (a100: dτ = 26 s,
+  Δt = 313 s), about 16× fewer steps than `hevi`. This needs an `L` that matches `N`:
+  - the vertical and horizontal fast parts are the linearization of the split-form `N` (two-point
+    means), not pointwise products; otherwise `N − L` keeps an imaginary mode ≈ 0.02 (p+1) s⁻¹;
+  - the vertical transport of momentum by the fast vertical mass flux, −∂(ρ̄w′ v̄)/∂z, is part of
+    the implicit vertical `L`. Left in the explicit slow part, it couples the large step to the
+    vertical acoustics with Δt |v̄| ∂z and makes a100 unstable.
 - **Planned fast solver:** a linear IMEX fast solver as in the MATLAB reference
   (`SplitExplicitLin`/`LinIMEX_RK`). It is explicit in `L_E` and implicit in `L_I`, with one sparse
   LU of `I − γΔτ L_I`. It would replace the product of approximate factors and allow a choice of

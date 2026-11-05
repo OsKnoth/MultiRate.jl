@@ -24,6 +24,9 @@ mutable struct HeviFactor
     y::Matrix{Float64}         # work: A⁻¹ r per block (3np, nblk)
     dp::Vector{Float64}
     Mh::Vector{Float64}  # work (Nez-1)
+    c::Float64           # dt γ of the factor
+    ys::Vector{Float64}  # momentum back substitution with DG_VADV_FAST (copy of Ys, M⁻¹A_v Y)
+    av::Vector{Float64}
 end
 
 @inline hevi_ncol(M::Mesh2D) = M.Nex * M.np
@@ -43,6 +46,7 @@ function factor_hevi!(F::HeviFactor, s::HDGFast2D, c)
     abs(s.tau - 1) < 1e-14 || error("the HEVI column solver needs tau_scale = 1 (LMARS)")
     M = s.mesh
     np, D, w, Nez = M.np, M.D, M.wg, M.Nez
+    g = s.gas.g
     dtg = c
     n3 = 3np
     for ex in 1:M.Nex, i in 1:np
@@ -71,14 +75,35 @@ function factor_hevi!(F::HeviFactor, s::HDGFast2D, c)
                 A[Uj, Uj] = 1.0
                 cρ = dtg / Jn
                 cu = dtg * Ja2 / Jn
-                for k in 1:np
-                    A[ρj, 2np + k] += cρ * D[j, k]
-                    A[Θj, 2np + k] += cρ * θ * D[j, k]
-                    A[Uj, np + k] += cu * D[j, k] * s.φa[i, k, e] / φ
+                if s.split
+                    # linearized split form: ρ, Θ ← Σ_k D_jk M_jk (U_j/ρ_j + U_k/ρ_k);
+                    # U ← |Ja|² Σ_k D_jk (a_k Θ_k + g (z_k - z_j)(G1_jk ρ_j + G2_jk ρ_k))
+                    for k in 1:np
+                        A[ρj, 2np + k] += cρ * D[j, k] * s.Mv1[j, k, i, e] / s.ρ0[i, k, e]
+                        A[Θj, 2np + k] += cρ * D[j, k] * s.Mv4[j, k, i, e] / s.ρ0[i, k, e]
+                        A[ρj, Uj] += cρ * D[j, k] * s.Mv1[j, k, i, e] / s.ρ0[i, j, e]
+                        A[Θj, Uj] += cρ * D[j, k] * s.Mv4[j, k, i, e] / s.ρ0[i, j, e]
+                        A[Uj, np + k] += cu * D[j, k] * s.a[i, k, e]
+                        gdz = g * (M.Z[i, k, e] - M.Z[i, j, e])
+                        A[Uj, ρj] += cu * D[j, k] * gdz * s.Gv1[j, k, i, e]
+                        A[Uj, k] += cu * D[j, k] * gdz * s.Gv2[j, k, i, e]
+                        if s.vadv     # U ← Ja_j·v̄_jk Σ_k D_jk M_jk (U_j/ρ_j + U_k/ρ_k)
+                            vj = M.Jηx[i, j, e] * 0.5 * (s.u0[i, j, e] + s.u0[i, k, e]) +
+                                 M.Jηz[i, j, e] * 0.5 * (s.w0[i, j, e] + s.w0[i, k, e])
+                            A[Uj, 2np + k] += cρ * D[j, k] * s.Mv1[j, k, i, e] * vj / s.ρ0[i, k, e]
+                            A[Uj, Uj] += cρ * D[j, k] * s.Mv1[j, k, i, e] * vj / s.ρ0[i, j, e]
+                        end
+                    end
+                else
+                    for k in 1:np
+                        A[ρj, 2np + k] += cρ * D[j, k]
+                        A[Θj, 2np + k] += cρ * θ * D[j, k]
+                        A[Uj, np + k] += cu * D[j, k] * s.φa[i, k, e] / φ
+                    end
+                    A[Θj, Uj] += cρ * dηθ
+                    A[Uj, Θj] -= cu * (a * dηθ / θ + s.gZη[i, j, e] / θ)
+                    A[Uj, ρj] += cu * s.gZη[i, j, e]
                 end
-                A[Θj, Uj] += cρ * dηθ
-                A[Uj, Θj] -= cu * (a * dηθ / θ + s.gZη[i, j, e] / θ)
-                A[Uj, ρj] += cu * s.gZη[i, j, e]
                 # SAT at the top (j = np) and bottom (j = 1) node
                 if j == np || j == 1
                     κ = sqrt(a * θ) / sqrt(Ja2)
@@ -92,6 +117,11 @@ function factor_hevi!(F::HeviFactor, s::HDGFast2D, c)
                     B[ρj] += fρ * sw
                     B[Θj] += fρ * θ * sw
                     B[Uj] -= fu
+                    if s.vadv                                   # advective momentum SAT: v̄_b × mass SAT
+                        vb = M.Jηx[i, j, e] * s.u0[i, j, e] + M.Jηz[i, j, e] * s.w0[i, j, e]
+                        A[Uj, Uj] -= fρ * sw * vb
+                        B[Uj] += fρ * sw * vb
+                    end
                     if (j == 1 && ez == 1) || (j == np && ez == Nez)
                         B[ρj] = 0.0
                         B[Θj] = 0.0
@@ -162,7 +192,7 @@ function hevi_factor(s::HDGFast2D, c)
         nf = max(M.Nez - 1, 1)
         F = HeviFactor(zeros(n3, n3, nblk), zeros(M.np, M.np, nblk), zeros(Int, M.np, nblk), zeros(n3, nblk), zeros(n3, nblk),
                        zeros(nf, hevi_ncol(M)), zeros(nf, hevi_ncol(M)), zeros(nf, hevi_ncol(M)),
-                       zeros(n3, nblk), zeros(nf), zeros(nf))
+                       zeros(n3, nblk), zeros(nf), zeros(nf), Float64(c), zeros(s.nq), zeros(s.nq))
         factor_hevi!(F, s, c)
     end
 end
@@ -171,6 +201,7 @@ end
 function hevi_solve!(Y, s::HDGFast2D, F::HeviFactor, Ys)
     M = s.mesh
     np, Nez = M.np, M.Nez
+    s.vadv && copyto!(F.ys, Ys)
     @inbounds for ex in 1:M.Nex, i in 1:np
         c = (ex - 1) * np + i
         for ez in 1:Nez
@@ -228,6 +259,15 @@ function hevi_solve!(Y, s::HDGFast2D, F::HeviFactor, Ys)
                 Y[node_iq(np, e, 2, i, j)] = mx + jx * σ
                 Y[node_iq(np, e, 3, i, j)] = mz + jz * σ
             end
+        end
+    end
+    if s.vadv
+        # the momentum change is no longer along Ja^η: m = m_s + c (M⁻¹A_v Y)_m, where A_v reads
+        # the momentum only through the solved U
+        vertical_apply!(F.av, s, Y)
+        @inbounds for e in 1:M.Ne, j in 1:np, i in 1:np, r in 2:3
+            k = node_iq(np, e, r, i, j)
+            Y[k] = F.ys[k] + F.c * F.av[k]
         end
     end
     return Y
