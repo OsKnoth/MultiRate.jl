@@ -118,7 +118,9 @@ end
 function fast_step(model::FV.FVModel{<:FV.CutCellFVGrid}, q, fast; cfl = nothing, safety = 0.85)
     fast in (:hevi, :verlet, :fb, :rosenbrock_amf) || error("FV cut-cell: use :hevi, :verlet, :fb or :rosenbrock_amf")
     g = model.grid
-    cfl === nothing && (cfl = safety * (fast in (:hevi, :rosenbrock_amf) ? 0.92 : 0.70))
+    # Rosenbrock-W AMF: the explicit horizontal acoustics inside the W-method grow beyond
+    # ≈ 0.75 of the regular-grid limit (linear analysis; a1 hill fails at 0.92, runs at 0.65).
+    cfl === nothing && (cfl = safety * (fast == :hevi ? 0.92 : fast == :rosenbrock_amf ? 0.65 : 0.70))
     if fast == :rosenbrock_amf
         # Vertical acoustics and masked cut-cell terms are implicit; the remaining horizontal
         # acoustic modes are limited by the regular Cartesian spacing.
