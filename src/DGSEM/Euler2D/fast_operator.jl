@@ -84,7 +84,7 @@ function fast_operator(m::Euler2DModel, q; pfac = m.gas.γ, eps = 0.0, eps_if = 
     s = reuse && m.fastref[] isa HDGFast2D ? m.fastref[]::HDGFast2D : HDGFast2D(m; tau_scale = tau_scale)
     s.tau = Float64(tau_scale)
     s.eps_if = Float64(eps_if)
-    s.hevi |= fast in (:hevi, :hevi_relax)
+    s.hevi |= fast in (:hevi, :hevi_relax, :hevi_verlet)
     refreeze!(s, m, q, pfac)
     reuse && (m.fastref[] = s)
     return s

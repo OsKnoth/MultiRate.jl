@@ -32,7 +32,7 @@ FAST = length(ARGS) > 2 ? Symbol(ARGS[3]) : fast_default
 NSUB = parse(Int, get(ENV, "NSUB", string(nsub_default)))
 eps_if = parse(Float64, get(ENV, "EPS_IF", "0"))
 if disc == :dg
-    FAST in (:hevi, :hevi_relax, :fb, :verlet) || error("DG hill fast method must be hevi, hevi_relax, fb or verlet")
+    FAST in (:hevi, :hevi_verlet, :hevi_relax, :fb, :verlet) || error("DG hill fast method must be hevi, hevi_verlet, hevi_relax, fb or verlet")
 elseif disc == :fvc
     FAST in (:hevi, :fb, :verlet, :rosenbrock_amf) || error("cut-cell FV hill fast method must be hevi, fb, verlet or rosenbrock_amf")
 else

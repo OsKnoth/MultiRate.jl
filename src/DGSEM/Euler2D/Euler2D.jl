@@ -56,7 +56,8 @@ import ..Common: project2d, total2d, output_fields, field_section, sound_speed_m
 using ..Common: open_vtkhdf, write_vtkhdf!, plot_fields
 using ..TimeStepping: AbstractFastOperator, rhs_nonlinear, IMEX_GM
 import ..TimeStepping: rhs_nonlinear!, fast_operator, fast_apply!, fast_rhs_thermo!, fast_rhs_momentum!,
-                       interface_update!, fast_rhs_horizontal!, fast_rhs_horizontal_relaxed!, vertical_apply!, vertical_factor, vertical_solve!
+                       interface_update!, fast_rhs_horizontal!, fast_rhs_horizontal_relaxed!, vertical_apply!, vertical_factor, vertical_solve!,
+                       fast_rhs_hthermo!, fast_rhs_hmomentum!
 using ..HDGRelaxTheta: gll, lagrange_basis, gauss_legendre
 import ..HDGRelaxTheta: initial_state, tendency
 using ..SplitExplicitEuler: mass_theta_flux, gravity_mean

@@ -93,15 +93,20 @@ Crank–Nicolson, with c dτ/Δx ≤ 0.92. The generic IMEX RK2 fast update is u
 const CFL_LIMITS = Dict(2 => (1.07, 1.05, 0.77, 0.98), 3 => (0.24, 0.79, 0.56, 0.28),
                         4 => (0.088, 0.63, 0.44, 0.075), 5 => (0.050, 0.52, 0.36, 0.060))
 
+# :hevi_verlet (horizontal Störmer–Verlet around vertical Crank–Nicolson): neutral to round-off up
+# to 1.3 and unstable at 1.5 in the linear analysis for p = 4; other degrees are unmeasured.
+const CFL_HEVI_VERLET = Dict(4 => 1.2)
+
 """Acoustic substep of the fast integrator (safety × stability limit, table above)."""
 function fast_step(model::E2.Euler2DModel, q, fast; cfl = nothing, safety = 0.85)
     M = model.mesh
     if cfl === nothing
         lim = get(CFL_LIMITS, M.p, (0.05, 3.15 / (M.p + 1), 2.2 / (M.p + 1), 0.05))
-        cfl = safety * (fast == :verlet ? lim[2] : fast == :fb ? lim[3] : fast in (:hevi, :hevi_relax) ? lim[4] : lim[1])
+        cfl = safety * (fast == :verlet ? lim[2] : fast == :fb ? lim[3] : fast in (:hevi, :hevi_relax) ? lim[4] :
+                        fast == :hevi_verlet ? get(CFL_HEVI_VERLET, M.p, 1.0) : lim[1])
     end
     hz = minimum(M.Z[:, end, :] .- M.Z[:, 1, :])
-    h = fast in (:hevi, :hevi_relax) ? M.Lx / M.Nex : min(M.Lx / M.Nex, hz)
+    h = fast in (:hevi, :hevi_relax, :hevi_verlet) ? M.Lx / M.Nex : min(M.Lx / M.Nex, hz)
     return cfl * h / ((2M.p + 1) * sound_speed_max(model, q))
 end
 

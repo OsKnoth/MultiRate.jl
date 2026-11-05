@@ -238,6 +238,33 @@ fast_rhs_horizontal!(out, s::HDGFast2D, q, f) = fast_kernel!(out, s, q, f, Val(t
 vertical_factor(s::HDGFast2D, c) = hevi_factor(s, c)
 vertical_solve!(Y, s::HDGFast2D, F::HeviFactor, Ys) = hevi_solve!(Y, s, F, Ys)
 
+# interface of TimeStepping (:hevi_verlet): Strang composition of a horizontal Störmer–Verlet half
+# step (ρ, Θ | momentum | ρ, Θ), vertical Crank–Nicolson and a second horizontal half step. The
+# horizontal operator is split by rows; each group carries its share of the forcing, so f enters
+# exactly once per substep. Dissipative LMARS self-coupling within a group is explicit.
+"""Zero the rows `keep = false` of a DG state vector (rows 1 ρ, 2 mx, 3 mz, 4 Θ)."""
+function dg_zero_rows!(out, M::Mesh2D, keep::NTuple{4,Bool})
+    n2 = M.np^2
+    @inbounds for e in 1:M.Ne, r in 1:NV
+        keep[r] && continue
+        o = ((e - 1) * NV + (r - 1)) * n2
+        for k in 1:n2
+            out[o + k] = 0.0
+        end
+    end
+    return out
+end
+
+function fast_rhs_hthermo!(out, s::HDGFast2D, q, f)
+    fast_kernel!(out, s, q, f, Val(true), Val(false))
+    return dg_zero_rows!(out, s.mesh, (true, false, false, true))
+end
+
+function fast_rhs_hmomentum!(out, s::HDGFast2D, q, f)
+    fast_kernel!(out, s, q, f, Val(true), Val(false))
+    return dg_zero_rows!(out, s.mesh, (false, true, true, false))
+end
+
 """out = M⁻¹ A_v q (vertical part, no forcing), matrix-free."""
 function vertical_apply!(out, s::HDGFast2D, q)
     fast_kernel!(out, s, q, ZeroVec(), Val(false), Val(true))

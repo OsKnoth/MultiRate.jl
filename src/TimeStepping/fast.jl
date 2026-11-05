@@ -18,7 +18,10 @@ const WRF_SMDIV = 0.1
 Integrate the fast system q' = L q + f_b/M + F_slow over nsteps steps of size dt, starting from
 q0 (qout may alias q0). Methods:
   :imex    explicit 2-stage RK2 of the IMEX tableau (needs `fast_apply!`)
-  :hevi    IMEX: horizontal explicit, vertical implicit (horizontal/vertical split)
+  :hevi    IMEX: horizontal explicit, vertical implicit (horizontal/vertical split); FV
+           overrides it with the Strang Verlet/Crank–Nicolson composition below
+  :hevi_verlet  Strang: horizontal Störmer–Verlet half step, vertical Crank–Nicolson,
+           horizontal half step (needs `fast_rhs_hthermo!`, `fast_rhs_hmomentum!`)
   :verlet  Störmer–Verlet: (ρ, Θ) half step, momentum full step, (ρ, Θ) half step
   :fb      forward-backward: momentum explicit, interface implicit, then (ρ, Θ)
   :wrf     WRF acoustic step: horizontal momentum forward, then (ρ, Θ, vertical momentum)
@@ -43,6 +46,8 @@ function fast_solve!(qout, s::AbstractFastOperator, q0, F_slow, dt, nsteps; meth
         imex_loop!(q, s, f, dt, nsteps, Y, k1, k2)
     elseif method == :hevi
         hevi_loop!(q, s, f, dt, nsteps, Y, k1, k2, tmp, rhs)
+    elseif method == :hevi_verlet
+        hevi_verlet_loop!(q, s, f, dt, nsteps, Y, k1, k2, tmp, rhs)
     elseif method == :hevi_relax
         hevi_loop!(q, s, f, dt, nsteps, Y, k1, k2, tmp, rhs; relax_horizontal = true)
     elseif method == :verlet
@@ -55,7 +60,7 @@ function fast_solve!(qout, s::AbstractFastOperator, q0, F_slow, dt, nsteps; meth
         fast_rosenbrock_amf!(qout, s, q0, f, dt, nsteps)
         return qout
     else
-        error("unknown fast method $method (available: :imex, :hevi, :hevi_relax, :verlet, :fb, :wrf, :rosenbrock_amf)")
+        error("unknown fast method $method (available: :imex, :hevi, :hevi_verlet, :hevi_relax, :verlet, :fb, :wrf, :rosenbrock_amf)")
     end
     qout .= q
     return qout
@@ -100,6 +105,37 @@ function hevi_loop!(q, s, f, dt, nsteps, Y, k1, k2, tmp, rhs; relax_horizontal =
     end
     return q
 end
+
+"""
+Horizontally explicit Störmer–Verlet, vertically Crank–Nicolson (Strang composition). The
+explicit RK2 stages of `hevi` are unstable on the imaginary axis, so a centred horizontal
+acoustic operator only survives there through upwind dissipation; Verlet is stable on the
+imaginary axis up to |λ dt| = 2.
+"""
+function hevi_verlet_loop!(q, s, f, dt, nsteps, Y, k1, k2, tmp, rhs; forcing::Symbol = HEVI_VERLET_FORCING[])
+    F = vertical_factor(s, dt / 2)
+    halfdt = dt / 2
+    # forcing = :vertical adds f in the implicit vertical step, so stiff vertical modes relax to
+    # the forced equilibrium -A_v⁻¹ f; :horizontal adds it in the explicit horizontal half steps.
+    fh = forcing == :horizontal ? f : zero(f)
+    fv = forcing == :vertical ? 1.0 : 0.0
+    for _ in 1:nsteps
+        fast_rhs_hthermo!(k1, s, q, fh);   @. q += (halfdt / 2) * k1
+        fast_rhs_hmomentum!(k2, s, q, fh); @. q += halfdt * k2
+        fast_rhs_hthermo!(k1, s, q, fh);   @. q += (halfdt / 2) * k1
+        vertical_apply!(tmp, s, q)                     # (I - dt/2 A_v) q⁺ = (I + dt/2 A_v) q⁻ + dt f
+        @. rhs = q + (dt / 2) * tmp + (fv * dt) * f
+        vertical_solve!(Y, s, F, rhs)
+        q .= Y
+        fast_rhs_hthermo!(k1, s, q, fh);   @. q += (halfdt / 2) * k1
+        fast_rhs_hmomentum!(k2, s, q, fh); @. q += halfdt * k2
+        fast_rhs_hthermo!(k1, s, q, fh);   @. q += (halfdt / 2) * k1
+    end
+    return q
+end
+
+"""Placement of the constant fast forcing in `:hevi_verlet` (:vertical or :horizontal)."""
+const HEVI_VERLET_FORCING = Ref(:horizontal)
 
 """Störmer–Verlet (Xu, van der Vegt, Bokhove 2008, eq. 4.6 with f = 0)."""
 function verlet_loop!(q, s, f, dt, nsteps, kT, km)
