@@ -157,10 +157,14 @@ end
 
 """Advective tendency -(1/V) ∮ (ρv·n) (c/ρ) of the cell quantity `c` (nx, nz) into `fc`,
 using the face momenta in `q` and the third-order upwind face values."""
-function cut_advect3!(fc, c, q, g::CutCellFVGrid)
+function cut_advect3!(fc, c, q, g::CutCellFVGrid, bc = nothing, bu = nothing, bw = nothing)
     nx, nz = g.nx, g.nz
     fill!(fc, 0.0)
-    r(i, k) = c[i,k] / (q[iρ(g,i,k)] + eps())
+    # Optional background mixing ratio: reconstruct c/ρ - bc in the cells and add the exact
+    # background bu (x-faces) / bw (z-faces) at the face, so a background profile is not smeared.
+    r(i, k) = c[i,k] / (q[iρ(g,i,k)] + eps()) - (bc === nothing ? 0.0 : bc[i,k])
+    fbu(f, k) = bu === nothing ? 0.0 : bu[f,k]
+    fbw(i, k) = bw === nothing ? 0.0 : bw[i,k]
     @inbounds for k in 1:nz, f in 1:nx            # x-face f between cells f-1 and f
         A = g.FU[f,k]; A > 0 || continue
         U = q[iU(g,f,k)]
@@ -174,7 +178,7 @@ function cut_advect3!(fc, c, q, g::CutCellFVGrid)
             cf = cut_face3(r(iu,k), r(ir,k), r(il,k), g.Vol[iu,k], g.Vol[ir,k], g.Vol[il,k],
                            g.FU[f+1,k] / (g.FU[f+1,k] + eps()))
         end
-        F = A * U * cf
+        F = A * U * (cf + fbu(f,k))
         fc[il,k] -= F; fc[ir,k] += F
     end
     @inbounds for k in 2:nz, i in 1:nx            # z-face k between cells k-1 and k
@@ -192,7 +196,7 @@ function cut_advect3!(fc, c, q, g::CutCellFVGrid)
             cf = cut_face3(r(i,ku), r(i,kt), r(i,kb), Vu, g.Vol[i,kt], g.Vol[i,kb],
                            g.FW[i,k+1] / (g.FW[i,k+1] + eps()))
         end
-        F = A * W * cf
+        F = A * W * (cf + fbw(i,k))
         fc[i,kb] -= F; fc[i,kt] += F
     end
     @inbounds for k in 1:nz, i in 1:nx
@@ -232,6 +236,11 @@ end
     return (VR * FwCL[i,k] + VL * FwCR[i,k-1]) / (VL + VR + eps())
 end
 
+"""Reconstruct θ' = θ - θ̄(z) instead of θ in the third-order Θ flux (θ̄ added exactly at the
+face heights). Removes the smearing of the background stratification where the flow crosses
+the Cartesian grid lines along the terrain."""
+const CUT_THETA_PERTURBATION = Ref(true)
+
 """Third-order advective tendencies of Θ and the momentum parts into the cache arrays."""
 function cut_advection_third!(m, q)
     g = m.grid; cc = m.cache.cc
@@ -239,7 +248,11 @@ function cut_advection_third!(m, q)
     @inbounds for k in 1:g.nz, i in 1:g.nx
         Θc[i,k] = q[iΘ(g,i,k)]
     end
-    cut_advect3!(Fθ, Θc, q, g)
+    if CUT_THETA_PERTURBATION[] && length(cc) >= 13
+        cut_advect3!(Fθ, Θc, q, g, cc[11], cc[12], cc[13])
+    else
+        cut_advect3!(Fθ, Θc, q, g)
+    end
     cut_face_to_cell!(uCL, uCR, wCL, wCR, q, g)
     cut_advect3!(FuCL, uCL, q, g); cut_advect3!(FuCR, uCR, q, g)
     cut_advect3!(FwCL, wCL, q, g); cut_advect3!(FwCR, wCR, q, g)

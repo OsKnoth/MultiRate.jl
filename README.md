@@ -57,7 +57,9 @@ regular grid.
 - **Cut-cell masks:** the mask is a heuristic (`CutCellFVGrid(...; mask=:diag)`, as in the MATLAB
   reference; variants `:cut`, `:cut4`, `:cut8`, `:all`).
 - **Cut-cell advection:** the right-hand side uses the third-order `AdvectionCutThird` scheme by
-  default (`advection=:third`); the first-order alternative is `advection=:upwind1`.
+  default (`advection=:third`); the first-order alternative is `advection=:upwind1`. The Θ flux
+  reconstructs θ' = θ − θ̄(z) and adds θ̄ exactly at the face height, so the background
+  stratification is not smeared where the flow crosses the grid lines along the terrain.
 
 ## Code layout
 
@@ -99,7 +101,7 @@ julia --project=examples examples/intro_2d/agnesi_hills.jl a10 - rosenbrock_amf 
 
 `examples/intro_2d/README.md` describes the options, and `check_bubble.jl` and `check_agnesi.jl`
 are quick consistency checks. Environment controls include `NEX`, `NEZ`, `P`, `LX`, `LFACTOR`,
-`H0`, `ZD`, `NSUB`, `CUT_H0` and `CUT_A`. FV grids use `P*NEX × P*NEZ` cells.
+`H0`, `ZD`, `NSUB`, `U0` (hill inflow speed; `U0=0` is a resting atmosphere), `CUT_H0` and `CUT_A`. FV grids use `P*NEX × P*NEZ` cells.
 
 ### Production drivers
 

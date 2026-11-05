@@ -16,7 +16,7 @@ case = isempty(ARGS) ? "a10" : ARGS[1]
 a = get(Dict("a1" => 1e3, "a10" => 10e3, "a100" => 100e3), case) do
     error("case must be a1, a10 or a100")
 end
-U, NBV, θ0 = 10.0, 0.01, 300.0
+U, NBV, θ0 = parse(Float64, get(ENV, "U0", "10")), 0.01, 300.0
 disc = length(ARGS) > 3 ? Symbol(ARGS[4]) : :dg
 disc in (:dg, :fv, :fvc) || error("discretization must be dg, fv or fvc")
 h0 = parse(Float64, get(ENV, "H0", "400"))
@@ -26,7 +26,7 @@ NEX = parse(Int, get(ENV, "NEX", "50"))
 H = parse(Float64, get(ENV, "H", "15600"))
 NEZ = parse(Int, get(ENV, "NEZ", "16"))
 ZD = parse(Float64, get(ENV, "ZD", "9000"))
-T = length(ARGS) > 1 && ARGS[2] != "-" ? parse(Float64, ARGS[2]) : 21.6a / U
+T = length(ARGS) > 1 && ARGS[2] != "-" ? parse(Float64, ARGS[2]) : 21.6a / max(U, 10.0)
 table, nsub_default, fast_default = default_scheme(disc)
 FAST = length(ARGS) > 2 ? Symbol(ARGS[3]) : fast_default
 NSUB = parse(Int, get(ENV, "NSUB", string(nsub_default)))

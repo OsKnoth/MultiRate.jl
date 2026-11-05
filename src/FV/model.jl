@@ -54,7 +54,14 @@ function FVModel(grid::CutCellFVGrid, gas::Gas, ρref, Θref)
     R = ρref.(Zref)
     T = Θref.(Zref)
     nq = nunknowns(grid)
-    return FVModel(grid, gas, nq, R, T, pressure.(Ref(gas), T), zeros(nq), zeros(nq), FVCache(grid), Ref{Any}(nothing))
+    cache = FVCache(grid)
+    # background θ̄ for the Θ flux: cells (as the reference state), open x-face midpoints, z-faces
+    θbar(z) = Θref(z) / ρref(z)
+    g = grid
+    push!(cache.cc, T ./ R,
+          [θbar((max(g.zf[k], min(g.zs(g.xf[f]), g.zf[k+1])) + g.zf[k+1]) / 2) for f in 1:g.nx+1, k in 1:g.nz],
+          [θbar(g.zf[k]) for i in 1:g.nx, k in 1:g.nz+1])
+    return FVModel(grid, gas, nq, R, T, pressure.(Ref(gas), T), zeros(nq), zeros(nq), cache, Ref{Any}(nothing))
 end
 
 """
