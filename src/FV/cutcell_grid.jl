@@ -29,7 +29,7 @@ struct CutCellFVGrid
     alpha::Matrix{Float64}     # Vol / (dx dz)
     alphaU::Matrix{Float64}    # FU / dz
     alphaW::Matrix{Float64}    # FW / dx
-    MaskVol::BitMatrix         # fluid cells adjacent diagonally to a cut cell
+    MaskVol::BitMatrix         # AMF implicit cells (heuristic, see `mask`)
     MaskU::BitMatrix
     MaskW::BitMatrix
     polygons::Matrix{Vector{NTuple{2,Float64}}}
@@ -155,9 +155,11 @@ function CutCellFVGrid(nx::Int, nz::Int, Lx::Real, H::Real; x0::Real = 0.0, z0::
     alpha = clamp.(Vol ./ (dx * dz), 0.0, 1.0)
     alphaU = clamp.(FU ./ dz, 0.0, 1.0)
     alphaW = clamp.(FW ./ dx, 0.0, 1.0)
-    cut = (alpha .> 0) .& (alpha .< 1 - 64eps(Float64))
-    # Heuristic implicit region for the AMF solver. Fluid cell (i,k) is masked when a cut cell
-    # lies at one of the listed offsets (di,dk); (0,0) includes the cut cell itself.
+    # Heuristic implicit region for the AMF solver. Fluid cell (i,k) is masked when a non-full
+    # cell (cut or solid, as in MATLAB `CutCellGeometry`: Vol < dx dz) lies at one of the
+    # listed offsets (di,dk); (0,0) includes the cell itself. As in MATLAB, k±1 is clamped to
+    # the domain (bottom-row cells look at their horizontal neighbours); x is periodic here.
+    cut = alpha .< 1 - 64eps(Float64)
     offsets = mask == :diag  ? ((-1,-1), (-1,1), (1,-1), (1,1)) :
               mask == :cut   ? ((0,0),) :
               mask == :cut4  ? ((0,0), (-1,0), (1,0), (0,-1), (0,1)) :
@@ -169,8 +171,7 @@ function CutCellFVGrid(nx::Int, nz::Int, Lx::Real, H::Real; x0::Real = 0.0, z0::
         alpha[i,k] > 0 || continue
         mask == :all && (MaskVol[i,k] = true; continue)   # diagnostic: everything implicit
         for (di, dk) in offsets
-            kk = k + dk
-            1 <= kk <= nz || continue
+            kk = clamp(k + dk, 1, nz)
             ii = mod1(i + di, nx)
             cut[ii,kk] && (MaskVol[i,k] = true)
         end
