@@ -131,25 +131,30 @@ files are ignored by git.
   vertical transport of momentum by the fast vertical mass flux, −∂(ρ̄w′ v̄)/∂z, in the implicit
   vertical `L`. Left in the explicit slow part, it couples the large step to the vertical
   acoustics through the vertical Courant number U Δt/Δz (a1 0.1, a10 1.3, a100 13), and a100
-  blows up. The example switches it on for U Δt/Δz > 4 (`DG_VADV_FAST`, `FV_VADV_FAST`,
+  blows up. This is a stability limit of the explicit part of MIS, not of the spatial
+  discretization (∂N/∂q has no growing mode). The example switches it on for U Δt/Δz > 4 (`DG_VADV_FAST`, `FV_VADV_FAST`,
   `VADV=auto|0|1`). A split-form linearization of `L` (`DG_SPLIT_FAST`, off) makes `N − L` vanish
   at rest but changes neither the stability nor the solution.
-- **Terrain-following FV** runs all three hills with `hevi` at the regular step (a100: Δt = 540 s).
-  This needed a background-consistent `N` and `L` on the Gal-Chen grid: θ' = θ − θ̄(z) in the Θ
-  flux with θ̄ ρ_t − ρw dθ̄/dz, and −∂p′/∂x|_z in a θ̄-weighted chain-rule form adjoint to the
-  σ-corrected mass flux (otherwise a U mode grows at ≈ 1e-5 s⁻¹). As for DGSEM, a100 needs the
-  vertical transport of u by the fast vertical mass flux in the vertical `L` (U Δt/Δz = 22).
+- **Terrain-following FV** runs all three hills with `hevi` at the regular step (a100: Δt = 540 s)
+  with the conservative, background-free flux form (`FV_TERRAIN_FORM = :flux`). a100 needed the
+  vertical transport of u by the fast vertical mass flux in the vertical `L` (U Δt/Δz = 22) and an
+  `L` in skew form. The flux form has a weak growing mode at rest on terrain (the x-flux carries θ
+  along the sloped σ-surfaces, the σ correction uses averaged U; ≈ 5e-6 s⁻¹ on a coarse test
+  hill, growing with the horizontal resolution) that does not affect the Agnesi runs.
+  `:advective` (θ ρ_t − ρv·∇θ in σ-coordinates with the state θ, adjoint pressure gradient) removes
+  it at the price of Θ conservation; `:background` uses a prescribed θ̄(z).
 - **Agnesi hills, all discretizations** (MIS4, nsub = 12, 200 × 64 FV cells / 50 × 16 DG elements
   of degree 4, T = 21.6 a/U):
 
   | | DGSEM `hevi_verlet` | FV terrain-following `hevi` | FV cut cells `rosenbrock_amf` |
   |---|---|---|---|
-  | large steps | 690 | 400 | 565 |
-  | a1: max\|w\|, θ′ (m/s, K) | 2.77, −1.22…0.93 | 2.54, −1.09…0.90 | 2.17, −1.16…0.92 |
-  | a10 | 0.70, −1.49…1.66 | 0.55, −1.37…1.52 | 0.59, −1.45…1.62 |
-  | a100 | 0.064, −1.49…1.71 | 0.054, −1.37…1.53 | 0.057, −1.45…1.64 |
+  | large steps | 694 | 400 | 565 |
+  | a1: max\|w\|, θ′ (m/s, K) | 2.77, −1.22…0.93 | 2.51, −1.09…0.91 | 2.15, −1.08…0.92 |
+  | a10 | 0.69, −1.48…1.65 | 0.55, −1.37…1.54 | 0.59, −1.44…1.59 |
+  | a100 | 0.064, −1.49…1.70 | 0.055, −1.38…1.55 | 0.058, −1.44…1.62 |
 
-  (cut cells with `CUT_THETA_RECON = :perturbation`; `:donor` changes max|w| by < 1 %)
+  All without a background θ̄(z) (DG pointwise `L`, FV `:flux`, cut cells `:donor`); only the
+  hydrostatic reference p′, ρ′ in the FV momentum equations.
 
 - **Planned fast solver:** a linear IMEX fast solver as in the MATLAB reference
   (`SplitExplicitLin`/`LinIMEX_RK`). It is explicit in `L_E` and implicit in `L_I`, with one sparse

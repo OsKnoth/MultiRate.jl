@@ -48,7 +48,7 @@ function FVModel(grid::FVGrid, gas::Gas, ρref, Θref)
     nq = nunknowns(grid)
     cache = FVCache(grid)
     if grid.terrain
-        # background θ̄ (FV_TERRAIN_CONSISTENT): cells, x-faces (height Zx), σ-faces (height Zf)
+        # background θ̄ (only for FV_TERRAIN_FORM = :background): cells, x-faces (height Zx), σ-faces (height Zf)
         θbar(z) = Θref(z) / ρref(z)
         push!(cache.cc, T ./ R, θbar.(grid.Zx), θbar.(grid.Zf))
     end
@@ -61,7 +61,7 @@ function FVModel(grid::CutCellFVGrid, gas::Gas, ρref, Θref)
     T = Θref.(Zref)
     nq = nunknowns(grid)
     cache = FVCache(grid)
-    # background θ̄ for the Θ flux: cells (as the reference state), open x-face midpoints, z-faces
+    # background θ̄ (only for CUT_THETA_RECON = :perturbation): cells (as the reference state), open x-face midpoints, z-faces
     θbar(z) = Θref(z) / ρref(z)
     g = grid
     push!(cache.cc, T ./ R,
