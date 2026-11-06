@@ -103,6 +103,12 @@ function factor_hevi!(F::HeviFactor, s::HDGFast2D, c)
                     A[Θj, Uj] += cρ * dηθ
                     A[Uj, Θj] -= cu * (a * dηθ / θ + s.gZη[i, j, e] / θ)
                     A[Uj, ρj] += cu * s.gZη[i, j, e]
+                    if s.vadv     # U ← Ja_j·Σ_k D_jk U_k v̄_k
+                        for k in 1:np
+                            vk = M.Jηx[i, j, e] * s.u0[i, k, e] + M.Jηz[i, j, e] * s.w0[i, k, e]
+                            A[Uj, 2np + k] += cρ * D[j, k] * vk
+                        end
+                    end
                 end
                 # SAT at the top (j = np) and bottom (j = 1) node
                 if j == np || j == 1

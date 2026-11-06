@@ -57,9 +57,11 @@ regular grid.
 - **Cut-cell masks:** the mask is a heuristic (`CutCellFVGrid(...; mask=:diag)`, as in the MATLAB
   reference; variants `:cut`, `:cut4`, `:cut8`, `:all`).
 - **Cut-cell advection:** the right-hand side uses the third-order `AdvectionCutThird` scheme by
-  default (`advection=:third`); the first-order alternative is `advection=:upwind1`. The Θ flux
-  reconstructs θ' = θ − θ̄(z) and adds θ̄ exactly at the face height, so the background
-  stratification is not smeared where the flow crosses the grid lines along the terrain.
+  default (`advection=:third`); the first-order alternative is `advection=:upwind1`.
+  Open problem: a warm layer of ≈ 0.35 K in the lowest cells downstream of the hill (a10).
+  `CUT_THETA_RECON` selects the Θ face value where the upstream neighbour is missing: `:donor`
+  (MATLAB, default), `:onesided` (keeps the downstream term, second order; changes little), or
+  `:perturbation` (reconstructs θ' = θ − θ̄(z), ≈ 0.16 K; uses a background state).
 
 ## Code layout
 
@@ -124,17 +126,19 @@ files are ignored by git.
     acoustics inside the W-method.
 - **DGSEM with `hevi_verlet`** (horizontal Störmer–Verlet around a vertical Crank–Nicolson column
   solve) runs all three Agnesi hills at the regular horizontal acoustic step (a100: dτ = 26 s,
-  Δt = 313 s), about 16× fewer steps than `hevi`. This needs an `L` that matches `N`:
-  - the vertical and horizontal fast parts are the linearization of the split-form `N` (two-point
-    means), not pointwise products; otherwise `N − L` keeps an imaginary mode ≈ 0.02 (p+1) s⁻¹;
-  - the vertical transport of momentum by the fast vertical mass flux, −∂(ρ̄w′ v̄)/∂z, is part of
-    the implicit vertical `L`. Left in the explicit slow part, it couples the large step to the
-    vertical acoustics with Δt |v̄| ∂z and makes a100 unstable.
+  Δt = 313 s), about 16× fewer steps than `hevi`. `L` is the simple pointwise linearization
+  (frozen θ̄ and γp/Θ, as in the HEVI Jacobian of Artiano et al. 2026). What a100 needs is the
+  vertical transport of momentum by the fast vertical mass flux, −∂(ρ̄w′ v̄)/∂z, in the implicit
+  vertical `L`. Left in the explicit slow part, it couples the large step to the vertical
+  acoustics through the vertical Courant number U Δt/Δz (a1 0.1, a10 1.3, a100 13), and a100
+  blows up. The example switches it on for U Δt/Δz > 4 (`DG_VADV_FAST`, `FV_VADV_FAST`,
+  `VADV=auto|0|1`). A split-form linearization of `L` (`DG_SPLIT_FAST`, off) makes `N − L` vanish
+  at rest but changes neither the stability nor the solution.
 - **Terrain-following FV** runs all three hills with `hevi` at the regular step (a100: Δt = 540 s).
   This needed a background-consistent `N` and `L` on the Gal-Chen grid: θ' = θ − θ̄(z) in the Θ
   flux with θ̄ ρ_t − ρw dθ̄/dz, and −∂p′/∂x|_z in a θ̄-weighted chain-rule form adjoint to the
-  σ-corrected mass flux (otherwise a U mode grows at ≈ 1e-5 s⁻¹). As for DGSEM, the vertical
-  transport of u by the fast vertical mass flux is part of the vertical `L`.
+  σ-corrected mass flux (otherwise a U mode grows at ≈ 1e-5 s⁻¹). As for DGSEM, a100 needs the
+  vertical transport of u by the fast vertical mass flux in the vertical `L` (U Δt/Δz = 22).
 - **Agnesi hills, all discretizations** (MIS4, nsub = 12, 200 × 64 FV cells / 50 × 16 DG elements
   of degree 4, T = 21.6 a/U):
 
@@ -144,6 +148,8 @@ files are ignored by git.
   | a1: max\|w\|, θ′ (m/s, K) | 2.77, −1.22…0.93 | 2.54, −1.09…0.90 | 2.17, −1.16…0.92 |
   | a10 | 0.70, −1.49…1.66 | 0.55, −1.37…1.52 | 0.59, −1.45…1.62 |
   | a100 | 0.064, −1.49…1.71 | 0.054, −1.37…1.53 | 0.057, −1.45…1.64 |
+
+  (cut cells with `CUT_THETA_RECON = :perturbation`; `:donor` changes max|w| by < 1 %)
 
 - **Planned fast solver:** a linear IMEX fast solver as in the MATLAB reference
   (`SplitExplicitLin`/`LinIMEX_RK`). It is explicit in `L_E` and implicit in `L_I`, with one sparse

@@ -24,9 +24,10 @@ Include in the vertical fast part the transport of x-momentum by the fast vertic
 U_t ∋ -∂_η(W' ū)/(J_x), with ū frozen at the corners. Left in the explicit slow part, this term
 couples the large step to the vertical acoustics with Δt ū/Δz (Agnesi a100: Δt ū/Δz ≈ 22).
 The column solve updates U from the solved W afterwards (exact: the column system does not
-read U).
+read U). Off by default; switch it on only when the vertical Courant number of the slow step
+U Δt/Δz is large (the cut-cell `:rosenbrock_amf` has advection in its L anyway).
 """
-const FV_VADV_FAST = Ref(true)
+const FV_VADV_FAST = Ref(false)
 
 function FVFast(m::FVModel)
     g = m.grid

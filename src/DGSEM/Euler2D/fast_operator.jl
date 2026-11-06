@@ -52,21 +52,29 @@ end
 
 """
 Include in the vertical fast part the transport of momentum by the fast vertical mass flux,
-m_t ∋ -∂_η(ρ̄ w'·v̄) (linearized split form, frozen velocity v̄; SAT accordingly). Without it
-this term sits in the explicit slow part and couples the slow step to the vertical acoustics
-with Δt·|v̄|·∂_z (DG Agnesi a100 instability). Needs `DG_SPLIT_FAST`; both apply to the
-fast solvers :hevi, :hevi_verlet and :hevi_relax only.
+m_t ∋ -∂_η(F_η v̄) with F_η = Ja^η·m and the velocity v̄ frozen at the re-freeze state (SAT
+accordingly). Off by default; switch it on only when needed: without it the term sits in the
+explicit slow part N - L, where it couples the slow step to the vertical acoustics with the
+vertical Courant number U Δt/Δz. Agnesi a100 (U Δt/Δz ≈ 13) blows up without it, a10 (≈ 1.3)
+does not need it. Works with the pointwise and the split-form operator (`DG_SPLIT_FAST`); applies
+to the fast solvers :hevi, :hevi_verlet and :hevi_relax.
 """
-const DG_VADV_FAST = Ref(true)
+const DG_VADV_FAST = Ref(false)
 
 """
 Build the fast operator as the linearization of the split-form N (two-point means of mass,
-Θ and gravity, frozen at qⁿ) instead of pointwise products. The two differ in the highest
-polynomial mode of each element, which leaves a purely imaginary mode ≈ 0.02 (p+1) s⁻¹ in the
-explicitly treated slow part N - L. The vertical part uses the nodal metric Ja^η_j, so the
-column solver still sees the momentum only through U = Ja^η·m.
+Θ and gravity, frozen at qⁿ) instead of the simple pointwise operator (frozen θ̄, a = γp/Θ,
+products evaluated at the nodes, as in the HEVI Jacobian of Artiano et al., arXiv:2610.15775).
+
+Why it exists: N - L then vanishes at rest to round-off. With the pointwise L the two differ in
+the highest polynomial mode of each element, which leaves a purely imaginary mode
+≈ 0.02 (p+1) s⁻¹ in the explicitly treated part N - L. Measured: this does NOT matter for
+stability. The linearized MIS4 step at Agnesi a100 grows equally with and without it
+(ρ(G) - 1 = 10.3 without `DG_VADV_FAST`), and with `DG_VADV_FAST` both run a100 identically
+(max|w| = 4.124e-2 after 6 h). MIS (a W-method in L) keeps its order for either choice; L only
+has to capture the stiff vertical acoustics and buoyancy. Off by default, kept for experiments.
 """
-const DG_SPLIT_FAST = Ref(true)
+const DG_SPLIT_FAST = Ref(false)
 
 function HDGFast2D(m::Euler2DModel; tau_scale = 1.0)
     M = m.mesh
@@ -181,8 +189,13 @@ function refreeze!(s::HDGFast2D, m::Euler2DModel, q, pfac)
         s.fb[node_iq(np, e, 3, i, j)] = -W * (M.Jξz[i, j, e] * dξb + M.Jηz[i, j, e] * dηb)
     end
     s.split = DG_SPLIT_FAST[] && s.splitok
+    s.vadv = DG_VADV_FAST[] && s.splitok
+    @inbounds for e in 1:Ne, j in 1:np, i in 1:np
+        s.ρ0[i, j, e] = q[node_iq(np, e, 1, i, j)]
+        s.u0[i, j, e] = q[node_iq(np, e, 2, i, j)] / s.ρ0[i, j, e]
+        s.w0[i, j, e] = q[node_iq(np, e, 3, i, j)] / s.ρ0[i, j, e]
+    end
     s.split && refreeze_split!(s, m, q)
-    s.vadv = s.split && DG_VADV_FAST[]
     for (c, F) in s.lucache
         factor_hevi!(F, s, c)
     end
@@ -197,11 +210,6 @@ function refreeze_split!(s::HDGFast2D, m, q)
     gd(ρa, ρb) = begin
         h = 1e-6 * ρa
         (gravity_mean(gf, ρa + h, ρb, γ) - gravity_mean(gf, ρa - h, ρb, γ)) / 2h
-    end
-    @inbounds for e in 1:M.Ne, j in 1:np, i in 1:np
-        s.ρ0[i, j, e] = q[node_iq(np, e, 1, i, j)]
-        s.u0[i, j, e] = q[node_iq(np, e, 2, i, j)] / s.ρ0[i, j, e]
-        s.w0[i, j, e] = q[node_iq(np, e, 3, i, j)] / s.ρ0[i, j, e]
     end
     @inbounds for e in 1:M.Ne, i in 1:np, j in 1:np, k in 1:np
         ρa, Θa = q[node_iq(np, e, 1, i, j)], q[node_iq(np, e, 4, i, j)]
@@ -366,6 +374,12 @@ function fast_kernel!(out, s::HDGFast2D, q, f, ::Val{HP}, ::Val{VP}) where {HP,V
                 bη = (Θ / θ - ρ) * s.gZη[i, j, e]                # buoyancy, η part
                 r2 += bη * M.Jηx[i, j, e]
                 r3 += bη * M.Jηz[i, j, e]
+                if s.vadv                                        # -∂_η(F_η v̄), pointwise products
+                    for k in 1:np
+                        r2 -= D[j, k] * Fη[i, k] * s.u0[i, k, e]
+                        r3 -= D[j, k] * Fη[i, k] * s.w0[i, k, e]
+                    end
+                end
             end
             W = w[i] * w[j]
             out[node_iq(np, e, 1, i, j)] = W * r1

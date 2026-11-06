@@ -149,15 +149,16 @@ end
 
 """Face value reconstructed in upwind cell C from upstream U and downstream D (mixing ratios,
 volumes) with open fraction `open` of C's upstream face."""
-@inline function cut_face3(cU, cC, cD, VU, VC, VD, open)
+@inline function cut_face3(cU, cC, cD, VU, VC, VD, open, keepdown::Bool = false)
     VU < VC && (cU = ((VC - VU) * cC + VU * cU) / VC)
     VD < VC && (cD = ((VC - VD) * cC + VD * cD) / VC)
+    keepdown && return cC + cut_k1(VU, VC, VD) * (cD - cC) + open * cut_k2(VU, VC, VD) * (cC - cU)
     return cC + open * (cut_k1(VU, VC, VD) * (cD - cC) + cut_k2(VU, VC, VD) * (cC - cU))
 end
 
 """Advective tendency -(1/V) ∮ (ρv·n) (c/ρ) of the cell quantity `c` (nx, nz) into `fc`,
 using the face momenta in `q` and the third-order upwind face values."""
-function cut_advect3!(fc, c, q, g::CutCellFVGrid, bc = nothing, bu = nothing, bw = nothing)
+function cut_advect3!(fc, c, q, g::CutCellFVGrid, bc = nothing, bu = nothing, bw = nothing; keepdown::Bool = false)
     nx, nz = g.nx, g.nz
     fill!(fc, 0.0)
     # Optional background mixing ratio: reconstruct c/ρ - bc in the cells and add the exact
@@ -172,11 +173,11 @@ function cut_advect3!(fc, c, q, g::CutCellFVGrid, bc = nothing, bu = nothing, bw
         if U >= 0       # upwind il: upstream il-1, downstream ir; upstream face of il is f-1
             iu = ip(g,il-1)
             cf = cut_face3(r(iu,k), r(il,k), r(ir,k), g.Vol[iu,k], g.Vol[il,k], g.Vol[ir,k],
-                           g.FU[ip(g,f-1),k] / (g.FU[ip(g,f-1),k] + eps()))
+                           g.FU[ip(g,f-1),k] / (g.FU[ip(g,f-1),k] + eps()), keepdown)
         else            # upwind ir: upstream ir+1, downstream il; upstream face of ir is f+1
             iu = ip(g,ir+1)
             cf = cut_face3(r(iu,k), r(ir,k), r(il,k), g.Vol[iu,k], g.Vol[ir,k], g.Vol[il,k],
-                           g.FU[f+1,k] / (g.FU[f+1,k] + eps()))
+                           g.FU[f+1,k] / (g.FU[f+1,k] + eps()), keepdown)
         end
         F = A * U * (cf + fbu(f,k))
         fc[il,k] -= F; fc[ir,k] += F
@@ -189,12 +190,12 @@ function cut_advect3!(fc, c, q, g::CutCellFVGrid, bc = nothing, bu = nothing, bw
             ku = max(kb-1, 1)
             Vu = kb == 1 ? g.Vol[i,kb] : g.Vol[i,ku]
             cf = cut_face3(r(i,ku), r(i,kb), r(i,kt), Vu, g.Vol[i,kb], g.Vol[i,kt],
-                           cut_fw(g,i,k-1) / (cut_fw(g,i,k-1) + eps()))
+                           cut_fw(g,i,k-1) / (cut_fw(g,i,k-1) + eps()), keepdown)
         else            # upwind kt: upstream kt+1 (ghost at the top wall), face k+1
             ku = min(kt+1, nz)
             Vu = kt == nz ? g.Vol[i,kt] : g.Vol[i,ku]
             cf = cut_face3(r(i,ku), r(i,kt), r(i,kb), Vu, g.Vol[i,kt], g.Vol[i,kb],
-                           g.FW[i,k+1] / (g.FW[i,k+1] + eps()))
+                           g.FW[i,k+1] / (g.FW[i,k+1] + eps()), keepdown)
         end
         F = A * W * (cf + fbw(i,k))
         fc[i,kb] -= F; fc[i,kt] += F
@@ -236,10 +237,16 @@ end
     return (VR * FwCL[i,k] + VL * FwCR[i,k-1]) / (VL + VR + eps())
 end
 
-"""Reconstruct θ' = θ - θ̄(z) instead of θ in the third-order Θ flux (θ̄ added exactly at the
-face heights). Removes the smearing of the background stratification where the flow crosses
-the Cartesian grid lines along the terrain."""
-const CUT_THETA_PERTURBATION = Ref(true)
+"""
+Θ flux reconstruction at faces whose upstream neighbour is missing (bottom/top wall, closed
+upstream aperture), where MATLAB `AdvectionCutThird` falls back to donor cell:
+- `:donor`        first-order donor cell (MATLAB). For stratified θ this is off by Δz/2·∂θ/∂z at
+                  every z-face above a wall cell, ≈ 0.37 K at Δz = 244 m, N = 0.01 (warm layer).
+- `:onesided`     keep the downstream term: volume-weighted linear interpolation between the
+                  upwind and the downstream cell (second order, no background state).
+- `:perturbation` reconstruct θ' = θ - θ̄(z) and add θ̄ at the face height (donor fallback kept).
+"""
+const CUT_THETA_RECON = Ref(:donor)
 
 """Third-order advective tendencies of Θ and the momentum parts into the cache arrays."""
 function cut_advection_third!(m, q)
@@ -248,10 +255,12 @@ function cut_advection_third!(m, q)
     @inbounds for k in 1:g.nz, i in 1:g.nx
         Θc[i,k] = q[iΘ(g,i,k)]
     end
-    if CUT_THETA_PERTURBATION[] && length(cc) >= 13
+    mode = CUT_THETA_RECON[]
+    if mode === :perturbation && length(cc) >= 13
         cut_advect3!(Fθ, Θc, q, g, cc[11], cc[12], cc[13])
     else
-        cut_advect3!(Fθ, Θc, q, g)
+        mode in (:donor, :onesided) || throw(ArgumentError("CUT_THETA_RECON = $mode"))
+        cut_advect3!(Fθ, Θc, q, g; keepdown = mode === :onesided)
     end
     cut_face_to_cell!(uCL, uCR, wCL, wCR, q, g)
     cut_advect3!(FuCL, uCL, q, g); cut_advect3!(FuCR, uCR, q, g)

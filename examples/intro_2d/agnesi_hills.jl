@@ -8,7 +8,7 @@
 #     julia --project=examples examples/intro_2d/agnesi_hills.jl a10 [T|-] [fast] [dg|fv|fvc]
 #     julia --project=examples examples/intro_2d/agnesi_hills.jl a100 [T|-] [fast] [dg|fv|fvc]
 #
-# Set NEX, NEZ, P, LX, LFACTOR, EPS_IF and H0 in the environment to change the run.
+# Set NEX, NEZ, P, LX, LFACTOR, EPS_IF, H0 and VADV (auto|0|1) in the environment to change the run.
 
 include(joinpath(@__DIR__, "../euler2d_common.jl"))
 
@@ -48,6 +48,14 @@ q0 = project2d(model0, (x, z) -> (ρr(z), ρr(z) * U, 0.0, Θr(z)))
 α = 5U * min(1.0, U / (NBV * a)) / (H - ZD)
 model = with_sponge(model0, q0; zD = ZD, αtop = α)
 Δt = T / ceil(T / (NSUB * fast_step(model, q0, FAST)))
+# Vertical transport of momentum by the fast vertical velocity in L only when needed: vertical
+# Courant number of the slow step U Δt/Δz (a10 ≈ 1.3 runs without, a100 ≈ 13 does not).
+# VADV = 0 / 1 overrides the automatic choice.
+cv = U * Δt / (H / (P * NEZ))
+vadv = get(ENV, "VADV", "auto") == "auto" ? cv > 4 : get(ENV, "VADV", "auto") == "1"
+E2.DG_VADV_FAST[] = vadv
+FV.FV_VADV_FAST[] = vadv
+@printf("vertical Courant number U Δt/Δz = %.1f: vertical momentum transport %s L\n", cv, vadv ? "in" : "not in")
 name = "intro_agnesi_$(case)_$(round(Int, L / a))a_$(disc)_$(FAST)"
 @printf("Agnesi hill %s: a = %.0f km, x domain = %.0f km (%.0f a), H = %.1f km\n",
         case, a / 1e3, L / 1e3, L / a, H / 1e3)
