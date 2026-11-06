@@ -130,6 +130,21 @@ files are ignored by git.
   - the vertical transport of momentum by the fast vertical mass flux, −∂(ρ̄w′ v̄)/∂z, is part of
     the implicit vertical `L`. Left in the explicit slow part, it couples the large step to the
     vertical acoustics with Δt |v̄| ∂z and makes a100 unstable.
+- **Terrain-following FV** runs all three hills with `hevi` at the regular step (a100: Δt = 540 s).
+  This needed a background-consistent `N` and `L` on the Gal-Chen grid: θ' = θ − θ̄(z) in the Θ
+  flux with θ̄ ρ_t − ρw dθ̄/dz, and −∂p′/∂x|_z in a θ̄-weighted chain-rule form adjoint to the
+  σ-corrected mass flux (otherwise a U mode grows at ≈ 1e-5 s⁻¹). As for DGSEM, the vertical
+  transport of u by the fast vertical mass flux is part of the vertical `L`.
+- **Agnesi hills, all discretizations** (MIS4, nsub = 12, 200 × 64 FV cells / 50 × 16 DG elements
+  of degree 4, T = 21.6 a/U):
+
+  | | DGSEM `hevi_verlet` | FV terrain-following `hevi` | FV cut cells `rosenbrock_amf` |
+  |---|---|---|---|
+  | large steps | 690 | 400 | 565 |
+  | a1: max\|w\|, θ′ (m/s, K) | 2.77, −1.22…0.93 | 2.54, −1.09…0.90 | 2.17, −1.16…0.92 |
+  | a10 | 0.70, −1.49…1.66 | 0.55, −1.37…1.52 | 0.59, −1.45…1.62 |
+  | a100 | 0.064, −1.49…1.71 | 0.054, −1.37…1.53 | 0.057, −1.45…1.64 |
+
 - **Planned fast solver:** a linear IMEX fast solver as in the MATLAB reference
   (`SplitExplicitLin`/`LinIMEX_RK`). It is explicit in `L_E` and implicit in `L_I`, with one sparse
   LU of `I − γΔτ L_I`. It would replace the product of approximate factors and allow a choice of
