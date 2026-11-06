@@ -164,12 +164,17 @@ function rhs_terrain!(out, m::FVModel, q)
         FxR = g.Jc[i] * (mxp * up + pright)
         FσL, FσR = 0.0, 0.0
         for (kf, dest) in ((k, 1), (k+1, 2))
-            wface = 0.5 * (c.w[im, kf] + c.w[i, kf])
-            uface = c.u[i, k]
             zxs = g.zx_xf[i, kf]
             pface = 0.5 * ((kf == 1 ? c.pp[im, 1] : kf == nz+1 ? c.pp[im, nz] : 0.5*(c.pp[im,kf-1]+c.pp[im,kf])) +
                            (kf == 1 ? c.pp[i, 1] : kf == nz+1 ? c.pp[i, nz] : 0.5*(c.pp[i,kf-1]+c.pp[i,kf])))
-            Fσ = q[iU(g, i, k)] * (wface - zxs * uface) - zxs * pface
+            # σ mass flux at the corner (x-face i, σ-face kf), zero at the ground and the top,
+            # times the upwind u at the σ-face: one flux per face, shared by the cells k-1 and k
+            Fσ = -zxs * pface
+            if 1 < kf <= nz
+                Uf = 0.5 * (q[iU(g, i, kf-1)] + q[iU(g, i, kf)])
+                Mσ = 0.5 * (q[iW(g, im, kf)] + q[iW(g, i, kf)]) - zxs * Uf
+                Fσ += Mσ * face_z(c.u, i, kf, nz, Mσ)
+            end
             dest == 1 ? (FσL = Fσ) : (FσR = Fσ)
         end
         out[iU(g, i, k)] = -((FxR - FxL) / dx + (FσR - FσL) / dη) / g.Jx[i]
