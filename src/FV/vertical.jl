@@ -1,5 +1,6 @@
 # Vertically implicit part: tridiagonal system for W per column (WRF), with the local terrain
-# layer thickness J Δη and the mapped lower-wall flux W - z_x U = 0.
+# layer thickness J Δη. On terrain the σ-correction -z_x U is in the horizontal operator, so the
+# column system does not read U.
 #
 # (I - c A_v) Y = Ys with Y = (ρ, Θ, W) of one column. ρ_k and Θ_k are explicit in the W of
 # the two faces of cell k; inserting them into the W equation of face k (between cells k-1, k)
@@ -16,15 +17,6 @@ struct FVVerticalFactor
     sub::Matrix{Float64}     # (nz+1, nx): coefficient of W_{k-1} in row k
     cp::Matrix{Float64}      # Thomas: c'
     iden::Matrix{Float64}    # Thomas: 1/denominator
-end
-
-@inline function fv_terrain_cell_correction(s, Ys, i, k, c, dz)
-    g = s.grid
-    Vb = k == 1 ? 0.0 : g.zx_f[i,k] * fv_ux_at_sigma(g, Ys, i, k)
-    Vt = k == g.nz ? 0.0 : g.zx_f[i,k+1] * fv_ux_at_sigma(g, Ys, i, k+1)
-    θb = k == 1 ? s.θz[i,1] : s.θz[i,k]
-    θt = k == g.nz ? s.θz[i,g.nz+1] : s.θz[i,k+1]
-    return (c / dz) * (Vt - Vb), (c / dz) * (θt * Vt - θb * Vb)
 end
 
 function factor_vertical!(F::FVVerticalFactor, s::FVFast, c)
@@ -68,39 +60,32 @@ function vertical_solve!(Y, s::FVFast, F::FVVerticalFactor, Ys)
         for k in 2:nz
             rhs = Ys[iW(g, i, k)] - (c / dz) * (s.a[i, k] * Ys[iΘ(g, i, k)] - s.a[i, k-1] * Ys[iΘ(g, i, k - 1)]) -
                   (c * grav / 2) * (Ys[iρ(g, i, k - 1)] + Ys[iρ(g, i, k)])
-            if g.terrain
-                ρL, ΘL = fv_terrain_cell_correction(s, Ys, i, k-1, c, dz)
-                ρR, ΘR = fv_terrain_cell_correction(s, Ys, i, k, c, dz)
-                rhs -= (c / dz) * (s.a[i,k] * ΘR - s.a[i,k-1] * ΘL) + (c * grav / 2) * (ρL + ρR)
-            end
             W[k] = k == 2 ? rhs * F.iden[k, i] : (rhs - F.sub[k, i] * W[k-1]) * F.iden[k, i]
         end
         for k in nz-1:-1:2
             W[k] -= F.cp[k, i] * W[k+1]
         end
-        W[1] = g.terrain ? g.zx_f[i,1] * fv_ux_at_sigma(g, Ys, i, 1) : 0.0
+        W[1] = 0.0
         W[nz+1] = 0.0
         # back substitution for ρ and Θ (reads Ys before Y is written)
         for k in 1:nz
             θb = k > 1 ? s.θz[i, k] : 0.0
             θt = k < nz ? s.θz[i, k+1] : 0.0
-            if g.terrain
-                Ub = fv_ux_at_sigma(g, Ys, i, k)
-                Ut = fv_ux_at_sigma(g, Ys, i, k+1)
-                Vb = W[k] - g.zx_f[i, k] * Ub
-                Vt = W[k+1] - g.zx_f[i, k+1] * Ut
-                ρ = Ys[iρ(g, i, k)] - (c / dz) * (Vt - Vb)
-                Θ = Ys[iΘ(g, i, k)] - (c / dz) * (θt * Vt - θb * Vb)
-            else
-                ρ = Ys[iρ(g, i, k)] - (c / dz) * (W[k+1] - W[k])
-                Θ = Ys[iΘ(g, i, k)] - (c / dz) * (θt * W[k+1] - θb * W[k])
-            end
+            ρ = Ys[iρ(g, i, k)] - (c / dz) * (W[k+1] - W[k])
+            Θ = Ys[iΘ(g, i, k)] - (c / dz) * (θt * W[k+1] - θb * W[k])
             Y[iρ(g, i, k)] = ρ
             Y[iΘ(g, i, k)] = Θ
             Y[iU(g, i, k)] = Ys[iU(g, i, k)]
         end
         for k in 2:nz
             Y[iW(g, i, k)] = W[k]
+        end
+    end
+    if s.vadv
+        # U ← U_s - c ∂_η(W ū)/J_x with the solved W (U is not in the column system)
+        @inbounds for i in 1:g.nx, k in 1:nz
+            dzx = g.terrain ? g.Jx[i] * g.dz : g.dz
+            Y[iU(g, i, k)] -= c * fv_uσ_flux_div(s, Y, i, k) / dzx
         end
     end
     return Y

@@ -46,7 +46,13 @@ function FVModel(grid::FVGrid, gas::Gas, ρref, Θref)
     R = ρref.(grid.Zc)
     T = Θref.(grid.Zc)
     nq = nunknowns(grid)
-    return FVModel(grid, gas, nq, R, T, pressure.(Ref(gas), T), zeros(nq), zeros(nq), FVCache(grid), Ref{Any}(nothing))
+    cache = FVCache(grid)
+    if grid.terrain
+        # background θ̄ (FV_TERRAIN_CONSISTENT): cells, x-faces (height Zx), σ-faces (height Zf)
+        θbar(z) = Θref(z) / ρref(z)
+        push!(cache.cc, T ./ R, θbar.(grid.Zx), θbar.(grid.Zf))
+    end
+    return FVModel(grid, gas, nq, R, T, pressure.(Ref(gas), T), zeros(nq), zeros(nq), cache, Ref{Any}(nothing))
 end
 
 function FVModel(grid::CutCellFVGrid, gas::Gas, ρref, Θref)

@@ -14,13 +14,26 @@ mutable struct FVFast <: AbstractFastOperator
     lucache::Dict{Float64,Any}     # c -> tridiagonal factors of I - c A_v
     cmax::Float64
     colbuf::Vector{Float64}        # column work (nz + 1)
+    vadv::Bool                     # FV_VADV_FAST at the last re-freeze
+    uσ::Matrix{Float64}            # frozen u at the (x-face, z-face) corners (nx, nz+1)
+    θc::Matrix{Float64}            # θ̄ at the centres (terrain operator)
 end
+
+"""
+Include in the vertical fast part the transport of x-momentum by the fast vertical mass flux,
+U_t ∋ -∂_η(W' ū)/(J_x), with ū frozen at the corners. Left in the explicit slow part, this term
+couples the large step to the vertical acoustics with Δt ū/Δz (Agnesi a100: Δt ū/Δz ≈ 22).
+The column solve updates U from the solved W afterwards (exact: the column system does not
+read U).
+"""
+const FV_VADV_FAST = Ref(true)
 
 function FVFast(m::FVModel)
     g = m.grid
     nq = m.nq
     return FVFast(g, m.gas, nq, zeros(g.nx, g.nz), zeros(g.nx, g.nz), zeros(g.nx, g.nz), zeros(g.nx, g.nz + 1),
-                  zeros(nq), ones(nq), [zeros(nq) for _ in 1:7], Dict{Float64,Any}(), 0.0, zeros(g.nz + 1))
+                  zeros(nq), ones(nq), [zeros(nq) for _ in 1:7], Dict{Float64,Any}(), 0.0, zeros(g.nz + 1),
+                  false, zeros(g.nx, g.nz + 1), zeros(g.nx, g.nz))
 end
 
 """
@@ -52,6 +65,7 @@ function refreeze!(s::FVFast, m::FVModel, q, pfac)
     @inbounds for k in 1:nz, i in 1:nx
         θl = q[iΘ(g, i - 1, k)] / q[iρ(g, i - 1, k)]
         θr = q[iΘ(g, i, k)] / q[iρ(g, i, k)]
+        s.θc[i, k] = θr
         s.θx[i, k] = 0.5 * (θl + θr)
         k == 1 && (s.θz[i, 1] = θr)
         if k > 1
@@ -59,6 +73,15 @@ function refreeze!(s::FVFast, m::FVModel, q, pfac)
             s.θz[i, k] = 0.5 * (θb + θr)
         end
         k == nz && (s.θz[i, nz+1] = θr)
+    end
+    s.vadv = FV_VADV_FAST[]
+    @inbounds for i in 1:nx
+        ux(k) = q[iU(g, i, k)] / (0.5 * (q[iρ(g, i - 1, k)] + q[iρ(g, i, k)]))
+        s.uσ[i, 1] = 0.0
+        s.uσ[i, nz+1] = 0.0
+        for k in 2:nz
+            s.uσ[i, k] = 0.5 * (ux(k - 1) + ux(k))
+        end
     end
     fill!(s.fb, 0.0)
     grav = m.gas.g
@@ -127,6 +150,7 @@ function fv_fast!(out, s::FVFast, q, f, hor::Bool, ver::Bool, rows::NTuple{4,Boo
                 out[iW(g, i, k)] -= (s.a[i, k] * q[iΘ(g, i, k)] - s.a[i, k-1] * q[iΘ(g, i, k - 1)]) / dz +
                                     grav * 0.5 * (q[iρ(g, i, k - 1)] + q[iρ(g, i, k)])
             end
+            rU && s.vadv && (out[iU(g, i, k)] -= fv_uσ_flux_div(s, q, i, k) / dz)
         end
     end
     fρ, fU, fW, fΘ = frows
@@ -139,6 +163,16 @@ function fv_fast!(out, s::FVFast, q, f, hor::Bool, ver::Bool, rows::NTuple{4,Boo
     return out
 end
 
+"""Difference of the corner fluxes ½(W_{i-1} + W_i) ū at the z-faces k+1 and k of the x-face i
+(walls: zero)."""
+@inline function fv_uσ_flux_div(s, q, i, k)
+    g = s.grid
+    im = ip(g, i - 1)
+    Fb = k > 1 ? 0.5 * (q[iW(g, im, k)] + q[iW(g, i, k)]) * s.uσ[i, k] : 0.0
+    Ft = k < g.nz ? 0.5 * (q[iW(g, im, k+1)] + q[iW(g, i, k+1)]) * s.uσ[i, k+1] : 0.0
+    return Ft - Fb
+end
+
 const ALL = (true, true, true, true)
 const NONE = (false, false, false, false)
 const THERMO = (true, false, false, true)
@@ -146,49 +180,53 @@ const MOMENTUM = (false, true, true, false)
 const HMOM = (false, true, false, false)
 const NOT_HMOM = (true, false, true, true)
 
+"""
+Terrain (Gal-Chen) fast operator in an energy-consistent form.
+- Horizontal part: mass divergence D(U) = δ_x(J_x U)/(J Δx) - δ_η(z_x Ũ)/(J Δη) (σ-correction
+  on the interior σ-faces; zero at the ground, where W = z_x U); Θ' ← -θ̄ D(U), so horizontal
+  momentum does not advect the background θ̄ (it varies along σ-surfaces, but θ̄ = θ̄(z)).
+  The x-momentum gets the exact adjoint (weights J a cells, J_x θ̄_x x-faces):
+  U ← -δ_x(θ̄P)/(θ̄_x Δx) + chain-rule term (z_x/J) δ_η(θ̄P)/θ̄_x averaged to the x-face.
+- Vertical part: the flat one with J Δη (Θ' ← -δ_η(θ̄_z W) carries w' dθ̄/dz).
+`N` keeps the conservative form; the difference is slow (W-method).
+"""
 function fv_fast_terrain!(out, s::FVFast, q, f, hor, ver, rows, frows)
     g = s.grid
     nx, nz, dx, dη = g.nx, g.nz, g.dx, g.dz
     grav = s.gas.g
     rρ, rU, rW, rΘ = rows
     fill!(out, 0.0)
+    P(i, k) = s.a[ip(g, i), k] * q[iΘ(g, i, k)]
+    # 4-point average of U around the σ-face kf of cell column i
+    Ũ(i, kf) = 0.25 * (q[iU(g, i, kf-1)] + q[iU(g, i+1, kf-1)] + q[iU(g, i, kf)] + q[iU(g, i+1, kf)])
     @inbounds for k in 1:nz, i in 1:nx
         im, ir = ip(g, i-1), ip(g, i+1)
         J = g.Jc[i]
         Ul, Ur = q[iU(g, i, k)], q[iU(g, i+1, k)]
         θl, θr = s.θx[i,k], s.θx[ir,k]
         if hor
-            rρ && (out[iρ(g,i,k)] -= (g.Jx[ir]*Ur - g.Jx[i]*Ul) / (J*dx))
-            rΘ && (out[iΘ(g,i,k)] -= (g.Jx[ir]*θr*Ur - g.Jx[i]*θl*Ul) / (J*dx))
-            rU && (out[iU(g,i,k)] -= (g.Jc[i]*s.a[i,k]*q[iΘ(g,i,k)] -
-                                       g.Jc[im]*s.a[im,k]*q[iΘ(g,im,k)]) / (g.Jx[i]*dx))
+            Sb = k > 1 ? g.zx_f[i,k] * Ũ(i, k) : 0.0          # z_x U at the σ-faces (interior)
+            St = k < nz ? g.zx_f[i,k+1] * Ũ(i, k+1) : 0.0
+            rρ && (out[iρ(g,i,k)] -= (g.Jx[ir]*Ur - g.Jx[i]*Ul) / (J*dx) - (St - Sb) / (J*dη))
+            rΘ && (out[iΘ(g,i,k)] -= s.θc[i,k] * ((g.Jx[ir]*Ur - g.Jx[i]*Ul) / (J*dx) - (St - Sb) / (J*dη)))
             if rU
-                aΘb = k == 1 ? 0.5*(s.a[im,k]*q[iΘ(g,im,k)] + s.a[i,k]*q[iΘ(g,i,k)]) :
-                       0.25*(s.a[im,k-1]*q[iΘ(g,im,k-1)] + s.a[i,k-1]*q[iΘ(g,i,k-1)] +
-                             s.a[im,k]*q[iΘ(g,im,k)] + s.a[i,k]*q[iΘ(g,i,k)])
-                aΘt = k == nz ? 0.5*(s.a[im,k]*q[iΘ(g,im,k)] + s.a[i,k]*q[iΘ(g,i,k)]) :
-                       0.25*(s.a[im,k]*q[iΘ(g,im,k)] + s.a[i,k]*q[iΘ(g,i,k)] +
-                             s.a[im,k+1]*q[iΘ(g,im,k+1)] + s.a[i,k+1]*q[iΘ(g,i,k+1)])
-                out[iU(g,i,k)] += (g.zx_xf[i,k+1]*aΘt - g.zx_xf[i,k]*aΘb)/(g.Jx[i]*dη)
+                m = 0.0
+                for ii in (im, i), kf in (k, k+1)
+                    1 < kf <= nz || continue
+                    m += g.zx_f[ii,kf] * (s.θc[ii,kf]*P(ii, kf) - s.θc[ii,kf-1]*P(ii, kf-1))
+                end
+                out[iU(g,i,k)] -= ((s.θc[i,k]*P(i, k) - s.θc[im,k]*P(im, k)) / dx - m / (4 * g.Jx[i] * dη)) / s.θx[i,k]
             end
         end
         if ver
-            Wb = k == 1 ? g.zx_f[i,1]*0.5*(Ul+Ur) : q[iW(g,i,k)]
+            Wb = k == 1 ? 0.0 : q[iW(g,i,k)]
             Wt = k == nz ? 0.0 : q[iW(g,i,k+1)]
-            Ub = k == 1 ? 0.5*(Ul+Ur) : 0.25*(q[iU(g,i,k-1)]+q[iU(g,i+1,k-1)]+Ul+Ur)
-            Ut = k == nz ? 0.5*(Ul+Ur) : 0.25*(Ul+Ur+q[iU(g,i,k+1)]+q[iU(g,i+1,k+1)])
-            Vb = Wb - g.zx_f[i,k]*Ub
-            Vt = Wt - g.zx_f[i,k+1]*Ut
-            rρ && (out[iρ(g,i,k)] -= (Vt-Vb)/(J*dη))
-            if rΘ
-                θb = s.θz[i,k]
-                θt = s.θz[i,k+1]
-                out[iΘ(g,i,k)] -= (θt*Vt-θb*Vb)/(J*dη)
-            end
+            rρ && (out[iρ(g,i,k)] -= (Wt-Wb)/(J*dη))
+            rΘ && (out[iΘ(g,i,k)] -= (s.θz[i,k+1]*Wt - s.θz[i,k]*Wb)/(J*dη))
             if rW && k > 1
-                out[iW(g,i,k)] -= (s.a[i,k]*q[iΘ(g,i,k)] - s.a[i,k-1]*q[iΘ(g,i,k-1)])/(J*dη) +
-                                    grav*0.5*(q[iρ(g,i,k-1)] + q[iρ(g,i,k)])
+                out[iW(g,i,k)] -= (P(i,k) - P(i,k-1))/(J*dη) + grav*0.5*(q[iρ(g,i,k-1)] + q[iρ(g,i,k)])
             end
+            rU && s.vadv && (out[iU(g,i,k)] -= fv_uσ_flux_div(s, q, i, k) / (g.Jx[i]*dη))
         end
     end
     fρ, fU, fW, fΘ = frows

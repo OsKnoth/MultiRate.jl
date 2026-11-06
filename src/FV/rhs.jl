@@ -114,14 +114,30 @@ end
     return 0.25 * (q[iU(g, i, k-1)] + q[iU(g, i+1, k-1)] + q[iU(g, i, k)] + q[iU(g, i+1, k)])
 end
 
+"""
+Background-consistent terrain operator. θ̄ = θ̄(z) varies along σ-surfaces; the conservative
+flux form with full θ and the J-weighted pressure gradient then do not reproduce
+v·∇θ̄ = w dθ̄/dz and -∂p/∂x|_z consistently, which leaves a slowly growing mode (≈ 1e-5 s⁻¹,
+U-dominated, ∝ N² h; Agnesi a100 amplitudes ×10 after 2.5 days). With this switch
+- Θ_t = -div(ρv θ') + θ̄ ρ_t - ρw dθ̄/dz with θ' = θ - θ̄(z) (mass stays conservative),
+- U_t ∋ -(1/θ̄_x)[δ_x(θ̄ p') - (z_x/J) δ_η(θ̄ p')] (= -∂p'/∂x|_z, adjoint to the σ-corrected
+  mass flux; interior σ-faces), matching the fast operator `fv_fast_terrain!`.
+"""
+const FV_TERRAIN_CONSISTENT = Ref(true)
+
 function rhs_terrain!(out, m::FVModel, q)
     g, c = m.grid, m.cache
     nx, nz, dx, dη = g.nx, g.nz, g.dx, g.dz
+    pert = FV_TERRAIN_CONSISTENT[] && length(c.cc) >= 3
+    θbc, θbσ = pert ? (c.cc[1], c.cc[3]) : (c.θ, c.θ)
+    # reconstruction variable of the Θ flux: θ' (work array c.mx) or θ
+    θr = pert ? c.mx : c.θ
     @inbounds for k in 1:nz, i in 1:nx
         ρ = q[iρ(g, i, k)]
         c.θ[i, k] = q[iΘ(g, i, k)] / ρ
         c.pp[i, k] = pressure(m.gas, q[iΘ(g, i, k)]) - m.pref[i, k]
         c.u[i, k] = q[iU(g, i, k)] / (0.5 * (q[iρ(g, i-1, k)] + ρ))
+        pert && (θr[i, k] = c.θ[i, k] - θbc[i, k])
     end
     @inbounds for i in 1:nx
         for k in 2:nz
@@ -144,22 +160,27 @@ function rhs_terrain!(out, m::FVModel, q)
             Uc = fv_ux_at_sigma(g, q, i, kf)
             Vσ = mz - g.zx_f[i, kf] * Uc
             out[iρ(g, i, k)] -= sg * Vσ / (J * dη)
-            θσ = kf == 1 ? c.θ[i, 1] : kf == nz+1 ? c.θ[i, nz] :
-                  interp2(c.θ[i, kf-1], c.θ[i, kf])
+            θσ = kf == 1 ? θr[i, 1] : kf == nz+1 ? θr[i, nz] :
+                  interp2(θr[i, kf-1], θr[i, kf])
             out[iΘ(g, i, k)] -= sg * θσ * Vσ / (J * dη)
         end
         out[iρ(g, i, k)] -= (Fx1 - Fx0) / (J * dx)
-        θx0 = interp3(c.θ[ip(g, i-2), k], c.θ[ip(g, i-1), k], c.θ[i, k], c.θ[ip(g, i+1), k], U0)
-        θx1 = interp3(c.θ[ip(g, i-1), k], c.θ[i, k], c.θ[ir, k], c.θ[ip(g, i+2), k], U1)
+        θx0 = interp3(θr[ip(g, i-2), k], θr[ip(g, i-1), k], θr[i, k], θr[ip(g, i+1), k], U0)
+        θx1 = interp3(θr[ip(g, i-1), k], θr[i, k], θr[ir, k], θr[ip(g, i+2), k], U1)
         out[iΘ(g, i, k)] -= (g.Jx[ir] * θx1 * U1 - g.Jx[i] * θx0 * U0) / (J * dx)
+        if pert   # background: θ̄ ρ_t - ρw dθ̄/dz (out[ρ] holds ρ_t of this cell so far)
+            ρw = 0.5 * (fv_mz_face(g, q, i, k) + fv_mz_face(g, q, i, k+1))
+            θz = (θbσ[i, k+1] - θbσ[i, k]) / (g.Zf[i, k+1] - g.Zf[i, k])
+            out[iΘ(g, i, k)] += θbc[i, k] * out[iρ(g, i, k)] - ρw * θz
+        end
 
         # x-momentum control volume centred on x-face i, including the terrain pressure metric.
         im = ip(g, i-1)
         mxm, mxp = fv_u_center(g, q, im, k), fv_u_center(g, q, i, k)
         um = 0.5 * (c.u[im, k] + c.u[i, k])
         up = 0.5 * (c.u[i, k] + c.u[ir, k])
-        pleft = c.pp[im, k]
-        pright = c.pp[i, k]
+        pleft = pert ? 0.0 : c.pp[im, k]
+        pright = pert ? 0.0 : c.pp[i, k]
         FxL = g.Jc[im] * (mxm * um + pleft)
         FxR = g.Jc[i] * (mxp * up + pright)
         FσL, FσR = 0.0, 0.0
@@ -169,7 +190,7 @@ function rhs_terrain!(out, m::FVModel, q)
                            (kf == 1 ? c.pp[i, 1] : kf == nz+1 ? c.pp[i, nz] : 0.5*(c.pp[i,kf-1]+c.pp[i,kf])))
             # σ mass flux at the corner (x-face i, σ-face kf), zero at the ground and the top,
             # times the upwind u at the σ-face: one flux per face, shared by the cells k-1 and k
-            Fσ = -zxs * pface
+            Fσ = pert ? 0.0 : -zxs * pface
             if 1 < kf <= nz
                 Uf = 0.5 * (q[iU(g, i, kf-1)] + q[iU(g, i, kf)])
                 Mσ = 0.5 * (q[iW(g, im, kf)] + q[iW(g, i, kf)]) - zxs * Uf
@@ -178,6 +199,16 @@ function rhs_terrain!(out, m::FVModel, q)
             dest == 1 ? (FσL = Fσ) : (FσR = Fσ)
         end
         out[iU(g, i, k)] = -((FxR - FxL) / dx + (FσR - FσL) / dη) / g.Jx[i]
+        if pert   # -∂p'/∂x|_z in the θ̄-weighted chain-rule form
+            θp(ii, kk) = θbc[ii, kk] * c.pp[ii, kk]
+            mσ = 0.0
+            for ii in (im, i), kf in (k, k+1)
+                1 < kf <= nz || continue
+                mσ += g.zx_f[ii, kf] * (θp(ii, kf) - θp(ii, kf-1))
+            end
+            out[iU(g, i, k)] -= ((θp(i, k) - θp(im, k)) / dx - mσ / (4 * g.Jx[i] * dη)) /
+                                (0.5 * (θbc[im, k] + θbc[i, k]))
+        end
 
         # Vertical-momentum control volume centred at sigma-face k.
         if k > 1
