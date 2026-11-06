@@ -31,6 +31,8 @@ struct FVModel{G}
     ρref::Matrix{Float64}     # at cell centres (nx, nz)
     Θref::Matrix{Float64}
     pref::Matrix{Float64}
+    ρbal::Matrix{Float64}     # subtracted in the momentum equations: ρref/pref or zero
+    pbal::Matrix{Float64}     # (FV_HYDRO_REFERENCE)
     damp::Vector{Float64}     # Rayleigh damping rate per unknown (sponge)
     qtarget::Vector{Float64}
     cache::FVCache
@@ -38,10 +40,24 @@ struct FVModel{G}
 end
 
 """
+If true, the momentum equations use p' = p - p̄ and ρ' = ρ - ρ̄ of the hydrostatic reference
+(the discrete rest state is exact). Default false: background-free, full p and ρ; the
+analytically exact hydrostatic state then has an O(Δz²) discrete imbalance. Read when the model
+is constructed.
+"""
+const FV_HYDRO_REFERENCE = Ref(false)
+
+"""
     FVModel(grid, gas, ρref, Θref)
 
-Hydrostatic reference given by functions of z (evaluated at the cell centres).
+Reference state given by functions of z (evaluated at the cell centres): used for output
+(primed fields), for solid cut cells and, with `FV_HYDRO_REFERENCE[]`, in the momentum equations.
 """
+function balance(gas, R, T)
+    P = pressure.(Ref(gas), T)
+    return FV_HYDRO_REFERENCE[] ? (P, R, P) : (P, zero(R), zero(P))
+end
+
 function FVModel(grid::FVGrid, gas::Gas, ρref, Θref)
     R = ρref.(grid.Zc)
     T = Θref.(grid.Zc)
@@ -52,11 +68,19 @@ function FVModel(grid::FVGrid, gas::Gas, ρref, Θref)
         θbar(z) = Θref(z) / ρref(z)
         push!(cache.cc, T ./ R, θbar.(grid.Zx), θbar.(grid.Zf))
     end
-    return FVModel(grid, gas, nq, R, T, pressure.(Ref(gas), T), zeros(nq), zeros(nq), cache, Ref{Any}(nothing))
+    return FVModel(grid, gas, nq, R, T, balance(gas, R, T)..., zeros(nq), zeros(nq), cache, Ref{Any}(nothing))
 end
 
+"""
+Height at which the state of cut cell (i, k) is sampled. Background-free (default): the full-cell
+centre zc[k], where the operator places the values (pressure gradients and gravity use dx, dz and
+the full-cell centres), so cells of one layer have the same p at rest. With FV_HYDRO_REFERENCE:
+halfway through the fluid part (the reference absorbs the height differences).
+"""
+cutcell_state_z(g::CutCellFVGrid, i, k) = FV_HYDRO_REFERENCE[] ? cutcell_sample_z(g, i, k) : g.zc[k]
+
 function FVModel(grid::CutCellFVGrid, gas::Gas, ρref, Θref)
-    Zref = [cutcell_sample_z(grid,i,k) for i in 1:grid.nx, k in 1:grid.nz]
+    Zref = [cutcell_state_z(grid,i,k) for i in 1:grid.nx, k in 1:grid.nz]
     R = ρref.(Zref)
     T = Θref.(Zref)
     nq = nunknowns(grid)
@@ -67,7 +91,7 @@ function FVModel(grid::CutCellFVGrid, gas::Gas, ρref, Θref)
     push!(cache.cc, T ./ R,
           [θbar((max(g.zf[k], min(g.zs(g.xf[f]), g.zf[k+1])) + g.zf[k+1]) / 2) for f in 1:g.nx+1, k in 1:g.nz],
           [θbar(g.zf[k]) for i in 1:g.nx, k in 1:g.nz+1])
-    return FVModel(grid, gas, nq, R, T, pressure.(Ref(gas), T), zeros(nq), zeros(nq), cache, Ref{Any}(nothing))
+    return FVModel(grid, gas, nq, R, T, balance(gas, R, T)..., zeros(nq), zeros(nq), cache, Ref{Any}(nothing))
 end
 
 """
@@ -93,7 +117,7 @@ function with_sponge(m::FVModel, qtarget::AbstractVector; zD::Real, αtop::Real 
         damp[iU(g, i, k)] = rate(g.xf[i], g.Zx[i, k])
         k > 1 && (damp[iW(g, i, k)] = rate(g.xc[i], g.Zf[i, k]))
     end
-    return FVModel(g, m.gas, m.nq, m.ρref, m.Θref, m.pref, damp, Vector{Float64}(qtarget), m.cache, m.fastref)
+    return FVModel(g, m.gas, m.nq, m.ρref, m.Θref, m.pref, m.ρbal, m.pbal, damp, Vector{Float64}(qtarget), m.cache, m.fastref)
 end
 
 """
@@ -119,10 +143,10 @@ function project2d(m::FVModel{<:CutCellFVGrid}, fun)
     g = m.grid
     q = zeros(m.nq)
     @inbounds for k in 1:g.nz, i in 1:g.nx
-        # Use the cell centre when it lies in fluid, otherwise sample halfway through the
-        # fluid portion of the cut cell. Fully solid cells retain the reference state so
+        # Sample at cutcell_state_z (full-cell centre, or halfway through the fluid part with
+        # FV_HYDRO_REFERENCE). Fully solid cells retain the reference state so
         # coefficient evaluation remains finite; their open volume and faces are zero.
-        zsample = cutcell_sample_z(g,i,k)
+        zsample = cutcell_state_z(g,i,k)
         vals = fun(g.xc[i], zsample)
         if g.Vol[i,k] > 0
             q[iρ(g, i, k)] = vals[1]

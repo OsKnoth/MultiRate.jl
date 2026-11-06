@@ -239,7 +239,15 @@ end
     g = FV.FVGrid(8, 6, 40e3, 10e3)
     m = FV.FVModel(g, gas, ρr, Θr)
     qr = CM.project2d(m, (x, z) -> (ρr(z), 0.0, 0.0, Θr(z)))
-    @test maximum(abs.(TS.rhs_nonlinear(m, qr))) == 0                                   # rest state exact
+    withref(f) = (FV.FV_HYDRO_REFERENCE[] = true; try f() finally FV.FV_HYDRO_REFERENCE[] = false end)
+    mref = withref(() -> FV.FVModel(g, gas, ρr, Θr))
+    @test maximum(abs.(TS.rhs_nonlinear(mref, qr))) == 0                                # rest state exact
+    # background-free (default): the analytic hydrostatic state is balanced to second order
+    res = map((6, 12)) do nz
+        gz = FV.FVGrid(8, nz, 40e3, 10e3); mz = FV.FVModel(gz, gas, ρr, Θr)
+        maximum(abs.(TS.rhs_nonlinear(mz, CM.project2d(mz, (x, z) -> (ρr(z), 0.0, 0.0, Θr(z))))))
+    end
+    @test rate(res...) > 1.9
     q = CM.project2d(m, (x, z) -> (ρr(z) * (1 - 0.01 * exp(-((x - 15e3)^2 + (z - 4e3)^2) / 3e3^2)), 10ρr(z),
                                    0.3ρr(z) * sin(2π * x / 40e3), Θr(z)))
     Nq = TS.rhs_nonlinear(m, q)
@@ -275,7 +283,8 @@ end
 
     # gravity-wave setup: MIS against RK4 on N
     gw = FV.FVGrid(40, 10, 100e3, 10e3)
-    mw = FV.FVModel(gw, gas, ρr, Θr)
+    # with the reference: the dz = 1 km imbalance of the background-free form would dominate
+    mw = withref(() -> FV.FVModel(gw, gas, ρr, Θr))
     q0 = CM.project2d(mw, (x, z) -> (ρ = Θr(z) / (θr(z) + 0.01 * sin(π * z / 10e3) / (1 + ((x - 50e3) / 5e3)^2));
                                      (ρ, 20ρ, 0.0, Θr(z))))
     c = CM.sound_speed_max(mw, q0)

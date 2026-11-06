@@ -77,20 +77,24 @@ function plot_fields(m::FVModel, q; names = ["theta_prime", "w"], title = "", zo
     pts = zeros(Float32, 4ncell, 2)
     faces = zeros(Int, 2ncell, 3)
     cellid(i, k) = i + (k - 1) * g.nx
+    # geometry once (before scaling): four corners per cell, two triangles
+    for k in 1:g.nz, i in 1:g.nx
+        c = cellid(i, k)
+        o = 4(c - 1)
+        il = i
+        ir = i + 1
+        xr = i == g.nx ? g.x0 + g.Lx : g.xf[ir]
+        pts[o+1, :] .= (g.xf[il], g.Zv[il, k])
+        pts[o+2, :] .= (xr, g.Zv[ir, k])
+        pts[o+3, :] .= (xr, g.Zv[ir, k+1])
+        pts[o+4, :] .= (g.xf[il], g.Zv[il, k+1])
+        faces[2c-1, :] .= (o+1, o+2, o+3)
+        faces[2c, :] .= (o+1, o+3, o+4)
+    end
     vertex_values(Fv) = begin
         v = zeros(Float32, 4ncell)
         for k in 1:g.nz, i in 1:g.nx
-            c = cellid(i, k)
-            o = 4(c - 1)
-            il = i
-            ir = i + 1
-            xr = i == g.nx ? g.x0 + g.Lx : g.xf[ir]
-            pts[o+1, :] .= (g.xf[il], g.Zv[il, k])
-            pts[o+2, :] .= (xr, g.Zv[ir, k])
-            pts[o+3, :] .= (xr, g.Zv[ir, k+1])
-            pts[o+4, :] .= (g.xf[il], g.Zv[il, k+1])
-            faces[2c-1, :] .= (o+1, o+2, o+3)
-            faces[2c, :] .= (o+1, o+3, o+4)
+            o = 4(cellid(i, k) - 1)
             v[o+1:o+4] .= Float32(Fv[i, k])
         end
         v

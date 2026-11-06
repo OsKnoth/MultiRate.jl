@@ -100,11 +100,11 @@ function refreeze!(s::FVFast, m::FVModel, q, pfac)
         end
         if k > 1
             if g.terrain
-                s.fb[iW(g, i, k)] = (-(s.b[i, k] - s.b[i, k-1]) + (m.pref[i, k] - m.pref[i, k-1])) /
-                    (g.Jc[i] * g.dz) + grav * 0.5 * (m.ρref[i, k-1] + m.ρref[i, k])
+                s.fb[iW(g, i, k)] = (-(s.b[i, k] - s.b[i, k-1]) + (m.pbal[i, k] - m.pbal[i, k-1])) /
+                    (g.Jc[i] * g.dz) + grav * 0.5 * (m.ρbal[i, k-1] + m.ρbal[i, k])
             else
-                s.fb[iW(g, i, k)] = -(s.b[i, k] - s.b[i, k-1]) / g.dz + (m.pref[i, k] - m.pref[i, k-1]) / g.dz +
-                                    grav * 0.5 * (m.ρref[i, k-1] + m.ρref[i, k])
+                s.fb[iW(g, i, k)] = -(s.b[i, k] - s.b[i, k-1]) / g.dz + (m.pbal[i, k] - m.pbal[i, k-1]) / g.dz +
+                                    grav * 0.5 * (m.ρbal[i, k-1] + m.ρbal[i, k])
             end
         end
     end
@@ -182,6 +182,14 @@ const HMOM = (false, true, false, false)
 const NOT_HMOM = (true, false, true, true)
 
 """
+Ground σ-face in the chain-rule pressure gradient of the terrain fast operator: with `true` the
+η-difference is extrapolated as in N (`:advective`/`:flux` with fv_p_sigma), otherwise the face is
+left out (half of z_x ∂_η p at k = 1; exactly adjoint to the mass divergence, but N - L then holds
+an acoustic term that is explicit in MIS: 2Δx noise along the ground for steep hills, a1).
+"""
+const FV_FAST_GROUND_GRADIENT = Ref(true)
+
+"""
 Terrain (Gal-Chen) fast operator in an energy-consistent form.
 - Horizontal part: mass divergence D(U) = δ_x(J_x U)/(J Δx) - δ_η(z_x Ũ)/(J Δη) (σ-correction
   on the interior σ-faces; zero at the ground, where W = z_x U); Θ' ← -θ̄ D(U), so horizontal
@@ -212,9 +220,13 @@ function fv_fast_terrain!(out, s::FVFast, q, f, hor, ver, rows, frows)
             rΘ && (out[iΘ(g,i,k)] -= s.θc[i,k] * ((g.Jx[ir]*Ur - g.Jx[i]*Ul) / (J*dx) - (St - Sb) / (J*dη)))
             if rU
                 m = 0.0
+                θP(ii, kk) = s.θc[ii,kk] * P(ii, kk)
                 for ii in (im, i), kf in (k, k+1)
-                    1 < kf <= nz || continue
-                    m += g.zx_f[ii,kf] * (s.θc[ii,kf]*P(ii, kf) - s.θc[ii,kf-1]*P(ii, kf-1))
+                    if 1 < kf <= nz
+                        m += g.zx_f[ii,kf] * (θP(ii, kf) - θP(ii, kf-1))
+                    elseif FV_FAST_GROUND_GRADIENT[] && kf == 1   # ground face: extrapolated difference as in N
+                        m += g.zx_f[ii,1] * (2 * (θP(ii, 2) - θP(ii, 1)) - (θP(ii, 3) - θP(ii, 2)))
+                    end
                 end
                 out[iU(g,i,k)] -= ((s.θc[i,k]*P(i, k) - s.θc[im,k]*P(im, k)) / dx - m / (4 * g.Jx[i] * dη)) / s.θx[i,k]
             end

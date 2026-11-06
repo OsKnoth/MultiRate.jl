@@ -135,26 +135,61 @@ files are ignored by git.
   discretization (∂N/∂q has no growing mode). The example switches it on for U Δt/Δz > 4 (`DG_VADV_FAST`, `FV_VADV_FAST`,
   `VADV=auto|0|1`). A split-form linearization of `L` (`DG_SPLIT_FAST`, off) makes `N − L` vanish
   at rest but changes neither the stability nor the solution.
+- **No background state anywhere.** All three discretizations use the full p and ρ in the
+  momentum equations and the full θ in the Θ equation. The initial state is the analytic
+  hydrostatic profile sampled at the points where the operator places the values (cell centres;
+  for cut cells the full-cell centre, so all cells of a layer have the same p at rest). Its
+  discrete imbalance is O(Δz²): at rest, after 6 h on the a10 grid, max|w| = 4e-3 m/s for
+  terrain-following FV and 9e-3 m/s for cut cells. `FV_HYDRO_REFERENCE[] = true` restores the old
+  p′ = p − p̄(z), ρ′ = ρ − ρ̄(z) form, which is exactly balanced at rest.
 - **Terrain-following FV** runs all three hills with `hevi` at the regular step (a100: Δt = 540 s)
-  with the conservative, background-free flux form (`FV_TERRAIN_FORM = :flux`). a100 needed the
-  vertical transport of u by the fast vertical mass flux in the vertical `L` (U Δt/Δz = 22) and an
-  `L` in skew form. The flux form has a weak growing mode at rest on terrain (the x-flux carries θ
-  along the sloped σ-surfaces, the σ correction uses averaged U; ≈ 5e-6 s⁻¹ on a coarse test
-  hill, growing with the horizontal resolution) that does not affect the Agnesi runs.
-  `:advective` (θ ρ_t − ρv·∇θ in σ-coordinates with the state θ, adjoint pressure gradient) removes
-  it at the price of Θ conservation; `:background` uses a prescribed θ̄(z).
+  with the conservative flux form (`FV_TERRAIN_FORM = :flux`). a100 needed the vertical transport
+  of u by the fast vertical mass flux in the vertical `L` (U Δt/Δz = 22) and an `L` in skew form.
+  - **Ground pressure in the σ-correction:** −∂_η(z_x p) took the pressure at the ground face from
+    the lowest cell centre. With the full hydrostatic p that is off by ρgΔz/2, an O(1) error
+    (|U_t| ≈ 0.14 at rest, not decreasing with resolution). The ground value is now extrapolated
+    from the face means (`fv_p_sigma`), and the at-rest residual is second order. The fast
+    operator includes the ground face in the same way (`FV_FAST_GROUND_GRADIENT`).
+  - **Open: 2Δx noise along the ground at a1** (steepest slopes) with the default step Δt = 5.4 s
+    (nsub = 12). It was already present before these changes. It disappears with half the slow
+    step (`NSUB=6`, same fast step; see the pictures below). At double resolution the default step
+    blows up and half the step runs (max|w| = 2.68). This is a stability limit of the MIS slow step
+    for the terrain terms in N − L, not of the spatial discretization.
+  - The flux form has a weak growing mode at rest on terrain (the x-flux carries θ along the
+    sloped σ-surfaces, while the σ correction uses averaged U; ≈ 5e-6 s⁻¹ on a coarse test hill,
+    growing with the horizontal resolution). It does not affect the Agnesi runs. `:advective`
+    (θ ρ_t − ρv·∇θ in σ-coordinates with the state θ, adjoint pressure gradient) removes it at the
+    price of Θ conservation; `:background` uses a prescribed θ̄(z).
 - **Agnesi hills, all discretizations** (MIS4, nsub = 12, 200 × 64 FV cells / 50 × 16 DG elements
   of degree 4, T = 21.6 a/U):
 
   | | DGSEM `hevi_verlet` | FV terrain-following `hevi` | FV cut cells `rosenbrock_amf` |
   |---|---|---|---|
   | large steps | 694 | 400 | 565 |
-  | a1: max\|w\|, θ′ (m/s, K) | 2.77, −1.22…0.93 | 2.51, −1.09…0.91 | 2.15, −1.08…0.92 |
-  | a10 | 0.69, −1.48…1.65 | 0.55, −1.37…1.54 | 0.59, −1.44…1.59 |
-  | a100 | 0.064, −1.49…1.70 | 0.055, −1.38…1.55 | 0.058, −1.44…1.62 |
+  | a1: max\|w\|, θ′ (m/s, K) | 2.77, −1.22…0.93 | 2.54, −1.09…0.92 (2Δx noise; half step: 2.41) | 2.14, −1.08…0.91 |
+  | a10 | 0.69, −1.48…1.65 | 0.56, −1.39…1.55 | 0.58, −1.43…1.58 |
+  | a100 | 0.064, −1.49…1.70 | 0.056, −1.40…1.57 | 0.057, −1.43…1.61 |
 
-  All without a background θ̄(z) (DG pointwise `L`, FV `:flux`, cut cells `:donor`); only the
-  hydrostatic reference p′, ρ′ in the FV momentum equations.
+  All fully background-free: no θ̄(z) (DG pointwise `L`, FV `:flux`, cut cells `:donor`) and no
+  hydrostatic reference p̄, ρ̄.
+
+### Pictures
+
+w (top) and θ′ (bottom) at the final time, made with the commands under *Introductory cases*
+(DG `hevi_verlet`, FV `hevi`, cut cells `rosenbrock_amf`; bubble with `hevi`).
+
+| | DGSEM | FV terrain-following | FV cut cells |
+|---|---|---|---|
+| warm bubble, t = 120 s | ![](docs/images/bubble_dg.png) | ![](docs/images/bubble_fv.png) | ![](docs/images/bubble_fvc.png) |
+| Agnesi a1, t = 36 min | ![](docs/images/agnesi_a1_dg.png) | ![](docs/images/agnesi_a1_fv.png) | ![](docs/images/agnesi_a1_fvc.png) |
+| Agnesi a10, t = 6 h | ![](docs/images/agnesi_a10_dg.png) | ![](docs/images/agnesi_a10_fv.png) | ![](docs/images/agnesi_a10_fvc.png) |
+| Agnesi a100, t = 2.5 d | ![](docs/images/agnesi_a100_dg.png) | ![](docs/images/agnesi_a100_fv.png) | ![](docs/images/agnesi_a100_fvc.png) |
+
+Terrain-following FV, a1, half the slow step (`NSUB=6`): the ground noise of the default step is gone.
+
+![](docs/images/agnesi_a1_fv_halfstep.png)
+
+The cut-cell θ′ shows the open warm layer in the lowest cells downstream of the hill.
 
 - **Planned fast solver:** a linear IMEX fast solver as in the MATLAB reference
   (`SplitExplicitLin`/`LinIMEX_RK`). It is explicit in `L_E` and implicit in `L_I`, with one sparse

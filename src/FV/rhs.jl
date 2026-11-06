@@ -27,7 +27,7 @@ function rhs_nonlinear!(out, m::FVModel, q::AbstractVector)
     @inbounds for k in 1:nz, i in 1:nx
         ρ = q[iρ(g, i, k)]
         θ[i, k] = q[iΘ(g, i, k)] / ρ
-        pp[i, k] = pressure(m.gas, q[iΘ(g, i, k)]) - m.pref[i, k]
+        pp[i, k] = pressure(m.gas, q[iΘ(g, i, k)]) - m.pbal[i, k]
         u[i, k] = q[iU(g, i, k)] / (0.5 * (q[iρ(g, i - 1, k)] + ρ))
     end
     @inbounds for i in 1:nx
@@ -83,7 +83,7 @@ function rhs_nonlinear!(out, m::FVModel, q::AbstractVector)
         # pressure gradient and gravity (deviations from the reference)
         out[iU(g, i, k)] -= (pp[i, k] - pp[ip(g, i - 1), k]) / dx
         if k > 1
-            ρw = 0.5 * (q[iρ(g, i, k - 1)] - m.ρref[i, k-1] + q[iρ(g, i, k)] - m.ρref[i, k])
+            ρw = 0.5 * (q[iρ(g, i, k - 1)] - m.ρbal[i, k-1] + q[iρ(g, i, k)] - m.ρbal[i, k])
             out[iW(g, i, k)] -= (pp[i, k] - pp[i, k-1]) / dz + grav * ρw
         end
     end
@@ -134,6 +134,15 @@ Form of the Θ equation and the horizontal pressure gradient on the Gal-Chen gri
 """
 const FV_TERRAIN_FORM = Ref(:flux)
 
+"""p at σ-face kf of column i: mean of the neighbours; at the ground and the top the face means
+are extrapolated quadratically (3p̄₃⸝₂ - 3p̄₅⸝₂ + p̄₇⸝₂). The boundary value then has the same
+O(Δη²) error as the interior means, which cancels in -∂_η(z_x p)/Δη: second order at k = 1
+(a pointwise third-order extrapolation leaves an O(Δη) residual of the full hydrostatic p)."""
+@inline fv_p_sigma(p, i, kf, nz) =
+    kf == 1 ? 1.5p[i, 1] - p[i, 3] + 0.5p[i, 4] :
+    kf == nz+1 ? 1.5p[i, nz] - p[i, nz-2] + 0.5p[i, nz-3] :
+    0.5 * (p[i, kf-1] + p[i, kf])
+
 function rhs_terrain!(out, m::FVModel, q)
     g, c = m.grid, m.cache
     nx, nz, dx, dη = g.nx, g.nz, g.dx, g.dz
@@ -147,7 +156,7 @@ function rhs_terrain!(out, m::FVModel, q)
     @inbounds for k in 1:nz, i in 1:nx
         ρ = q[iρ(g, i, k)]
         c.θ[i, k] = q[iΘ(g, i, k)] / ρ
-        c.pp[i, k] = pressure(m.gas, q[iΘ(g, i, k)]) - m.pref[i, k]
+        c.pp[i, k] = pressure(m.gas, q[iΘ(g, i, k)]) - m.pbal[i, k]
         c.u[i, k] = q[iU(g, i, k)] / (0.5 * (q[iρ(g, i-1, k)] + ρ))
         pert && !adv && (θr[i, k] = c.θ[i, k] - θbc[i, k])
     end
@@ -216,8 +225,9 @@ function rhs_terrain!(out, m::FVModel, q)
         FσL, FσR = 0.0, 0.0
         for (kf, dest) in ((k, 1), (k+1, 2))
             zxs = g.zx_xf[i, kf]
-            pface = 0.5 * ((kf == 1 ? c.pp[im, 1] : kf == nz+1 ? c.pp[im, nz] : 0.5*(c.pp[im,kf-1]+c.pp[im,kf])) +
-                           (kf == 1 ? c.pp[i, 1] : kf == nz+1 ? c.pp[i, nz] : 0.5*(c.pp[i,kf-1]+c.pp[i,kf])))
+            # p at the corner; ground and top extrapolated (the full hydrostatic
+            # p differs from the cell value by ρgΔz/2, an O(1) error in -∂_η(z_x p) otherwise)
+            pface = 0.5 * (fv_p_sigma(c.pp, im, kf, nz) + fv_p_sigma(c.pp, i, kf, nz))
             # σ mass flux at the corner (x-face i, σ-face kf), zero at the ground and the top,
             # times the upwind u at the σ-face: one flux per face, shared by the cells k-1 and k
             Fσ = pert ? 0.0 : -zxs * pface
@@ -233,8 +243,11 @@ function rhs_terrain!(out, m::FVModel, q)
             θp(ii, kk) = θbc[ii, kk] * c.pp[ii, kk]
             mσ = 0.0
             for ii in (im, i), kf in (k, k+1)
-                1 < kf <= nz || continue
-                mσ += g.zx_f[ii, kf] * (θp(ii, kf) - θp(ii, kf-1))
+                # ground and top: η-difference extrapolated (second order one-sided gradient)
+                δ = kf == 1 ? 2 * (θp(ii, 2) - θp(ii, 1)) - (θp(ii, 3) - θp(ii, 2)) :
+                    kf == nz+1 ? 2 * (θp(ii, nz) - θp(ii, nz-1)) - (θp(ii, nz-1) - θp(ii, nz-2)) :
+                    θp(ii, kf) - θp(ii, kf-1)
+                mσ += g.zx_f[ii, kf] * δ
             end
             # :advective: ∂_x p = (1/θ)[∂_x(θp) - p ∂_xθ], adjoint to the ρu ∂_xθ|_z term of Θ
             pr = adv ? 0.5 * (c.pp[im, k] * rc[im, k] + c.pp[i, k] * rc[i, k]) : 0.0
@@ -260,7 +273,7 @@ function rhs_terrain!(out, m::FVModel, q)
                 Fs = mb * (wb - g.zx_c[i, kc] * ub) + p
                 dest == 1 ? (Fsbot = Fs) : (Fstop = Fs)
             end
-            ρpert = 0.5 * (q[iρ(g, i, k-1)] - m.ρref[i, k-1] + q[iρ(g, i, k)] - m.ρref[i, k])
+            ρpert = 0.5 * (q[iρ(g, i, k-1)] - m.ρbal[i, k-1] + q[iρ(g, i, k)] - m.ρbal[i, k])
             out[iW(g, i, k)] = -(divx + (Fstop - Fsbot) / dη) / J - m.gas.g * ρpert
         end
     end

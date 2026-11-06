@@ -29,8 +29,12 @@ for i in 1:fvgrid.nx
     abs(metric_x - metric_η) < 1e-12 || error("FV terrain metric identity failed in column $i")
 end
 qfv_rest = FV.project2d(fvmodel, (x, z) -> (ρr(z), 0.0, 0.0, Θr(z)))
-rrest = FV.rhs_nonlinear(fvmodel, qfv_rest)
-maximum(abs, rrest) < 1e-12 || error("FV terrain reference state is not well balanced")
+FV.FV_HYDRO_REFERENCE[] = true
+fvref = FV.FVModel(fvgrid, gas, ρr, Θr)
+FV.FV_HYDRO_REFERENCE[] = false
+maximum(abs, FV.rhs_nonlinear(fvref, qfv_rest)) < 1e-12 || error("FV terrain reference state is not well balanced")
+# background-free: the analytic hydrostatic state is balanced to second order (small, not zero)
+maximum(abs, FV.rhs_nonlinear(fvmodel, qfv_rest)) < 0.05 || error("FV terrain background-free rest state imbalance too large")
 qfv = FV.project2d(fvmodel, (x, z) -> (ρr(z), 10ρr(z), 0.0, Θr(z)))
 rfv = FV.rhs_nonlinear(fvmodel, qfv)
 abs(FV.total2d(fvmodel, rfv, 1)) < 1e-12 * FV.total2d(fvmodel, qfv, 1) || error("FV terrain mass is not conservative")
@@ -55,8 +59,13 @@ println("Agnesi hill MIS/HEVI check passed for the terrain-following FV grid")
 
 gcut = FV.CutCellFVGrid(40, 8, L, H; zs = zs)
 mcut = FV.FVModel(gcut, gas, ρr, Θr)
+FV.FV_HYDRO_REFERENCE[] = true
+mcutref = FV.FVModel(gcut, gas, ρr, Θr)
+qcut_ref = FV.project2d(mcutref, (x,z) -> (ρr(z), 0.0, 0.0, Θr(z)))
+FV.FV_HYDRO_REFERENCE[] = false
+maximum(abs, FV.rhs_nonlinear(mcutref, qcut_ref)) < 1e-12 || error("cut-cell FV reference rest state is not balanced")
 qcut_rest = FV.project2d(mcut, (x,z) -> (ρr(z), 0.0, 0.0, Θr(z)))
-maximum(abs, FV.rhs_nonlinear(mcut, qcut_rest)) < 1e-12 || error("cut-cell FV rest state is not balanced")
+maximum(abs, FV.rhs_nonlinear(mcut, qcut_rest)) < 0.05 || error("cut-cell FV background-free rest state imbalance too large")
 qcut = FV.project2d(mcut, (x,z) -> (ρr(z), 10ρr(z), 0.0, Θr(z)))
 rcut = FV.rhs_nonlinear(mcut, qcut)
 abs(FV.total2d(mcut, rcut, 1)) < 1e-12 * FV.total2d(mcut, qcut, 1) || error("cut-cell mass tendency is not conservative")

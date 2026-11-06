@@ -68,8 +68,8 @@ function refreeze_cutcell!(s::CutCellFVFast, m::FVModel{<:CutCellFVGrid}, q, pfa
         s.fb[iU(g,i,k)] = -(s.b[ir,k] - s.b[il,k])/g.dx
         if 2 <= k <= g.nz && g.FW[i,k] > 0
             s.fb[iW(g,i,k)] = -(s.b[i,k]-s.b[i,k-1])/g.dz +
-                (m.pref[i,k]-m.pref[i,k-1])/g.dz +
-                m.gas.g*0.5*(m.ρref[i,k]+m.ρref[i,k-1])
+                (m.pbal[i,k]-m.pbal[i,k-1])/g.dz +
+                m.gas.g*0.5*(m.ρbal[i,k]+m.ρbal[i,k-1])
         end
     end
     for (c,F) in s.lucache
@@ -278,7 +278,7 @@ function rhs_cutcell!(out,m::FVModel{<:CutCellFVGrid},q)
     @inbounds for k in 1:nz, i in 1:nx
         ρ=q[iρ(g,i,k)]; Θ=q[iΘ(g,i,k)]
         θ[i,k]=Θ/max(ρ,eps(Float64))
-        p[i,k]=pressure(m.gas,Θ)-m.pref[i,k]
+        p[i,k]=pressure(m.gas,Θ)-m.pbal[i,k]
         mx[i,k]=0.5*(q[iU(g,i,k)]+q[iU(g,i+1,k)])
         mz[i,k]=0.5*(Wface(g,q,i,k)+Wface(g,q,i,k+1))
     end
@@ -345,8 +345,8 @@ function rhs_cutcell!(out,m::FVModel{<:CutCellFVGrid},q)
             den=vb+vt
             adv=third ? cut_cell_to_wface(g,c.cc[7],c.cc[8],i,k) :
                 den>0 ? (vb*mdz[i,k-1]+vt*mdz[i,k])/den : 0.0
-            ρpb=q[iρ(g,i,k-1)]-m.ρref[i,k-1]
-            ρpt=q[iρ(g,i,k)]-m.ρref[i,k]
+            ρpb=q[iρ(g,i,k-1)]-m.ρbal[i,k-1]
+            ρpt=q[iρ(g,i,k)]-m.ρbal[i,k]
             force=-(p[i,k]-p[i,k-1])/g.dz-m.gas.g*0.5*(ρpb+ρpt)
             out[iW(g,i,k)]=adv+force
         end
