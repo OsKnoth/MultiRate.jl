@@ -109,7 +109,8 @@ are quick consistency checks. Environment controls include `NEX`, `NEZ`, `P`, `L
 
 ```sh
 julia --project=examples examples/euler2d_bubble.jl        dg|fv [T|-] [fast]
-julia --project=examples examples/euler2d_gravity_wave.jl  dg|fv [fast]
+julia --project=examples examples/euler2d_gravity_wave.jl  dg|fv [fast]        # env NSUB
+julia --project=examples examples/euler2d_gravity_wave_long.jl dg|fv [fast]   # env NSUB
 julia --project=examples examples/euler2d_hills.jl         a1|a10|a100 [T|-] [fast]   # DGSEM
 ```
 
@@ -190,6 +191,24 @@ Terrain-following FV, a1, half the slow step (`NSUB=6`): the ground noise of the
 ![](docs/images/agnesi_a1_fv_halfstep.png)
 
 The cut-cell θ′ shows the open warm layer in the lowest cells downstream of the hill.
+
+Production drivers (`examples/euler2d_*.jl`, flat ground, MIS4 with `hevi`, `nsub = 12`), θ′ (top) and w (bottom):
+
+| | DGSEM | FV |
+|---|---|---|
+| warm bubble (20 km channel), t = 120 s | ![](docs/images/bubble_prod_dg.png) | ![](docs/images/bubble_prod_fv.png) |
+| gravity wave, Skamarock & Klemp, t = 3000 s | ![](docs/images/gravity_wave_dg.png) | ![](docs/images/gravity_wave_fv.png) |
+| long-channel gravity wave (6000 km, a = 100 km), t = 60000 s | ![](docs/images/gravity_wave_long_dg.png) | ![](docs/images/gravity_wave_long_fv.png) |
+
+The long-channel FV run at the default step (Δt = 540 s, NΔt ≈ 5.4) is under-resolved in time. The
+two packets are asymmetric (θ′ maxima 2.2e-3 and 9.0e-3 K) and grid-scale noise appears between
+them. This is an MIS slow-step limit on the buoyancy terms in `N − L`, the same kind as the a1 ground
+noise, and is unchanged with the hydrostatic reference and on the previous commit. With `NSUB=3`
+(Δt = 135 s) the packets are symmetric (5.9e-3 and 4.8e-3 K) and the noise is gone. DGSEM is clean
+at the default step. The faint uniform warm offset in θ′ is the k = 0 part of the initial
+perturbation, which does not radiate.
+
+![](docs/images/gravity_wave_long_fv_nsub3.png)
 
 - **Planned fast solver:** a linear IMEX fast solver as in the MATLAB reference
   (`SplitExplicitLin`/`LinIMEX_RK`). It is explicit in `L_E` and implicit in `L_I`, with one sparse
