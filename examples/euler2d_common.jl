@@ -16,6 +16,25 @@ const FV = MultiRate.FV2D
 default_scheme(disc) = (:MIS4, 12, :hevi)
 
 """
+    set_vadv!(U, Δt, Δz; threshold = 4)
+
+Vertical transport of horizontal momentum by the fast vertical velocity, -∂z(ū W'), in the fast
+operator L (DG and FV) when the slow-step vertical Courant number U Δt/Δz exceeds `threshold`;
+the environment variable VADV = 0 / 1 overrides. Left in the slow part S at U Δt/Δz ≈ 17, this
+stiff term makes MIS inaccurate and unstable (long-channel gravity wave, docs/FINDINGS.md §6).
+Returns the choice.
+"""
+function set_vadv!(U, Δt, Δz; threshold = 4.0)
+    cv = abs(U) * Δt / Δz
+    v = get(ENV, "VADV", "auto")
+    vadv = v == "auto" ? cv > threshold : v == "1"
+    E2.DG_VADV_FAST[] = vadv
+    FV.FV_VADV_FAST[] = vadv
+    @printf("vertical Courant number U Δt/Δz = %.1f: vertical momentum transport %s L\n", cv, vadv ? "in" : "not in")
+    return vadv
+end
+
+"""
     model = build_model(disc; L, H, P=4, NEX, NEZ, ρr, Θr, gas=Gas(), zs=x->0)
 
 DG: NEX × NEZ elements of degree P (terrain zs). FV: (P NEX) × (P NEZ) cells, i.e. the same
@@ -164,6 +183,7 @@ function gravity_wave(; disc = :dg, name, L, H = 10e3, a, xc = L / 3, U = 20.0, 
         (ρ, ρ * U, 0.0, Θr(z))
     end)
     Δt = T / ceil(T / (nsub * fast_step(model, q0, fast; cfl = cfl)))
+    set_vadv!(U, Δt, H / (P * NEZ))
     @printf("channel %.0f km × %.0f km, a = %.0f km, %s\n", L / 1e3, H / 1e3, a / 1e3, grid_info(model))
     q, t = run_with_output(model, q0; name = name, Δt = Δt, T = T, nsub = nsub, table = table, fast = fast, nout = nout)
 

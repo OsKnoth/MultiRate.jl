@@ -357,4 +357,37 @@ end
     @test rate(LA.pulse_error(tab(:MIS54), T / 200; fast = :exact), LA.pulse_error(tab(:MIS54), T / 400; fast = :exact)) > 3.8
 end
 
+@testset "LinearAnalysis: Fourier blocks of the FV model, Boussinesq gravity wave" begin
+    LA = MultiRate.LinearAnalysis
+    gas = CM.Gas()
+    ρr, Θr, θr = CM.stratified_reference(gas; θ0 = 300.0, N = 0.01)
+    g = FV.FVGrid(8, 4, 80e3, 4e3); m = FV.FVModel(g, gas, ρr, Θr); nz = g.nz
+    qb = CM.project2d(m, (x, z) -> (ρr(z), 10ρr(z), 0.0, Θr(z)))
+    idx = vcat([[FV.iρ(g, i, k) for i in 1:g.nx] for k in 1:nz], [[FV.iU(g, i, k) for i in 1:g.nx] for k in 1:nz],
+               [[FV.iW(g, i, k) for i in 1:g.nx] for k in 2:nz], [[FV.iΘ(g, i, k) for i in 1:g.nx] for k in 1:nz])
+    thermo = vcat(trues(nz), falses(nz), falses(nz - 1), trues(nz)); hmom = vcat(falses(nz), trues(nz), falses(nz - 1), falses(nz))
+    λb = sort(vcat([eigvals(LA.linearized_mode_model(m, qb, idx, 2π * j / g.nx; thermo, hmom)[3]) for j in 0:g.nx-1]...); by = x -> (imag(x), real(x)))
+    λf = sort(eigvals(FV.fast_matrix(FV.fast_operator(m, qb; reuse = false))); by = x -> (imag(x), real(x)))
+    @test maximum(abs.(λb .- λf)) < 1e-8 * maximum(abs, λf)
+    # the Fourier transform pair
+    δ = randn(length(qb))
+    @test LA.fourier_synthesis(LA.fourier_coefficients(δ, idx), idx, length(δ)) ≈ δ
+    # MIS4 + FV hevi at U Δt/Δz ≈ 17 (Δx = 20 km, Δz = 625 m, Δt = 540 s, U = 20 m/s): unstable with the
+    # vertical transport -∂z(ū W') in the slow part, stable with it in L (FV_VADV_FAST)
+    g2 = FV.FVGrid(30, 16, 600e3, 10e3); m2 = FV.FVModel(g2, gas, ρr, Θr); nz2 = g2.nz
+    qb2 = CM.project2d(m2, (x, z) -> (ρr(z), 20ρr(z), 0.0, Θr(z)))
+    idx2 = vcat([[FV.iρ(g2, i, k) for i in 1:g2.nx] for k in 1:nz2], [[FV.iU(g2, i, k) for i in 1:g2.nx] for k in 1:nz2],
+                [[FV.iW(g2, i, k) for i in 1:g2.nx] for k in 2:nz2], [[FV.iΘ(g2, i, k) for i in 1:g2.nx] for k in 1:nz2])
+    th2 = vcat(trues(nz2), falses(nz2), falses(nz2 - 1), trues(nz2)); hm2 = vcat(falses(nz2), trues(nz2), falses(nz2 - 1), falses(nz2))
+    ρ7(v) = (FV.FV_VADV_FAST[] = v;
+             LA.spectral_radius(LA.step_matrix(LA.linearized_mode_model(m2, qb2, idx2, 2π * 7 / g2.nx; thermo = th2,
+                                hmom = hm2, Δt = 540.0)[1], 1.0, TS.mis_tableau(:MIS4); nsub = 12, fast = :hevi_verlet)))
+    @test ρ7(false) > 1.1
+    @test ρ7(true) < 1
+    FV.FV_VADV_FAST[] = false
+    # constant-coefficient Boussinesq long channel: MIS4 with the FV fast loop is accurate at Δt = 540 s
+    x, bn, be = LA.gravity_wave_section(TS.mis_tableau(:MIS4), 60000 / 111; nx = 100, fast = :hevi_verlet)
+    @test maximum(abs.(bn - be)) < 0.05 * maximum(abs.(be))
+end
+
 end

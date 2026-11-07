@@ -51,11 +51,7 @@ model = with_sponge(model0, q0; zD = ZD, αtop = α)
 # Vertical transport of momentum by the fast vertical velocity in L only when needed: vertical
 # Courant number of the slow step U Δt/Δz (a10 ≈ 1.3 runs without, a100 ≈ 13 does not).
 # VADV = 0 / 1 overrides the automatic choice.
-cv = U * Δt / (H / (P * NEZ))
-vadv = get(ENV, "VADV", "auto") == "auto" ? cv > 4 : get(ENV, "VADV", "auto") == "1"
-E2.DG_VADV_FAST[] = vadv
-FV.FV_VADV_FAST[] = vadv
-@printf("vertical Courant number U Δt/Δz = %.1f: vertical momentum transport %s L\n", cv, vadv ? "in" : "not in")
+set_vadv!(U, Δt, H / (P * NEZ))
 name = "intro_agnesi_$(case)_$(round(Int, L / a))a_$(disc)_$(FAST)"
 @printf("Agnesi hill %s: a = %.0f km, x domain = %.0f km (%.0f a), H = %.1f km\n",
         case, a / 1e3, L / 1e3, L / a, H / 1e3)

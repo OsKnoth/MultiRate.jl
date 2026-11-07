@@ -138,6 +138,7 @@ files are ignored by git.
 
 ```sh
 julia --project=examples examples/linear_analysis/mis_stability.jl
+julia --project=examples examples/linear_analysis/fv_gravity_wave_split.jl   # linearized FV, a few minutes
 ```
 
 `MultiRate.LinearAnalysis` (after the MISDG experiments) treats a linear problem q′ = N q with fast
@@ -146,7 +147,11 @@ fast loops (`:verlet`, `:fb`, `:wrf`, `:hevi`, …) on unit vectors, or uses exa
 (`fast = :exact`). A Fourier mode with complex symbols becomes a real model of twice the size.
 The test problems are the Knoth–Wensch linear acoustics test (C-grid, 3rd-order upwind
 advection) and the MISDG grid (4th-order staggered acoustics, 5th-order upwind advection) with a
-1D pressure pulse and its exact semi-discrete solution.
+1D pressure pulse and its exact semi-discrete solution. `linearized_mode_model` does the same for the
+production models: per horizontal Fourier mode it builds the column blocks of the Jacobian of
+`rhs_nonlinear!` and of the frozen fast operator (flat grids). `boussinesq_symbols` is a
+constant-coefficient acoustic-gravity model on the FV grids. All results are collected in
+[docs/FINDINGS.md](docs/FINDINGS.md).
 
 ![](docs/images/mis_stability_kw.png)
 
@@ -248,15 +253,13 @@ Production drivers (`examples/euler2d_*.jl`, flat ground, MIS4 with `hevi`, `nsu
 | gravity wave, Skamarock & Klemp, t = 3000 s | ![](docs/images/gravity_wave_dg.png) | ![](docs/images/gravity_wave_fv.png) |
 | long-channel gravity wave (6000 km, a = 100 km), t = 60000 s | ![](docs/images/gravity_wave_long_dg.png) | ![](docs/images/gravity_wave_long_fv.png) |
 
-The long-channel FV run at the default step (Δt = 540 s, NΔt ≈ 5.4) is under-resolved in time. The
-two packets are asymmetric (θ′ maxima 2.2e-3 and 9.0e-3 K) and grid-scale noise appears between
-them. This is an MIS slow-step limit on the buoyancy terms in `N − L`, the same kind as the a1 ground
-noise, and is unchanged with the hydrostatic reference and on the previous commit. With `NSUB=3`
-(Δt = 135 s) the packets are symmetric (5.9e-3 and 4.8e-3 K) and the noise is gone. DGSEM is clean
-at the default step. The faint uniform warm offset in θ′ is the k = 0 part of the initial
-perturbation, which does not radiate.
-
-![](docs/images/gravity_wave_long_fv_nsub3.png)
+Long channel, FV: at Δt = 540 s the slow-step vertical Courant number is UΔt/Δz ≈ 17, so the
+drivers put the vertical transport of horizontal momentum by the fast vertical velocity, −∂z(ūW′),
+into `L` (`set_vadv!`, as in the Agnesi cases). Without it the step is unstable (linearized:
+max |λ| = 1.16) and the packets come out lopsided (θ′ maxima 2.2e-3 and 9.0e-3 K, grid-scale noise);
+with it they are symmetric (5.3e-3 and 5.3e-3 K). The analysis is in [docs/FINDINGS.md](docs/FINDINGS.md)
+(§6). The faint uniform warm offset in θ′ (≈ 1e-3 K, also for a 100× smaller perturbation) is a
+diagnostic offset of θ′ against θ̄(z) at the cell centres, not part of the wave.
 
 - **Planned fast solver:** a linear IMEX fast solver as in the MATLAB reference
   (`SplitExplicitLin`/`LinIMEX_RK`). It is explicit in `L_E` and implicit in `L_I`, with one sparse

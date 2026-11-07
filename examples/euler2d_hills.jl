@@ -60,6 +60,7 @@ model0 = E2.Euler2DModel(mesh, gas, ρr, Θr; volume_flux = FLUX, gravity = GRAV
 q0 = E2.project2d(model0, (x, z) -> (ρr(z), ρr(z) * U, 0.0, Θr(z)))
 model = E2.with_sponge(model0, q0; zD = ZD, αtop = αsponge)
 Δt = T / ceil(T / (NSUB * fast_step(model, q0, FAST)))
+set_vadv!(U, Δt, H / (P * NEZ))
 @printf("hill %s: a = %.0f km, H = %.0f m, U = %.0f m/s, N = %.3f 1/s, Na/U = %.0f, NH/U = %.1f\n",
         case, a / 1e3, h0, U, NBV, NBV * a / U, NBV * h0 / U)
 @printf("volume flux %s, gravity %s, LMARS sound speed %s\n", FLUX, GRAV, CLMARS > 0 ? string(CLMARS) : "local")

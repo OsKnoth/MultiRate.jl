@@ -26,7 +26,9 @@ import ..TimeStepping: rhs_nonlinear!, fast_operator, fast_apply!, fast_rhs_ther
                        fast_rhs_hmomentum!, fast_rhs_hthermo!
 
 export LinearSplitModel, mode_model, step_matrix, spectral_radius, max_amplification,
-       kw_mode, staggered_mode, staggered_symbols, pulse_error
+       kw_mode, staggered_mode, staggered_symbols, pulse_error,
+       boussinesq_symbols, boussinesq_mode, gravity_wave_section,
+       fourier_block, linearized_mode_model, fourier_coefficients, fourier_synthesis
 
 """
     LinearSplitModel(N, L; Lv = 0, thermo, hmom = .!thermo)
@@ -192,6 +194,144 @@ function pulse_error(tab::MISTableau, h; nx::Int = 400, Lx = 1e6, c = 350.0, U =
         n2 += sum(abs2, qex)
     end
     return sqrt(e2 / n2)
+end
+
+# ------------------------------------------------------------------ acoustic-gravity waves
+
+"""
+    boussinesq_symbols(θx, n; Δx, Δz, H, c, N, U, Δt) -> (A, Lfast, Lv)
+
+Linear compressible Boussinesq equations with uniform wind U and stability N,
+    u_t + U u_x = -p_x,   w_t + U w_x = -p_z + b,   b_t + U b_x = -N² w,   p_t + U p_x = -c² (u_x + w_z),
+on the grids of the FV model: horizontal C-grid (u at x-faces), vertical Lorenz grid (b and p at
+centres, w at faces, b averaged to the faces and w to the centres), rigid lid at 0 and H. The
+vertical mode n is represented exactly (p, u ∝ cos(m z), w, b ∝ sin(m z), m = nπ/H); θx is the
+horizontal phase per cell. Advection: 3rd-order upwind. State (u, w, b, p), rates scaled by Δt.
+Returns the full matrix A, the fast part (acoustics and buoyancy) and its vertical part Lv.
+"""
+function boussinesq_symbols(θx, n::Int; Δx, Δz, H, c, N, U, Δt)
+    z = cis(θx)
+    m = n * π / H
+    sz = 2 / Δz * sin(m * Δz / 2)                  # |vertical difference| of the mode
+    az = cos(m * Δz / 2)                           # vertical averaging (Lorenz grid)
+    dcf = (z - 1) / Δx                             # x: centre → face
+    dfc = (1 - 1 / z) / Δx                         # x: face → centre
+    ν = -U / (6Δx) * (2z + 3 - 6 / z + 1 / z^2)    # 3rd-order upwind advection
+    Lh = ComplexF64[0 0 0 -dcf; 0 0 0 0; 0 0 0 0; -c^2*dfc 0 0 0]
+    Lv = ComplexF64[0 0 0 0; 0 0 az sz; 0 -N^2*az 0 0; 0 -c^2*sz 0 0]
+    L = Lh + Lv
+    return Δt * (L + ν * I), Δt * L, Δt * Lv
+end
+
+"""Fourier/vertical mode of `boussinesq_symbols` as a model for `step_matrix` (Δt = 1):
+thermodynamic rows (b, p) for :verlet, horizontal momentum u for :hevi_verlet and :wrf."""
+function boussinesq_mode(θx, n::Int; kwargs...)
+    A, L, Lv = boussinesq_symbols(θx, n; kwargs...)
+    return mode_model(A, L; Lv = Lv, thermo = [false, false, true, true], hmom = [true, false, false, false])
+end
+
+"""
+    gravity_wave_section(tab, Δt; nsub = 12, fast = :hevi_verlet, nx = 300, Lx = 6000e3,
+                         H = 10e3, nz = 16, a = 100e3, c = 347, N = 0.01, U = 20, T = 60000)
+
+The long-channel gravity wave of `examples/euler2d_gravity_wave_long.jl` for the linear model of
+`boussinesq_symbols`: initial b ∝ sin(πz/H)/(1 + (x - Lx/3)²/a²), u = w = p = 0 (perturbations).
+Returns (x, b_numerical, b_exact) at the cell-centre level nearest H/2 and time T, with b
+normalized to an initial maximum of 1 (multiply by 0.01 K for θ′).
+"""
+function gravity_wave_section(tab::MISTableau, Δt; nsub::Int = 12, fast::Symbol = :hevi_verlet, nx::Int = 300,
+                              Lx = 6000e3, H = 10e3, nz::Int = 16, a = 100e3, c = 347.0, N = 0.01, U = 20.0,
+                              T = 60000.0)
+    nsteps = round(Int, T / Δt)
+    abs(nsteps * Δt - T) < 1e-9T || throw(ArgumentError("T/Δt must be an integer"))
+    Δx, Δz = Lx / nx, H / nz
+    x = [(i - 0.5) * Δx for i in 1:nx]
+    b0 = @. 1 / (1 + ((x - Lx / 3) / a)^2)
+    k = nz ÷ 2
+    zk = (k - 0.5) * Δz
+    bn = zeros(ComplexF64, nx); be = zeros(ComplexF64, nx)
+    for j in 0:nx-1
+        θ = 2π * j / nx
+        b̂ = sum(b0[i] * cis(-θ * (i - 1)) for i in 1:nx)
+        A, L, Lv = boussinesq_symbols(θ, 1; Δx, Δz, H, c, N, U, Δt)
+        q0 = ComplexF64[0, 0, b̂, 0]
+        be[j+1] = (exp(A * nsteps) * q0)[3]
+        R = step_matrix(mode_model(A, L; Lv = Lv, thermo = [false, false, true, true],
+                                   hmom = [true, false, false, false]), 1.0, tab; nsub, fast)
+        qr = R^nsteps * vcat(real(q0), imag(q0))
+        bn[j+1] = qr[3] + im * qr[7]
+    end
+    back(f) = [real(sum(f[j+1] * cis(2π * j * (i - 1) / nx) for j in 0:nx-1)) / nx for i in 1:nx] .* sin(π * zk / H)
+    return x, back(bn), back(be)
+end
+
+# ------------------------------------------------------------------ linearized production models
+
+"""
+    fourier_block(apply!, idx, θ, n) -> B
+
+Block of a real linear operator `apply!(out, v)` (vectors of length n) for the horizontal
+Fourier mode θ (phase per column). `idx[d][i]` is the global index of column unknown d in column
+i; the operator must be invariant under shifts of the columns (flat, horizontally homogeneous
+state, periodic in x). Then A Σ_i e^{iθ(i-1)} e_{idx[d][i]} = Σ_{d'} B[d', d] Σ_i e^{iθ(i-1)} e_{idx[d'][i]}.
+"""
+function fourier_block(apply!, idx::AbstractVector, θ, n::Int)
+    nd, nx = length(idx), length(idx[1])
+    B = zeros(ComplexF64, nd, nd)
+    v = zeros(n); outr = zeros(n); outi = zeros(n)
+    ph = [cis(-θ * (i - 1)) for i in 1:nx]
+    for d in 1:nd
+        v .= 0; for i in 1:nx; v[idx[d][i]] = cos(θ * (i - 1)); end
+        apply!(outr, v)
+        v .= 0; for i in 1:nx; v[idx[d][i]] = sin(θ * (i - 1)); end
+        apply!(outi, v)
+        for d2 in 1:nd
+            B[d2, d] = sum((outr[idx[d2][i]] + im * outi[idx[d2][i]]) * ph[i] for i in 1:nx) / nx
+        end
+    end
+    return B
+end
+
+"""
+    linearized_mode_model(model, qb, idx, θ; thermo, hmom, ε = 1e-6, fast = :hevi, Δt = 1, fast_options...)
+
+Fourier mode θ of a production model linearized about the steady, horizontally homogeneous
+state qb: N → Jacobian of `rhs_nonlinear!` (central differences with step ε relative to the
+size of qb), L and its vertical part from the fast operator frozen at qb. `thermo`/`hmom` mark
+the column unknowns of the thermodynamic kick and of the horizontal momentum. All rates are
+multiplied by Δt (for `step_matrix(…, 1.0, tab)`). Returns (mode model, J, L, Lv) with the
+complex blocks.
+"""
+function linearized_mode_model(model, qb::AbstractVector, idx::AbstractVector, θ; thermo, hmom,
+                               ε = 1e-6, fast::Symbol = :hevi, Δt = 1.0, fast_options...)
+    n = length(qb)
+    sF = fast_operator(model, qb; fast = fast, fast_options...)
+    h = ε * max(1.0, maximum(abs, qb))
+    rp = zeros(n); rm = zeros(n); z = zeros(n)
+    Japply!(out, v) = (rhs_nonlinear!(rp, model, qb .+ h .* v); rhs_nonlinear!(rm, model, qb .- h .* v);
+                       @. out = (rp - rm) / (2h))
+    Lapply!(out, v) = fast_apply!(out, sF, v, z)
+    Lvapply!(out, v) = vertical_apply!(out, sF, v)
+    J = Δt * fourier_block(Japply!, idx, θ, n)
+    L = Δt * fourier_block(Lapply!, idx, θ, n)
+    Lv = Δt * fourier_block(Lvapply!, idx, θ, n)
+    return mode_model(J, L; Lv = Lv, thermo = thermo, hmom = hmom), J, L, Lv
+end
+
+"""Fourier coefficients δ̂[d, j+1] = Σ_i δ[idx[d][i]] e^{-iθ_j (i-1)}, θ_j = 2π j / nx."""
+function fourier_coefficients(δ::AbstractVector, idx::AbstractVector)
+    nd, nx = length(idx), length(idx[1])
+    return [sum(δ[idx[d][i]] * cis(-2π * j * (i - 1) / nx) for i in 1:nx) for d in 1:nd, j in 0:nx-1]
+end
+
+"""Inverse of `fourier_coefficients` into a state vector of length n (zeros elsewhere)."""
+function fourier_synthesis(Q::AbstractMatrix, idx::AbstractVector, n::Int)
+    nd, nx = size(Q)
+    δ = zeros(n)
+    for d in 1:nd, i in 1:nx
+        δ[idx[d][i]] = real(sum(Q[d, j+1] * cis(2π * j * (i - 1) / nx) for j in 0:nx-1)) / nx
+    end
+    return δ
 end
 
 end # module
