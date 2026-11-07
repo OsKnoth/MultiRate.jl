@@ -21,11 +21,16 @@ export AbstractFastOperator,
        fast_rhs_horizontal!, vertical_apply!, vertical_factor, vertical_solve!,
        fast_rhs_hmomentum!, fast_rhs_hthermo!,
        fast_solve!, IMEX_GM, IMEX_DL, IMEX_AE, IMEX_AI, WRF_BETA,
-       MISTableau, mis_tableau, nstages, MISStepper, MISWork, stage_substeps, mis_step!, mis_step, run_mis, run_rk4
+       MISTableau, mis_tableau, mis_from_paper, mis_kw, nstages,
+       mis_rk_tableau, rk_order_residuals, rk_order, mis_step_exact, mis_observed_order,
+       MISStepper, MISWork, stage_substeps, mis_step!, mis_step, run_mis, run_rk4
+
+using LinearAlgebra: I, norm
 
 include("interface.jl")
 include("fast.jl")
 include("tableaus.jl")
 include("mis.jl")
+include("analysis.jl")
 
 end # module

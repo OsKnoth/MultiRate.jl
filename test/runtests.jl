@@ -292,7 +292,8 @@ end
     qref = TS.run_rk4(mw, q0, 200 / nref, nref)
     dev = norm(qref .- q0)
     # :wrf is first order in dτ (off-centring β = 0.55), so with a fixed ratio nsub the order is 1
-    for (tab, nsub, fast, lim, order) in ((:WSRK3, 6, :wrf, gw.dx, 1.0), (:MIS4, 12, :verlet, gw.dz, 2.0))
+    for (tab, nsub, fast, lim, order) in ((:WSRK3, 6, :wrf, gw.dx, 1.0), (:MIS4, 12, :verlet, gw.dz, 2.0),
+                                           (:MIS54, 12, :verlet, gw.dz, 2.0))
         Δt1 = nsub * 0.8 * lim / c
         errs = [norm(TS.run_mis(mw, q0, Δt, round(Int, 200 / Δt); tab = TS.mis_tableau(tab), nsub = nsub,
                                 fast = fast) .- qref) for Δt in (200 / ceil(200 / Δt1), 100 / ceil(200 / Δt1))]
@@ -313,6 +314,24 @@ end
         w = TS.MISWork(mw.nq, 3)
         tab = TS.mis_tableau(:WSRK3)
         @test allocs(() -> TS.mis_step!(qq, mw, q0, 20.0, tab, sw, w; nsub = 6, fast = :wrf)) == 0
+    end
+end
+
+@testset "TimeStepping: MIS tableaus and order" begin
+    # MIS-KW form reproduces the RK method for L = 0
+    A3, b3 = [0 0 0; 1/3 0 0; -3/16 15/16 0], [1/6, 3/10, 8/15]
+    A, b, c = TS.mis_rk_tableau(TS.mis_kw(:kw, A3, b3))
+    @test A ≈ A3 && b ≈ b3
+    @test TS.mis_tableau(:MIS_KW3).d ≈ [1/3, 5/12, 1/4]
+    @test sum(TS.mis_tableau(:MIS54).d) ≈ 1.878 atol = 1e-3
+    # classical RK order (L = 0) and observed order with exact fast stages and non-commuting L, G
+    # (MIS3C: RK order 3, but only 2 with L ≠ 0: a coupling condition fails)
+    for (name, prk, pmis) in ((:WSRK3, 2, 2), (:MIS2, 2, 2), (:MIS3C, 3, 2), (:MIS4, 3, 3), (:MIS4a, 3, 3),
+                              (:MIS_KW3, 3, 3), (:MIS54, 4, 4))
+        tab = TS.mis_tableau(name)
+        @test TS.rk_order(TS.mis_rk_tableau(tab)[1:2]...) == prk
+        _, r = TS.mis_observed_order(tab; n = (20, 40, 80))
+        @test all(abs.(r .- pmis) .< 0.15)
     end
 end
 

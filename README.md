@@ -21,6 +21,20 @@ q' = L q + (N(q) − L q) = L q + S(q),       L = L_E + L_I
 - In each MIS stage the **fast part** is integrated with small steps Δτ, with `L_E` treated explicitly
   and `L_I` implicitly. The stage tendency `S` is held constant.
 
+Tableaus (`mis_tableau`): WSRK3, MIS2, MIS3C, MIS4, MIS4a (Knoth & Wensch 2014), MIS_KW3
+(Knoth–Wolke RK3 in MIS form) and MIS54 (Bauer & Knoth 2021). `mis_observed_order` measures the
+order with exact fast stages on a problem where `L` and `S` do not commute, so it includes the MIS
+coupling conditions:
+
+| | WSRK3 | MIS2 | MIS3C | MIS4 | MIS4a | MIS_KW3 | MIS54 |
+|---|---|---|---|---|---|---|---|
+| RK order (L = 0) | 2 | 2 | 3 | 3 | 3 | 3 | 4 |
+| MIS order | 2 | 2 | **2** | 3 | 3 | 3 | 4 |
+| fast time Σ dᵢ / Δt | 1.83 | 1.19 | 1.19 | 1.44 | 1.47 | 1.00 | 1.88 |
+
+MIS3C (coefficients as in ClimaTimeSteppers.jl) is only second order once `L ≠ 0`, which still has
+to be checked against the paper.
+
 `L` and its split `L_I` can be chosen locally. That choice is the subject of the project:
 
 | Splitting | Typical choice of `L_I` | Removes the step limit from |
