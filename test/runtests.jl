@@ -335,4 +335,26 @@ end
     end
 end
 
+@testset "LinearAnalysis: MIS amplification (Knoth–Wensch, MISDG grid)" begin
+    LA = MultiRate.LinearAnalysis
+    tab(n) = TS.mis_tableau(n)
+    kw(n, cs, ca) = LA.max_amplification(θ -> LA.kw_mode(θ; C_sound = cs, C_adv = ca), tab(n); fast = :exact)
+    @test kw(:WSRK3, 0.0, 1.62) <= 1 + 1e-10 && kw(:WSRK3, 0.0, 1.64) > 1      # pure advection limit 1.63
+    @test kw(:MIS54, 0.0, 2.05) <= 1 + 1e-10
+    @test kw(:WSRK3, 3.5, 0.5) > 1.01                                       # undamped RK3: C_sound ≲ 3
+    @test kw(:MIS54, 12.0, 0.5) <= 1 + 1e-10
+    # the real fast loops converge to the exact fast stages
+    m = LA.staggered_mode(1.0; C_sound = 3.0, C_adv = 0.4)
+    Rex = LA.step_matrix(m, 1.0, tab(:MIS54); fast = :exact)
+    e = [norm(LA.step_matrix(m, 1.0, tab(:MIS54); nsub = n, fast = :verlet) - Rex) for n in (24, 48)]
+    @test rate(e...) > 1.8
+    # WRF divergence damping stabilizes WSRK3 on the MISDG grid (C_sound = 5, nsub = 12)
+    sg(n, f) = LA.max_amplification(θ -> LA.staggered_mode(θ; C_sound = 5.0, C_adv = 5 / 7), tab(n); fast = f, nsub = 12)
+    @test sg(:WSRK3, :verlet) > 1.05 && sg(:WSRK3, :wrf) < 1
+    @test sg(:MIS54, :verlet) < 1
+    # 1D pulse: MIS54 fourth order
+    T = 1e4
+    @test rate(LA.pulse_error(tab(:MIS54), T / 200; fast = :exact), LA.pulse_error(tab(:MIS54), T / 400; fast = :exact)) > 3.8
+end
+
 end

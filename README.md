@@ -80,12 +80,15 @@ regular grid.
 ## Code layout
 
 ```text
-src/TimeStepping   MIS tableaus and stages, slow residual S = N − L(qⁿ), generic fast loops
+src/TimeStepping   MIS tableaus and stages, slow residual S = N − L(qⁿ), generic fast loops,
+                   order analysis of the tableaus
+src/LinearAnalysis amplification matrices of MIS steps for linear test problems (Fourier modes)
 src/DGSEM          split-form DGSEM state, geometry, RHS, fast operator, column solver
 src/FV             C-grid FV: terrain-following grid and fast operators; cut-cell geometry,
                    RHS, HEVI column solve and Rosenbrock-W/AMF fast solver
 src/Common         gas law, reference states, output (VTKHDF, plots via extensions)
-examples/          case drivers; examples/intro_2d holds the short introductory cases
+examples/          case drivers; examples/intro_2d holds the short introductory cases,
+                   examples/linear_analysis the linear stability study
 ```
 
 A spatial discretization provides `rhs_nonlinear!`, `fast_operator` (freeze `L` at `qⁿ`) and the
@@ -130,6 +133,37 @@ julia --project=examples examples/euler2d_hills.jl         a1|a10|a100 [T|-] [fa
 
 Results are written to the current directory as VTKHDF time series and PNG plots. Generated output
 files are ignored by git.
+
+### Linear analysis of the MIS methods
+
+```sh
+julia --project=examples examples/linear_analysis/mis_stability.jl
+```
+
+`MultiRate.LinearAnalysis` (after the MISDG experiments) treats a linear problem q′ = N q with fast
+part L as a model of the TimeStepping interface. `step_matrix` runs the production `mis_step!` and
+fast loops (`:verlet`, `:fb`, `:wrf`, `:hevi`, …) on unit vectors, or uses exact fast stages
+(`fast = :exact`). A Fourier mode with complex symbols becomes a real model of twice the size.
+The test problems are the Knoth–Wensch linear acoustics test (C-grid, 3rd-order upwind
+advection) and the MISDG grid (4th-order staggered acoustics, 5th-order upwind advection) with a
+1D pressure pulse and its exact semi-discrete solution.
+
+![](docs/images/mis_stability_kw.png)
+
+| MISDG grid, C_adv = C_sound/7 | WSRK3 | MIS4 | MIS4a | MIS54 |
+|---|---|---|---|---|
+| stable up to C_sound (exact fast stages) | 2.75 | > 14 | 12 | 14 |
+| with `:wrf` (divergence damping), nsub = 12 | 7 | 7 | 7 | 7 |
+| pulse convergence order (exact fast stages) | 2 | 3 | 3 | 4 |
+
+- Without damping, WSRK3 is limited to C_sound ≈ 3 and MIS_KW3 is unstable for any C_sound > 0
+  (ρ − 1 = 7e-6 at C_sound = 1). MIS4, MIS4a and MIS54 are stable far beyond.
+- With nsub = 12 the fast loops add their own limit: at C_sound = 10 the Verlet substep exceeds
+  its stability limit for every tableau. `:fb` (first order) makes MIS4 and MIS54 weakly unstable
+  at C_sound = 3–7, `:verlet` does not.
+- WRF's divergence damping stabilizes WSRK3 up to C_sound = 7 on this grid.
+
+![](docs/images/mis_pulse_convergence.png)
 
 ## Status and next steps
 
