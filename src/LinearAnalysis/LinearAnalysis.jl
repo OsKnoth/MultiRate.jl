@@ -28,7 +28,8 @@ import ..TimeStepping: rhs_nonlinear!, fast_operator, fast_apply!, fast_rhs_ther
 export LinearSplitModel, mode_model, step_matrix, spectral_radius, max_amplification,
        kw_mode, staggered_mode, staggered_symbols, pulse_error,
        boussinesq_symbols, boussinesq_mode, gravity_wave_section,
-       fourier_block, linearized_mode_model, fourier_coefficients, fourier_synthesis
+       fourier_block, linearized_mode_model, fourier_coefficients, fourier_synthesis,
+       linearized_step, arnoldi_eigs
 
 """
     LinearSplitModel(N, L; Lv = 0, thermo, hmom = .!thermo)
@@ -332,6 +333,85 @@ function fourier_synthesis(Q::AbstractMatrix, idx::AbstractVector, n::Int)
         δ[idx[d][i]] = real(sum(Q[d, j+1] * cis(2π * j * (i - 1) / nx) for j in 0:nx-1)) / nx
     end
     return δ
+end
+
+# ------------------------------------------------------------------ matrix-free analysis
+
+"""
+    linearized_step(model, qb, Δt, tab; nsub = 12, fast = :hevi, sF = nothing, ε = 1e-6, fast_options...)
+        -> apply!(out, v)
+
+Action of the linearized production MIS step about qb, v ↦ (Φ(qb + h v) - Φ(qb - h v)) / 2h,
+with h = ε max(1, max|qb|) / max|v|. Φ is `mis_step!` with the fast operator frozen at qb (or sF), as in
+a run between two re-freezes. Needs no shift invariance (terrain, cut cells, DG).
+"""
+function linearized_step(model, qb::AbstractVector, Δt, tab::MISTableau; nsub::Int = 12, fast::Symbol = :hevi,
+                         sF = nothing, ε = 1e-6, fast_options...)
+    n = length(qb)
+    sF === nothing && (sF = fast_operator(model, qb; fast = fast, fast_options...))
+    w = MISWork(n, nstages(tab))
+    qp = zeros(n); qm = zeros(n)
+    s = max(1.0, maximum(abs, qb))
+    function apply!(out, v)
+        h = ε * s / max(maximum(abs, v), floatmin())
+        @. qp = qb + h * v; @. qm = qb - h * v
+        mis_step!(qp, model, qp, Δt, tab, sF, w; nsub = nsub, fast = fast)
+        mis_step!(qm, model, qm, Δt, tab, sF, w; nsub = nsub, fast = fast)
+        @. out = (qp - qm) / (2h)
+        return out
+    end
+    return apply!
+end
+
+"""
+    arnoldi_eigs(apply!, n; nev = 6, krylovdim = 40, maxrestarts = 30, tol = 1e-6, v0 = randn(n),
+                 weights = ones(n)) -> (λ, V, resid)
+
+Eigenvalues of largest modulus of a real linear map `apply!(out, v)` on Rⁿ (matrix-free).
+Arnoldi with explicit restarts: the new start vector is the sum of the real and imaginary parts
+of the nev wanted Ritz vectors, scaled by their residuals. `weights` defines the inner product
+(scale the unknowns to comparable size, e.g. 1/max|qb| per field). Returns λ sorted by
+decreasing modulus, the Ritz vectors (columns, complex) and their relative residuals.
+"""
+function arnoldi_eigs(apply!, n::Int; nev::Int = 6, krylovdim::Int = 40, maxrestarts::Int = 30, tol = 1e-6,
+                      v0 = randn(n), weights = ones(n), verbose::Bool = false)
+    m = krylovdim
+    sw = sqrt.(weights)
+    V = zeros(n, m + 1); Hm = zeros(m + 1, m)
+    x = zeros(n); y = zeros(n)
+    start = v0 .* sw
+    λ = ComplexF64[]; X = zeros(ComplexF64, n, 0); res = Float64[]
+    for it in 1:maxrestarts
+        V[:, 1] = start / norm(start); Hm .= 0
+        k = m
+        for j in 1:m                                 # Arnoldi in the weighted inner product
+            x .= view(V, :, j) ./ sw
+            apply!(y, x)
+            u = y .* sw
+            for _ in 1:2, i in 1:j                   # classical Gram-Schmidt, twice
+                h = dot(view(V, :, i), u)
+                Hm[i, j] += h
+                u .-= h .* view(V, :, i)
+            end
+            Hm[j+1, j] = norm(u)
+            if Hm[j+1, j] < 1e-14 * norm(view(Hm, 1:j, j))
+                k = j; break
+            end
+            V[:, j+1] = u / Hm[j+1, j]
+        end
+        F = eigen(Hm[1:k, 1:k])
+        p = sortperm(abs.(F.values); rev = true)
+        nw = min(nev, k)
+        λ = F.values[p[1:nw]]
+        Y = F.vectors[:, p[1:nw]]
+        res = [abs(Hm[k+1, k] * Y[k, i]) / max(abs(λ[i]), 1e-300) for i in 1:nw]
+        X = (V[:, 1:k] * Y) ./ sw
+        verbose && println("  restart $it: |λ| = ", round.(abs.(λ); digits = 6), "  max resid = ", maximum(res))
+        maximum(res) < tol && break
+        start = V[:, 1:k] * real.(sum(Y[:, i] * (1 + res[i] / tol) for i in 1:nw)) .+
+                V[:, 1:k] * imag.(sum(Y[:, i] * (1 + res[i] / tol) for i in 1:nw))
+    end
+    return λ, X, res
 end
 
 end # module

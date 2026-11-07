@@ -152,7 +152,8 @@ production models: per horizontal Fourier mode it builds the column blocks of th
 `rhs_nonlinear!` and of the frozen fast operator (flat grids). `boussinesq_symbols` is a
 constant-coefficient acoustic-gravity model on the FV grids. All results are collected in
 [docs/FINDINGS.md](docs/FINDINGS.md). The MISDG talk on acoustics with advection and multirate
-methods (LaTeX sources, data, PDF) is in [docs/talks/](docs/talks/README.md).
+methods (LaTeX sources, data, PDF) is in [docs/talks/](docs/talks/README.md). A LaTeX report of all
+findings with the figures: [docs/findings/findings.pdf](docs/findings/findings.pdf).
 
 ![](docs/images/mis_stability_kw.png)
 

@@ -23,6 +23,12 @@ stability regions.
 `lawson_rk4_acoustic.py`), and `resonance.tex`, a note on a second-order uniformly accurate
 resonance integrator (after Baumstark, Faou & Schratz 2018) with Krylov evaluation of the φ-functions.
 
+**`misdg/hdg_modal_v2_theta/`**: the modal-basis variant of the fast-operator document of
+`v2_theta` (hybridized DG with LMARS flux and relaxed trace conditions), from
+`MISDG/src/hdg_euler_gravity_Modal`. The nodal (DGSEM) versions of this document and of the
+`v1_perturbation` document are in [../v2_theta_dgsem/](../v2_theta_dgsem/) and
+[../v1_perturbation/](../v1_perturbation/); the MISDG copies of those are identical.
+
 ### What is in MultiRate.jl
 
 | talk | MultiRate.jl |

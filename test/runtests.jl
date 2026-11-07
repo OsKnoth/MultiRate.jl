@@ -357,6 +357,21 @@ end
     @test rate(LA.pulse_error(tab(:MIS54), T / 200; fast = :exact), LA.pulse_error(tab(:MIS54), T / 400; fast = :exact)) > 3.8
 end
 
+@testset "LinearAnalysis: matrix-free step and Arnoldi" begin
+    LA = MultiRate.LinearAnalysis
+    m = LA.staggered_mode(0.7; C_sound = 5.0, C_adv = 5 / 7)
+    R = LA.step_matrix(m, 1.0, TS.mis_tableau(:WSRK3); nsub = 12, fast = :verlet)
+    n = size(R, 1)
+    A! = LA.linearized_step(m, zeros(n), 1.0, TS.mis_tableau(:WSRK3); nsub = 12, fast = :verlet)
+    v = collect(1.0:n); out = zeros(n)
+    @test A!(out, v) ≈ R * v rtol = 1e-6
+    B = randn(MersenneTwister(3), 200, 200) / sqrt(200); B[1, 1] = 1.5
+    λ, X, res = LA.arnoldi_eigs((o, x) -> mul!(o, B, x), 200; nev = 2, v0 = ones(200))
+    ev = eigvals(B)
+    @test abs(λ[1]) ≈ maximum(abs, ev) rtol = 1e-6
+    @test norm(B * X[:, 1] - λ[1] * X[:, 1]) < 1e-4 * norm(X[:, 1])
+end
+
 @testset "LinearAnalysis: Fourier blocks of the FV model, Boussinesq gravity wave" begin
     LA = MultiRate.LinearAnalysis
     gas = CM.Gas()

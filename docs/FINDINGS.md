@@ -3,6 +3,9 @@
 Results of the numerical experiments, in the order they were obtained. Each entry says what was
 measured, how, and what follows from it. Commands are run from the repository root.
 
+A LaTeX version with the figures is [findings/findings.tex](findings/findings.tex)
+([PDF](findings/findings.pdf)).
+
 ## 1. Discretizations without a background state
 
 - **DG** uses the pointwise fast operator `L`; **terrain-following FV** uses the `:flux` form of
@@ -144,3 +147,18 @@ max |λ| > 1.1 at 7.5Δx without vadv and < 1 with it.
   the matrix-free variant (Arnoldi on the linearized step) still to be written.
 - With `:wrf` (WRF's off-centred vertical step and divergence damping) instead of `:hevi`, the
   default step is stable without vadv (max |λ| = 1.0014) but still inaccurate (3.6e-3 / 5.7e-3 K).
+
+## 7. Matrix-free analysis of the linearized step (preliminary, terrain paused)
+
+`LinearAnalysis.linearized_step(model, qb, Δt, tab; nsub, fast)` applies the linearized
+production MIS step (fast operator frozen at qb, central differences of `mis_step!`) to a vector;
+it needs no shift invariance. `arnoldi_eigs` (restarted Arnoldi) finds the eigenvalues of largest
+modulus of such a map.
+
+- On the a1 terrain-FV grid (51k unknowns) Arnoldi on the step itself does not converge: almost
+  all eigenvalues lie near the unit circle. Power iteration (repeated application) works.
+- First result, a1 FV linearized about the initial state, MIS4, `:hevi`: growth 1.027 per step at
+  the default step (`NSUB=12`, Δt = 5.4 s), 1.0001 (neutral) at `NSUB=6`. The growing mode is a
+  2–3Δx oscillation of U and W in the lowest three levels on the steep flanks (slope ±0.25), where
+  the noise of §2 appears. Not yet separated: fast loop vs slow-step coupling, and which terrain
+  term of S = N − L is responsible. Paused (no orography tests for now).
