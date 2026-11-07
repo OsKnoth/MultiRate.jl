@@ -151,7 +151,8 @@ advection) and the MISDG grid (4th-order staggered acoustics, 5th-order upwind a
 production models: per horizontal Fourier mode it builds the column blocks of the Jacobian of
 `rhs_nonlinear!` and of the frozen fast operator (flat grids). `boussinesq_symbols` is a
 constant-coefficient acoustic-gravity model on the FV grids. All results are collected in
-[docs/FINDINGS.md](docs/FINDINGS.md).
+[docs/FINDINGS.md](docs/FINDINGS.md). The MISDG talk on acoustics with advection and multirate
+methods (LaTeX sources, data, PDF) is in [docs/talks/](docs/talks/README.md).
 
 ![](docs/images/mis_stability_kw.png)
 

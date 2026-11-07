@@ -73,6 +73,7 @@ a = 100 km, Δx = 20 km, Δz = 625 m, U = 20 m/s, T = 60000 s), MIS4, `hevi`, ns
 
 ## 5. Linear acoustics with advection (`MultiRate.LinearAnalysis`)
 
+The MISDG talk these experiments come from is in [talks/](talks/README.md).
 `examples/linear_analysis/mis_stability.jl`; amplification matrices per Fourier mode, computed by
 running the production `mis_step!` and fast loops on unit vectors.
 
