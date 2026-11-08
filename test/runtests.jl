@@ -293,7 +293,8 @@ end
     dev = norm(qref .- q0)
     # :wrf is first order in dτ (off-centring β = 0.55), so with a fixed ratio nsub the order is 1
     for (tab, nsub, fast, lim, order) in ((:WSRK3, 6, :wrf, gw.dx, 1.0), (:MIS4, 12, :verlet, gw.dz, 2.0),
-                                           (:MIS54, 12, :verlet, gw.dz, 2.0), (:LRK4, 12, :verlet, gw.dz, 2.0))
+                                           (:MIS54, 12, :verlet, gw.dz, 2.0), (:LRK4, 12, :verlet, gw.dz, 2.0),
+                                           (:EB4, 12, :verlet, gw.dz, 2.0))
         Δt1 = nsub * 0.8 * lim / c
         errs = [norm(TS.run_mis(mw, q0, Δt, round(Int, 200 / Δt); tab = TS.mis_tableau(tab), nsub = nsub,
                                 fast = fast) .- qref) for Δt in (200 / ceil(200 / Δt1), 100 / ceil(200 / Δt1))]
@@ -350,8 +351,33 @@ end
     Rex = LA.step_matrix(m, 1.0, tab; fast = :exact)
     e = [norm(LA.step_matrix(m, 1.0, tab; nsub = n, fast = :verlet) - Rex) for n in (24, 48)]
     @test rate(e...) > 1.9
+    # Yoshida/Suzuki compositions of the Verlet loop: orders 4 and 6
+    @test TS.composition(:hevi_s4)[1] == :hevi && TS.composition_cost(:verlet_y6) == 7
+    @test sum(TS.composition(:verlet_y4)[2]) ≈ 1 && sum(TS.composition(:verlet_y6)[2]) ≈ 1
+    for (fast, p) in ((:verlet_s4, 4), (:verlet_y4, 4), (:verlet_y6, 6))
+        e = [norm(LA.step_matrix(m, 1.0, tab; nsub = n, fast) - Rex) for n in (12, 24)]
+        @test abs(log2(e[1] / e[2]) - p) < 0.2
+    end
     # stable where MIS is: MISDG grid, C_sound = 7
     @test LA.max_amplification(θ -> LA.staggered_mode(θ; C_sound = 7.0, C_adv = 1.0), tab; fast = :verlet, nsub = 12) < 1
+end
+
+@testset "TimeStepping: ETD in stage-ODE form (polynomial slow forcing)" begin
+    LA = MultiRate.LinearAnalysis
+    tab = TS.mis_tableau(:EB4)
+    @test TS.fast_time(tab) ≈ 3
+    @test TS.rk_order(TS.mis_rk_tableau(tab)[1:2]...) == 4                    # Krogstad ETDRK4, L = 0
+    for (name, p) in ((:EB1, 1), (:ETD2, 2), (:EB4, 4))
+        _, r = TS.mis_observed_order(TS.mis_tableau(name); n = (20, 40, 80))
+        @test abs(r[end] - p) < 0.15
+    end
+    # fast loops with time-dependent forcing: Verlet order 2, compositions order 4 and 6
+    m = LA.staggered_mode(0.9; C_sound = 3.0, C_adv = 0.4)
+    Rex = LA.step_matrix(m, 1.0, tab; fast = :exact)
+    for (fast, p) in ((:verlet, 2), (:verlet_s4, 4), (:verlet_y6, 6))
+        e = [norm(LA.step_matrix(m, 1.0, tab; nsub = n, fast) - Rex) for n in (12, 24)]
+        @test abs(log2(e[1] / e[2]) - p) < 0.2
+    end
 end
 
 @testset "LinearAnalysis: MIS amplification (Knoth–Wensch, MISDG grid)" begin

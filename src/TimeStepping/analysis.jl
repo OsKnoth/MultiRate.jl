@@ -103,6 +103,37 @@ end
 
 mis_rk_tableau(tab::LawsonTableau) = (tab.A, tab.b, tab.c)
 
+"""ETD step for q' = L q + G(q) with exact fast stages: augmented exponential with the
+monomials u_k = τ^{k-1} of the local time (u_k' = (k-1) u_{k-1})."""
+function mis_step_exact(L::AbstractMatrix, G, q::AbstractVector, Δt::Real, tab::ETDTableau)
+    s, K, n = nstages(tab), size(tab.P, 3), length(q)
+    S = Vector{Vector{Float64}}(undef, s)
+    Y = copy(q)
+    for i in 1:s
+        S[i] = G(Y)
+        T = tab.c[i] * Δt
+        M = zeros(n + K, n + K)
+        M[1:n, 1:n] = T * L
+        for k in 1:K
+            M[1:n, n+k] = T * sum(tab.P[i, j, k] * S[j] for j in 1:i)
+            k > 1 && (M[n+k, n+k-1] = k - 1)
+        end
+        Y = (exp(M) * vcat(q, 1.0, zeros(K - 1)))[1:n]
+    end
+    return Y
+end
+
+"""RK tableau of the ETD method for L = 0 (φ_k(0) = 1/k!)."""
+function mis_rk_tableau(tab::ETDTableau)
+    s, K = nstages(tab), size(tab.a, 3)
+    B = [sum(tab.a[i, j, k] / factorial(k) for k in 1:K) for i in 1:s, j in 1:s]
+    A = zeros(s, s)
+    for i in 2:s
+        A[i, :] = B[i-1, :]
+    end
+    return A, B[s, :], A * ones(s)
+end
+
 # Non-commuting test problem: fast rotation, nonlinear slow part
 const ORDER_TEST_L = [0.0 4.0; -4.0 0.0]
 order_test_G(q) = [0.5sin(q[1]) + q[2]^2, -0.3q[1] * q[2] + cos(q[1])]

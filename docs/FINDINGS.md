@@ -191,7 +191,80 @@ unchanged. Fast integration time per step: LRK4 2.5 Δt (MIS4 1.44 Δt).
   Δt = 67 / 34 / 17 s for LRK4, 1.1e-3 / 8.6e-4 / 6.0e-4 K for MIS4 (max θ′ 4.4e-3 K). All
   methods are dominated by the fast-loop error (vertical Crank–Nicolson at large vertical Courant
   numbers).
-- **Consequence:** with second-order fast loops Lawson brings no gain over MIS4; its order-4 accuracy
-  needs an accurate propagator — the high-order (Yoshida) fast integrator (plan phase 5), or an
-  exact/high-order vertical solve. Note: a MIS run with a small step is not a neutral reference for
-  Lawson (MIS's own acoustic damping); use RK4 on N.
+- **Consequence (revised in §9):** with second-order fast loops the Lawson error at small slow
+  steps is the fast-loop error. The comparison above mixes the gravity wave with an oscillation of
+  the horizontal mean (see §9); at large slow steps and with a fourth-order fast loop the picture
+  is different.
+
+## 9. ETD, high-order fast loops, MIS vs Lawson/ETD at large slow steps, optimal number of substeps
+
+**ETD in stage-ODE form** (`TimeStepping.ETDTableau`, after the MATLAB `SplitExplicitETD.m` /
+`MethodETD.m`): stage i starts from qⁿ and integrates Z' = L Z + Σ_j Σ_k P_ijk τ^{k−1} S(Y_j) over
+c_iΔt, τ the normalized local time, P = a/((k−1)! c_i) from the φ_k coefficients a. Exactly
+integrated this is the ETD stage e^{c_iΔtL}qⁿ + Δt Σ a_ijk φ_k(c_iΔtL) S_j. Tableaus :EB1, :ETD2
+(Cox–Matthews), :EB4 (Krogstad ETDRK4); fast time 3Δt per step for EB4. `fast_solve_poly!` runs
+the fast loops with the forcing taken at the midpoint of every base step, which keeps symmetric
+loops symmetric in (q, t). Orders with exact fast stages: 1, 2, 4.
+
+**High-order fast loops:** `:<base>_y4` (Yoshida triple jump, weights 1.35, −1.70), `:<base>_s4`
+(Suzuki, 5 stages, |w| ≤ 0.66, stable at the regular substep), `:<base>_y6` (Yoshida, 7 stages)
+compose a symmetric loop (`:verlet`, FV `:hevi`, `:hevi_verlet`); orders 4, 4, 6 also with the
+time-dependent ETD forcing. Suzuki's error constant is 60× smaller than the triple jump's.
+
+**Linear pulse at large steps** (`examples/linear_analysis/lawson_mis_pulse.jl`, h = 50 s,
+C_sound = 7, C_adv = 1; relative error at T):
+
+| | exact fast stages | Verlet, nsub = 48 | Suzuki, nsub = 8 |
+|---|---|---|---|
+| MIS4a | 9.9e-3 | 9.9e-3 | 9.9e-3 |
+| MIS54 | 9.9e-4 | 8.4e-4 | 1.0e-3 |
+| EB4 | 1.6e-3 | 1.6e-3 | 1.6e-3 |
+| LRK4 | **5.3e-6** | 3.1e-4 | **5.8e-6** |
+
+![](images/lawson_mis_pulse.png)
+
+**Nonlinear FV gravity wave at large steps** (`examples/lawson_mis_gravity_wave.jl`, 300 km,
+reference explicit RK4 on N). The initial θ′ at constant pressure is not balanced and excites a
+vertical acoustic oscillation of the horizontal mean of θ′ (≈ 1e-3 K at z = 5 km). RK4, Lawson
+and ETD keep it, MIS damps it (sections below: the MIS54 curve is shifted). The *wave error*
+(horizontal mean removed) at the best number of substeps:
+
+| wave error [K] | Δt = 67 s (UΔt/Δx = 0.53) | 130 s (1.04) | 200 s (1.6) |
+|---|---|---|---|
+| MIS4 `hevi` | 2.2e-4 | 5.6e-4 | unstable |
+| MIS54 `hevi` | 7.5e-5 | **1.0e-4** | **3.2e-4** |
+| LRK4 `hevi_s4` | 7.2e-5 | 2.0e-4 | unstable |
+| EB4 `hevi_s4` | **6.3e-5** | 1.8e-4 | 1.1e-3 |
+
+The total error (with the mean): MIS 0.9–1.4e-3 K at all steps; LRK4/EB4 with `hevi_s4`
+6–9e-5 (67 s), 1.6–2.1e-4 (130 s); with `hevi` (second order) erratic, 1e-4 … 1.7e-3.
+
+![](images/lawson_mis_gravity_wave.png)
+![](images/lawson_mis_gravity_wave_sections.png)
+
+**MIS vs Lawson/ETD:**
+
+- MIS solves each stage as Z' = LZ + constant forcing, i.e. it is an ETD method with φ-functions
+  built from the stage structure; with α, γ ≠ 0 it is not exact for S = 0 and damps or dephases
+  fast modes at ωΔt ≫ 1 by a Δt-independent amount. Lawson and ETD are exact for S = 0 and keep
+  the fast modes.
+- Where the fast modes are the signal (the acoustic pulse) Lawson with an accurate propagator is
+  far better (170× below MIS54). ETD (EB4) is not (1.6e-3); a plausible reason: its polynomial-in-time
+  forcing interpolates S along the fast oscillation, Lawson interpolates in the frame moving with e^{tL}.
+- Where the slow modes are the signal (gravity wave) MIS54 is as accurate as LRK4/EB4 at
+  UΔt/Δx ≈ 0.5, more accurate at ≈ 1, and the only one of them stable at 1.6 (EB4 stable but 3×
+  worse). MIS54 needs no high-order fast loop, so it is 5–8× cheaper per step.
+- Stability limits in UΔt/Δx: MIS54 > 1.6; LRK4 and MIS4 < 1.6 (LRK4's RK4 advection limit 1.75
+  on the linear test); EB4 1.6 but inaccurate.
+
+**Optimal number of substeps:**
+
+- *MIS:* the error does not depend on the fast loop once the substep is stable: the same error
+  with `hevi`, `hevi_s4`, `hevi_y6` and for every nsub. The optimum is the smallest stable nsub,
+  dτ at the acoustic limit (nsub = Δt/dτ_max); at most a margin of ~1.5 (MIS54 at Δt = 67 s:
+  1.1e-4 at nsub = 12, 7.1e-5 at nsub = 24). A higher-order fast loop is wasted.
+- *Lawson/ETD:* the wave error behaves like MIS (independent of the fast loop at the smallest
+  stable nsub), but the fast part — and with it the total error — needs a fourth-order loop:
+  `_s4` at the smallest stable nsub (its weights |w| ≤ 0.66 allow the regular dτ) reaches the
+  exact-propagator error; more substeps or `_y6` bring nothing. Cost 5× the second-order loop.
+  With a second-order loop the error decreases only like (Δt/nsub)² and needs nsub ≳ 4× larger.

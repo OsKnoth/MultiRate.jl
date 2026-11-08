@@ -306,7 +306,7 @@ complex blocks.
 function linearized_mode_model(model, qb::AbstractVector, idx::AbstractVector, θ; thermo, hmom,
                                ε = 1e-6, fast::Symbol = :hevi, Δt = 1.0, fast_options...)
     n = length(qb)
-    sF = fast_operator(model, qb; fast = fast, fast_options...)
+    sF = fast_operator(model, qb; fast = composition(fast)[1], fast_options...)
     h = ε * max(1.0, maximum(abs, qb))
     rp = zeros(n); rm = zeros(n); z = zeros(n)
     Japply!(out, v) = (rhs_nonlinear!(rp, model, qb .+ h .* v); rhs_nonlinear!(rm, model, qb .- h .* v);
@@ -348,7 +348,7 @@ a run between two re-freezes. Needs no shift invariance (terrain, cut cells, DG)
 function linearized_step(model, qb::AbstractVector, Δt, tab::SplitTableau; nsub::Int = 12, fast::Symbol = :hevi,
                          sF = nothing, ε = 1e-6, fast_options...)
     n = length(qb)
-    sF === nothing && (sF = fast_operator(model, qb; fast = fast, fast_options...))
+    sF === nothing && (sF = fast_operator(model, qb; fast = composition(fast)[1], fast_options...))
     w = MISWork(n, nstages(tab))
     qp = zeros(n); qm = zeros(n)
     s = max(1.0, maximum(abs, qb))

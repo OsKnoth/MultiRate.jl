@@ -35,13 +35,19 @@ coupling conditions:
 MIS3C (coefficients as in ClimaTimeSteppers.jl) is only second order once `L ≠ 0`, which still has
 to be checked against the paper.
 
-**Lawson RK** (`:LRK4`, `:LRK3`, `:LRK2`, selected like the MIS tableaus; `TABLE=LRK4` in the
-drivers): integrating-factor RK for `q' = N(q)` with `e^{τL}` computed by the same fast loops as MIS
-(`:hevi`, `:verlet`, …). Orders 4/3/2 with exact propagators, fast time 2.5 Δt per step for LRK4.
-It is exact for `S = 0` and very accurate with exact propagators (pulse error 190× below MIS54),
-but with the second-order fast loops its error is the fast-loop error, and on the nonlinear FV
-gravity wave it is not better than MIS4. It needs a high-order propagator (see
-[docs/FINDINGS.md](docs/FINDINGS.md) §8).
+**Lawson RK** (`:LRK4`, `:LRK3`, `:LRK2`) and **ETD in stage-ODE form** (`:EB1`, `:ETD2`, `:EB4`
+Krogstad, after the MATLAB `SplitExplicitETD.m`: each stage a fast ODE with a slow forcing that is a
+polynomial in the local time) use the same fast loops as MIS; select them like the MIS tableaus
+(`TABLE=LRK4` in the drivers). **High-order fast loops:** `:<base>_s4` (Suzuki, order 4), `_y4`,
+`_y6` (Yoshida) compose `:verlet`, FV `:hevi` or `:hevi_verlet`.
+
+At large slow steps (FV gravity wave, [docs/FINDINGS.md](docs/FINDINGS.md) §9): for the wave MIS54
+with the plain `hevi` loop is as accurate as LRK4/EB4 with the fourth-order `hevi_s4` and stays
+stable up to UΔt/Δx = 1.6; Lawson/ETD keep the fast acoustic modes (exact for S = 0), MIS damps
+them. For MIS the best number of substeps is the smallest stable one; Lawson/ETD need `_s4` at
+that number.
+
+![](docs/images/lawson_mis_gravity_wave.png)
 
 `L` and its split `L_I` can be chosen locally. That choice is the subject of the project:
 

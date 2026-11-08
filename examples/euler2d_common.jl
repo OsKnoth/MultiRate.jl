@@ -122,7 +122,14 @@ const CFL_HEVI_VERLET = Dict(2 => 2.2, 3 => 1.65, 4 => 1.3, 5 => 1.1)
 const HEVI_VERLET_SAFETY = 0.78
 
 """Acoustic substep of the fast integrator (safety × stability limit, table above)."""
-function fast_step(model::E2.Euler2DModel, q, fast; cfl = nothing, safety = 0.85)
+# Compositions (:<base>_y4, _s4, _y6): the base loop sees substeps up to max|w| dτ.
+function fast_step(model, q, fast::Symbol; kwargs...)
+    base, ws = TS.composition(fast)
+    length(ws) == 1 && return _fast_step(model, q, fast; kwargs...)
+    return _fast_step(model, q, base; kwargs...) / max(1.0, TS.composition_stretch(fast))
+end
+
+function _fast_step(model::E2.Euler2DModel, q, fast; cfl = nothing, safety = 0.85)
     M = model.mesh
     if cfl === nothing
         lim = get(CFL_LIMITS, M.p, (0.05, 3.15 / (M.p + 1), 2.2 / (M.p + 1), 0.05))
@@ -134,7 +141,7 @@ function fast_step(model::E2.Euler2DModel, q, fast; cfl = nothing, safety = 0.85
     return cfl * h / ((2M.p + 1) * sound_speed_max(model, q))
 end
 
-function fast_step(model::FV.FVModel, q, fast; cfl = nothing, safety = 0.85)
+function _fast_step(model::FV.FVModel, q, fast; cfl = nothing, safety = 0.85)
     g = model.grid
     fast in (:wrf, :hevi, :verlet, :fb) || error("FV: use :wrf, :hevi, :verlet or :fb (:imex and :hevi_relax are unavailable on the C-grid)")
     lim = fast == :wrf ? 1.0 : 0.92
@@ -144,7 +151,7 @@ function fast_step(model::FV.FVModel, q, fast; cfl = nothing, safety = 0.85)
     return cfl * h / sound_speed_max(model, q)
 end
 
-function fast_step(model::FV.FVModel{<:FV.CutCellFVGrid}, q, fast; cfl = nothing, safety = 0.85)
+function _fast_step(model::FV.FVModel{<:FV.CutCellFVGrid}, q, fast; cfl = nothing, safety = 0.85)
     fast in (:hevi, :verlet, :fb, :rosenbrock_amf) || error("FV cut-cell: use :hevi, :verlet, :fb or :rosenbrock_amf")
     g = model.grid
     # Rosenbrock-W AMF: the explicit horizontal acoustics inside the W-method grow beyond

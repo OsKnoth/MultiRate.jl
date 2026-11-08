@@ -29,7 +29,7 @@ equations with gravity on DGSEM, terrain-following FV and cut-cell FV}
 This report collects the results of the numerical experiments with MultiRate.jl in the order they
 were obtained: background-free discretizations, the Agnesi hills, gravity waves, the MIS tableaus,
 linear acoustics with advection after the MISDG experiments, the linearized production models and
-a matrix-free analysis of the linearized step, and Lawson RK with the MIS fast integrators. The recurring result is that the slow part
+a matrix-free analysis of the linearized step, Lawson RK and ETD with the MIS fast integrators, and the optimal number of substeps. The recurring result is that the slow part
 $S = N - L$ of a split-explicit step must not contain terms whose Courant number with the large step
 is large. Two instances are identified: the vertical transport of horizontal momentum by the fast
 vertical velocity (Agnesi a100 and the long-channel gravity wave, $U\dt/\Delta z = 13$--$22$), and a
@@ -411,10 +411,109 @@ LRK4  & $1.6\cdot10^{-3}$ & $1.7\cdot10^{-3}$ & $3.7\cdot10^{-4}$\\
 ($\max\theta'_\mathrm{RK4} = 4.4\cdot10^{-3}$\,K, $n_\mathrm{sub} = 12$.) All methods are dominated by
 the fast-loop error (vertical Crank--Nicolson at large vertical Courant numbers).
 
-\paragraph{Consequence.} With second-order fast loops Lawson brings no gain over MIS4; its
-fourth-order accuracy needs an accurate propagator, i.e.\ the high-order (Yoshida) fast integrator
-or an exact or high-order vertical solve. A MIS run with a small step is not a neutral reference
-for Lawson (MIS's own acoustic damping); RK4 on $N$ is.
+\paragraph{Consequence (revised in Section~\ref{sec:etd}).} With second-order fast loops the Lawson
+error at small slow steps is the fast-loop error. The table mixes the gravity wave with an
+oscillation of the horizontal mean; at large slow steps and with a fourth-order fast loop the
+picture is different. A MIS run with a small step is not a neutral reference for Lawson (MIS's own
+acoustic damping); RK4 on $N$ is.
+
+%======================================================================
+\section{ETD, high-order fast loops, and MIS against Lawson/ETD at large slow steps}\label{sec:etd}
+
+\paragraph{ETD in stage-ODE form} (\code{ETDTableau}, after the MATLAB \code{SplitExplicitETD.m} and
+\code{MethodETD.m}). Stage $i$ starts from $q^n$ and integrates, with $T = c_i\dt$ and $\tau = t/T$,
+\begin{equation}
+  Z' = LZ + \sum_{j\le i}\sum_k P_{ijk}\,\tau^{k-1}S(Y_j),\qquad P_{ijk} = \frac{a_{ijk}}{(k-1)!\,c_i},
+\end{equation}
+which, exactly integrated, is the ETD stage $e^{TL}q^n + \dt\sum_{j,k}a_{ijk}\varphi_k(TL)S(Y_j)$.
+Tableaus: EB1 (exponential Euler), ETD2 (Cox--Matthews), EB4 (Krogstad's ETDRK4, $c = \tfrac12,
+\tfrac12, 1, 1$, fast time $3\dt$). \code{fast\_solve\_poly!} runs the fast loops with the forcing at
+the midpoint of every base step, which keeps symmetric loops symmetric in $(q,t)$. Orders with
+exact fast stages: 1, 2, 4.
+
+\paragraph{High-order fast loops.} Symmetric compositions of a symmetric second-order loop
+(\code{:verlet}, FV \code{:hevi}, \code{:hevi\_verlet}): \code{\_y4} (Yoshida triple jump, weights
+$1.35, -1.70, 1.35$), \code{\_s4} (Suzuki, 5 stages, $|w|\le0.66$, stable at the regular substep),
+\code{\_y6} (Yoshida, 7 stages). Measured orders 4, 4, 6, also with the time-dependent ETD forcing;
+Suzuki's error constant is 60 times smaller than the triple jump's.
+
+\paragraph{Linear pulse at large steps} ($h = 50$\,s, $C_\mathrm{sound} = 7$, $C_\mathrm{adv} = 1$,
+relative error at $T$):
+\begin{center}
+\begin{tabular}{lccc}
+\toprule
+ & exact fast stages & Verlet, $n_\mathrm{sub} = 48$ & Suzuki, $n_\mathrm{sub} = 8$\\
+\midrule
+MIS4a & $9.9\cdot10^{-3}$ & $9.9\cdot10^{-3}$ & $9.9\cdot10^{-3}$\\
+MIS54 & $9.9\cdot10^{-4}$ & $8.4\cdot10^{-4}$ & $1.0\cdot10^{-3}$\\
+EB4   & $1.6\cdot10^{-3}$ & $1.6\cdot10^{-3}$ & $1.6\cdot10^{-3}$\\
+LRK4  & $\mathbf{5.3\cdot10^{-6}}$ & $3.1\cdot10^{-4}$ & $\mathbf{5.8\cdot10^{-6}}$\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=\textwidth]{lawson_mis_pulse.png}
+\caption{Linear pulse: error against base fast steps per slow step.}
+\end{figure}
+
+\paragraph{Nonlinear FV gravity wave at large steps} (300\,km, reference: explicit RK4 on $N$). The
+initial $\theta'$ at constant pressure is not balanced and excites a vertical acoustic oscillation
+of the horizontal mean of $\theta'$ ($\approx10^{-3}$\,K at $z = 5$\,km). RK4, Lawson and ETD keep
+it, MIS damps it. The wave error (horizontal mean removed) at the best number of substeps:
+\begin{center}
+\begin{tabular}{lccc}
+\toprule
+wave error [K] & $\dt = 67$\,s ($U\dt/\Delta x = 0.53$) & 130\,s (1.04) & 200\,s (1.6)\\
+\midrule
+MIS4 \code{hevi} & $2.2\cdot10^{-4}$ & $5.6\cdot10^{-4}$ & unstable\\
+MIS54 \code{hevi} & $7.5\cdot10^{-5}$ & $\mathbf{1.0\cdot10^{-4}}$ & $\mathbf{3.2\cdot10^{-4}}$\\
+LRK4 \code{hevi\_s4} & $7.2\cdot10^{-5}$ & $2.0\cdot10^{-4}$ & unstable\\
+EB4 \code{hevi\_s4} & $\mathbf{6.3\cdot10^{-5}}$ & $1.8\cdot10^{-4}$ & $1.1\cdot10^{-3}$\\
+\bottomrule
+\end{tabular}
+\end{center}
+With the mean, MIS has $0.9$--$1.4\cdot10^{-3}$\,K at all steps; LRK4 and EB4 with \code{hevi\_s4}
+$6$--$9\cdot10^{-5}$ (67\,s) and $1.6$--$2.1\cdot10^{-4}$ (130\,s); with the second-order \code{hevi}
+their total error is erratic ($10^{-4}$ to $1.7\cdot10^{-3}$).
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=\textwidth]{lawson_mis_gravity_wave.png}\\[4pt]
+\includegraphics[width=0.8\textwidth]{lawson_mis_gravity_wave_sections.png}
+\caption{FV gravity wave. Top: wave error against base fast steps per slow step. Bottom:
+$\theta'$ at $z = 5$\,km for $\dt = 200$\,s; the MIS54 curve is shifted by the damped mean
+oscillation, EB4 with \code{hevi} shows grid-scale noise.}
+\end{figure}
+
+\paragraph{MIS against Lawson/ETD.}
+\begin{itemize}
+\item MIS solves each stage as $Z' = LZ + $ constant forcing; it is an ETD-type method whose
+  $\varphi$-functions come from the stage structure. With $\alpha,\gamma\ne0$ it is not exact for
+  $S = 0$ and damps or dephases fast modes at $\omega\dt\gg1$ by a $\dt$-independent amount. Lawson
+  and ETD are exact for $S = 0$ and keep the fast modes.
+\item Where the fast modes are the signal (the acoustic pulse), Lawson with an accurate propagator
+  is far better (170 times below MIS54). ETD (EB4) is not; a plausible reason is that its
+  polynomial-in-time forcing interpolates $S$ along the fast oscillation, while Lawson interpolates
+  in the frame moving with $e^{tL}$.
+\item Where the slow modes are the signal (the gravity wave), MIS54 is as accurate as LRK4 and EB4
+  at $U\dt/\Delta x\approx0.5$, more accurate at $\approx1$, and the only one of them stable and
+  accurate at 1.6. It needs no high-order fast loop, so it is 5--8 times cheaper per step.
+\end{itemize}
+
+\paragraph{Optimal number of substeps.}
+\begin{itemize}
+\item MIS: once the substep is stable the error depends neither on the fast loop (\code{hevi},
+  \code{hevi\_s4}, \code{hevi\_y6} give the same) nor on $n_\mathrm{sub}$. The optimum is the
+  smallest stable $n_\mathrm{sub}$, $d\tau$ at the acoustic limit, with at most a margin of about
+  1.5 (MIS54 at 67\,s: $1.1\cdot10^{-4}$ at $n_\mathrm{sub} = 12$, $7.1\cdot10^{-5}$ at 24). A higher-order
+  fast loop is wasted.
+\item Lawson/ETD: the wave error behaves like MIS, but the fast part, and with it the total error,
+  needs a fourth-order loop. \code{\_s4} at the smallest stable $n_\mathrm{sub}$ reaches the
+  exact-propagator error; more substeps or \code{\_y6} bring nothing. Cost: 5 times the
+  second-order loop. With a second-order loop the error falls only like $(\dt/n_\mathrm{sub})^2$.
+\end{itemize}
 
 %======================================================================
 \section{Open questions and next steps}
@@ -423,8 +522,8 @@ for Lawson (MIS's own acoustic damping); RK4 on $N$ is.
 \item a1 terrain FV: identify the terrain term in $S$ (Section~\ref{sec:matfree}).
 \item MIS3C: second order with $L\ne0$; compare with Knoth \& Wensch (2014).
 \item Cut cells: warm layer in the lowest cells downstream of the hill.
-\item From the MISDG plan: a high-order (Yoshida) composition fast integrator, which Lawson needs
-  (Section~\ref{sec:lawson}); optionally ETDRK4 (talk in \code{docs/talks/misdg}).
+\item Gravity wave with a balanced initial state (no mean oscillation), DGSEM and the long channel;
+  ETD methods with fewer fast integrations (shared $e^{TL}q^n$ of stages with equal $c_i$).
 \item A linear IMEX fast solver as in the MATLAB reference (one sparse LU of $I-\gamma\Delta\tau L_I$),
   wider choices of the implicit part (adaptive masks), retained HDG traces in 2D.
 \end{itemize}

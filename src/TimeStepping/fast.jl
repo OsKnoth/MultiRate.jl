@@ -28,6 +28,8 @@ q0 (qout may alias q0). Methods:
            vertically implicit, off-centred Crank–Nicolson (β = WRF_BETA), divergence damping
            by the pressure extrapolation of WRF (γd = WRF_SMDIV)
   :rosenbrock_amf model-specific Rosenbrock-W fast integration with approximate matrix factors
+  :<base>_y4, :<base>_s4, :<base>_y6  symmetric compositions of order 4/4/6 of a symmetric
+           second-order loop (:verlet, FV :hevi, :hevi_verlet), see `composition`
 The standard explicit and HEVI loops are allocation-free for operators with a cached
 `fast_workspace` (7 vectors); model-specific Rosenbrock-W implementations may build additional
 factors when their fast operator is frozen.
@@ -41,7 +43,89 @@ function fast_solve!(qout, s::AbstractFastOperator, q0, F_slow, dt, nsteps; meth
         M = fast_mass(s)
         @. f = fb + M * F_slow
     end
+    base, ws = composition(method)
+    if base == :rosenbrock_amf
+        length(ws) == 1 || error("no composition of :rosenbrock_amf")
+        fast_rosenbrock_amf!(qout, s, q0, f, dt, nsteps)
+        return qout
+    end
     q .= q0
+    if length(ws) == 1
+        _fast_loop!(base, q, s, f, dt, nsteps, Y, k1, k2, tmp, rhs)
+    else
+        for _ in 1:nsteps, w in ws
+            _fast_loop!(base, q, s, f, w * dt, 1, Y, k1, k2, tmp, rhs)
+        end
+    end
+    qout .= q
+    return qout
+end
+
+"""
+    fast_solve_poly!(qout, s, q0, G, T, nsteps; method)
+
+Integrate q' = L q + f_b/M + Σ_k (t/T)^{k-1} G_k over [0, T] in nsteps substeps (forcing of an
+ETD stage). Each base step of the loop (also inside a composition) uses the forcing at its
+midpoint in time, which keeps the symmetric loops symmetric in (q, t): the compositions
+`_s4`, `_y4`, `_y6` stay of order 4 and 6. `G` is a vector of vectors (unscaled, like F_slow).
+"""
+function fast_solve_poly!(qout, s::AbstractFastOperator, q0, G, T, nsteps; method::Symbol = :imex)
+    f, q, Y, k1, k2, tmp, rhs = fast_workspace(s)
+    fb = fast_forcing(s)
+    M = fast_mass(s)
+    base, ws = composition(method)
+    base == :rosenbrock_amf && error("fast_solve_poly!: :rosenbrock_amf has no time-dependent forcing")
+    K = length(G)
+    q .= q0
+    dt = T / nsteps
+    t = 0.0
+    for _ in 1:nsteps, w in ws
+        τ = (t + w * dt / 2) / T
+        f .= G[K]
+        for k in K-1:-1:1                                # Horner
+            @. f = τ * f + G[k]
+        end
+        @. f = fb + M * f
+        _fast_loop!(base, q, s, f, w * dt, 1, Y, k1, k2, tmp, rhs)
+        t += w * dt
+    end
+    qout .= q
+    return qout
+end
+
+# Symmetric compositions (Yoshida 1990, Suzuki 1990) of a symmetric second-order fast loop
+const YOSHIDA4 = (w = 1 / (2 - cbrt(2)); (w, 1 - 2w, w))
+const SUZUKI4 = (p = 1 / (4 - cbrt(4)); (p, p, 1 - 4p, p, p))
+const YOSHIDA6 = (w1 = -1.17767998417887; w2 = 0.235573213359357; w3 = 0.784513610477560;
+                  w0 = 1 - 2(w1 + w2 + w3); (w3, w2, w1, w0, w1, w2, w3))
+
+"""
+    composition(method) -> (base, weights)
+
+`:<base>_y4` (Yoshida triple jump, weights 1.35, -1.70, 1.35), `:<base>_s4` (Suzuki, 5 stages,
+|w| ≤ 0.66) and `:<base>_y6` (Yoshida 6th order, 7 stages, |w| ≤ 1.32) compose the symmetric
+second-order loop `base` (:verlet, :hevi for FV, :hevi_verlet) to order 4 or 6: one fast substep
+of size dτ is the product of base steps of size w_k dτ. The base loop must be stable for
+max|w_k| dτ (see `composition_stretch`). Other methods: (method, (1.0,)).
+"""
+function composition(method::Symbol)
+    c = get(COMPOSITIONS, method, nothing)
+    return c === nothing ? (method, NO_COMPOSITION) : c
+end
+
+const NO_COMPOSITION = [1.0]
+const COMPOSITIONS = Dict{Symbol,Tuple{Symbol,Vector{Float64}}}(
+    Symbol(base, suf) => (base, collect(ws))
+    for base in (:verlet, :hevi, :hevi_verlet, :hevi_relax, :imex, :fb)
+    for (suf, ws) in (("_y4", YOSHIDA4), ("_s4", SUZUKI4), ("_y6", YOSHIDA6)))
+
+"""max|w_k| of the composition: the base loop sees substeps up to this factor times dτ."""
+composition_stretch(method::Symbol) = maximum(abs, composition(method)[2])
+
+"""Base fast steps per substep of a composition (cost factor)."""
+composition_cost(method::Symbol) = length(composition(method)[2])
+
+function _fast_loop!(method, q, s, f, dt, nsteps, Y, k1, k2, tmp, rhs)
     if method == :imex
         imex_loop!(q, s, f, dt, nsteps, Y, k1, k2)
     elseif method == :hevi
@@ -56,14 +140,10 @@ function fast_solve!(qout, s::AbstractFastOperator, q0, F_slow, dt, nsteps; meth
         fb_loop!(q, s, f, dt, nsteps, k1, k2)
     elseif method == :wrf
         wrf_loop!(q, s, f, dt, nsteps, Y, k1, k2, tmp, rhs)
-    elseif method == :rosenbrock_amf
-        fast_rosenbrock_amf!(qout, s, q0, f, dt, nsteps)
-        return qout
     else
-        error("unknown fast method $method (available: :imex, :hevi, :hevi_verlet, :hevi_relax, :verlet, :fb, :wrf, :rosenbrock_amf)")
+        error("unknown fast method $method (available: :imex, :hevi, :hevi_verlet, :hevi_relax, :verlet, :fb, :wrf, :rosenbrock_amf, and _y4/_s4/_y6 compositions of the symmetric ones)")
     end
-    qout .= q
-    return qout
+    return q
 end
 
 function imex_loop!(q, s, f, dt, nsteps, Y, k1, k2)

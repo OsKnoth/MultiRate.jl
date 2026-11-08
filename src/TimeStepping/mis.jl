@@ -84,7 +84,7 @@ kwargs are passed to `fast_operator`).
 """
 function mis_step(model, q::AbstractVector, Δt::Real, tab::SplitTableau; nsub::Int = 12, fast::Symbol = :imex,
                   sF = nothing, kwargs...)
-    sF === nothing && (sF = fast_operator(model, q; fast = fast, kwargs...))
+    sF === nothing && (sF = fast_operator(model, q; fast = composition(fast)[1], kwargs...))
     return mis_step!(similar(q), model, q, Δt, tab, sF, MISWork(length(q), nstages(tab)); nsub = nsub, fast = fast)
 end
 
@@ -103,11 +103,11 @@ function run_mis(model, q0, Δt, nsteps, stepper::MISStepper; monitor = nothing,
     nsub, fast = stepper.nsub, stepper.fast
     nsub > 24 && @warn "nsub = $nsub fast steps per slow step (ratio > 24)"
     q = Vector{Float64}(q0)
-    sF = fast_operator(model, q; fast = fast, stepper.fast_options...)
+    sF = fast_operator(model, q; fast = composition(fast)[1], stepper.fast_options...)
     w = MISWork(length(q), nstages(stepper.tableau))
     for n in 1:nsteps
         stepper.refreeze && n > 1 && (n - 1) % stepper.refreeze_every == 0 &&
-            (sF = fast_operator(model, q; fast = fast, stepper.fast_options...))
+            (sF = fast_operator(model, q; fast = composition(fast)[1], stepper.fast_options...))
         mis_step!(q, model, q, Δt, stepper.tableau, sF, w; nsub = nsub, fast = fast)
         monitor !== nothing && n % every == 0 && monitor(n, q)
     end

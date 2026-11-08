@@ -58,6 +58,55 @@ end
 (the stage begins with the cached φ_{c_j Δt}(qⁿ)), or c itself if all w_j vanish."""
 lawson_start(t::LawsonTableau, w, c) = (js = findall(!iszero, w); isempty(js) ? c : minimum(t.c[js]))
 
+"""
+    ETDTableau(name, c, a)
+
+Exponential RK (ETD) method in the stage-ODE form of the MATLAB code (`SplitExplicitETD.m`,
+`MethodETD.m`): stage i (i = 1 … s, the last one gives qⁿ⁺¹, c[s] = 1) starts from qⁿ and
+integrates the fast system with a slow forcing that is a polynomial in the local time,
+    Z' = L Z + Σ_{j ≤ i} Σ_k P[i, j, k] τ^{k-1} S(Y_j),   τ = t/T ∈ [0, 1],   T = c_i Δt,
+so that with exact fast stages Y_{i+1} = e^{TL} qⁿ + Δt Σ_j Σ_k a[i, j, k] φ_k(TL) S(Y_j).
+`a[i, j, k]` are the φ_k coefficients (MATLAB `Koeff`), P = a/((k-1)! c_i). S(Y_j) uses the
+frozen L of qⁿ, Y_1 = qⁿ.
+"""
+struct ETDTableau <: SplitTableau
+    name::Symbol
+    c::Vector{Float64}              # nodes of the stages 2 … s+1 (c[end] = 1)
+    a::Array{Float64,3}             # φ_k coefficients a[i, j, k]
+    P::Array{Float64,3}             # polynomial coefficients of the forcing
+    function ETDTableau(name::Symbol, c::AbstractVector, a::AbstractArray{<:Real,3})
+        s, K = length(c), size(a, 3)
+        size(a, 1) == size(a, 2) == s || throw(ArgumentError("a must be s × s × K"))
+        K <= s || throw(ArgumentError("at most s φ-functions (work arrays)"))
+        P = [a[i, j, k] / (factorial(k - 1) * c[i]) for i in 1:s, j in 1:s, k in 1:K]
+        new(name, Vector{Float64}(c), Array{Float64,3}(a), P)
+    end
+end
+nstages(t::ETDTableau) = length(t.c)
+fast_time(t::ETDTableau) = sum(t.c)
+
+"""ETD tableaus (φ-coefficients as in the MATLAB `MethodETD.m`): :EB1 exponential Euler, :ETD2
+(Cox–Matthews ETD2RK), :EB4 (Krogstad's ETDRK4, c = 1/2, 1/2, 1, 1)."""
+function etd_tableau(name::Symbol)
+    if name == :EB1
+        a = zeros(1, 1, 1); a[1, 1, 1] = 1
+        return ETDTableau(name, [1.0], a)
+    elseif name == :ETD2
+        a = zeros(2, 2, 2)
+        a[1, 1, 1] = 1                                    # Y2 = e^{hL}qⁿ + h φ1 S1
+        a[2, 1, 1] = 1; a[2, 1, 2] = -1; a[2, 2, 2] = 1   # qⁿ⁺¹: h(φ1 - φ2) S1 + h φ2 S2
+        return ETDTableau(name, [1.0, 1.0], a)
+    elseif name == :EB4
+        a = zeros(4, 4, 3)
+        a[1, 1, 1] = 0.5
+        a[2, 1, 1] = 0.5; a[2, 1, 2] = -1; a[2, 2, 2] = 1
+        a[3, 1, 1] = 1; a[3, 1, 2] = -2; a[3, 3, 2] = 2
+        a[4, 1, :] = [1, -3, 4]; a[4, 2, :] = [0, 2, -4]; a[4, 3, :] = [0, 2, -4]; a[4, 4, :] = [0, -1, 4]
+        return ETDTableau(name, [0.5, 0.5, 1.0, 1.0], a)
+    end
+    error("unknown ETD tableau $name (:EB1, :ETD2, :EB4)")
+end
+
 """Lawson tableaus: :LRK4 (classical RK4), :LRK3 (Kutta's RK3, c = 0, 1/2, 1), :LRK2 (midpoint)."""
 function lawson_tableau(name::Symbol)
     name == :LRK4 && return LawsonTableau(name, [0 0 0 0; 1/2 0 0 0; 0 1/2 0 0; 0 0 1 0], [1/6, 1/3, 1/3, 1/6])
@@ -101,9 +150,11 @@ end
 MIS4a with the authors' corrected β₅₁), :WSRK3 (Wicker–Skamarock RK3: β = diag(1/3, 1/2, 1)),
 :MIS_KW3 (Knoth–Wolke RK3 in MIS form, c = 0, 1/3, 3/4), :MIS54 (5 stages, Bauer & Knoth,
 J. Comput. Appl. Math. 387 (2021), Table 2). :LRK4, :LRK3, :LRK2 give Lawson tableaus
-(`lawson_tableau`), so the drivers can select them by name."""
+(`lawson_tableau`), :EB1, :ETD2, :EB4 ETD tableaus (`etd_tableau`), so the drivers can select
+them by name."""
 function mis_tableau(name::Symbol)
     name in (:LRK4, :LRK3, :LRK2) && return lawson_tableau(name)
+    name in (:EB1, :ETD2, :EB4) && return etd_tableau(name)
     name == :WSRK3 && return MISTableau(name, zeros(3, 3), [1/3 0 0; 0 1/2 0; 0 0 1.0], zeros(3, 3))
     name == :MIS2 && return MISTableau(name,
         [0 0 0; 0.536946566710 0 0; 0.480892968551 0.500561163566 0],
