@@ -29,7 +29,7 @@ export LinearSplitModel, mode_model, step_matrix, spectral_radius, max_amplifica
        kw_mode, staggered_mode, staggered_symbols, pulse_error,
        boussinesq_symbols, boussinesq_mode, gravity_wave_section,
        fourier_block, linearized_mode_model, fourier_coefficients, fourier_synthesis,
-       linearized_step, arnoldi_eigs
+       linearized_step, arnoldi_eigs, propagate
 
 """
     LinearSplitModel(N, L; Lv = 0, thermo, hmom = .!thermo)
@@ -109,7 +109,7 @@ function step_matrix(m::LinearSplitModel, Δt, tab::SplitTableau; nsub::Int = 12
         end
     else
         sF = fast_operator(m, e)
-        w = MISWork(n, nstages(tab))
+        w = split_work(tab, n)
         out = zeros(n)
         for j in 1:n
             e .= 0; e[j] = 1
@@ -118,6 +118,59 @@ function step_matrix(m::LinearSplitModel, Δt, tab::SplitTableau; nsub::Int = 12
         end
     end
     return R
+end
+
+"""
+    step_matrix(m, Δt, tab::EABTableau; nsub = 12, fast = :verlet)
+
+Companion matrix of the k-step exponential Adams–Bashforth method on the stacked history
+(qⁿ, q^{n-1}, …, q^{n-k+1}) → (q^{n+1}, qⁿ, …, q^{n-k+2}), with the production `eab_advance!`
+or (`fast = :exact`) the exact flow.
+"""
+function step_matrix(m::LinearSplitModel, Δt, tab::EABTableau; nsub::Int = 12, fast::Symbol = :verlet)
+    n, k = size(m.N, 1), tab.k
+    R = zeros(k * n, k * n)
+    e = zeros(k * n)
+    S = m.N - m.L
+    sF = fast_operator(m, zeros(n))
+    w = split_work(tab, n)
+    out = zeros(n)
+    for col in 1:k*n
+        e .= 0; e[col] = 1
+        ys = [e[(j-1)*n+1:j*n] for j in 1:k]
+        if fast == :exact
+            out .= eab_step_exact(m.L, q -> S * q, ys, Δt, tab)
+        else
+            for j in 1:k
+                w.y[j] .= ys[j]
+                rhs_nonlinear!(w.N[j], m, ys[j])
+            end
+            eab_advance!(out, ys[1], Δt, tab, sF, w; nsub, fast)
+        end
+        R[1:n, col] = out
+        R[n+1:end, col] = e[1:(k-1)*n]
+    end
+    return R
+end
+
+"""
+    propagate(m, Δt, tab, nsteps, q0; kwargs...)
+
+q after nsteps steps of the linear model m from q0 (kwargs go to `step_matrix`). Multistep
+(`EABTableau`): k-1 start-up steps of `tab.startup`, then the companion matrix.
+"""
+propagate(m::LinearSplitModel, Δt, tab::SplitTableau, nsteps::Int, q0; kwargs...) =
+    step_matrix(m, Δt, tab; kwargs...)^nsteps * q0
+function propagate(m::LinearSplitModel, Δt, tab::EABTableau, nsteps::Int, q0; kwargs...)
+    ns = min(tab.k - 1, nsteps)
+    Rs = step_matrix(m, Δt, tab.startup; kwargs...)
+    ys = [Vector{Float64}(q0)]
+    for _ in 1:ns
+        push!(ys, Rs * ys[end])
+    end
+    ns == nsteps && return ys[end]
+    C = step_matrix(m, Δt, tab; kwargs...)
+    return (C^(nsteps - ns) * vcat(reverse(ys)...))[1:length(q0)]
 end
 
 spectral_radius(R) = maximum(abs, eigvals(R))
@@ -188,8 +241,8 @@ function pulse_error(tab::SplitTableau, h; nx::Int = 400, Lx = 1e6, c = 350.0, U
         a, b, ν = staggered_symbols(θ; C_sound = c * h / dx, C_adv = U * h / dx)
         Lk = ComplexF64[0 a; b 0]
         qex = exp((Lk + ν * I) * (T / h)) * ComplexF64[p̂, 0]
-        R = step_matrix(mode_model(Lk + ν * I, Lk; thermo = [true, false]), 1.0, tab; kwargs...)
-        qr = R^nsteps * [real(p̂), 0, imag(p̂), 0]
+        qr = propagate(mode_model(Lk + ν * I, Lk; thermo = [true, false]), 1.0, tab, nsteps,
+                       [real(p̂), 0, imag(p̂), 0]; kwargs...)
         qn = ComplexF64[qr[1] + im * qr[3], qr[2] + im * qr[4]]
         e2 += sum(abs2, qn - qex)
         n2 += sum(abs2, qex)
@@ -257,9 +310,9 @@ function gravity_wave_section(tab::SplitTableau, Δt; nsub::Int = 12, fast::Symb
         A, L, Lv = boussinesq_symbols(θ, 1; Δx, Δz, H, c, N, U, Δt)
         q0 = ComplexF64[0, 0, b̂, 0]
         be[j+1] = (exp(A * nsteps) * q0)[3]
-        R = step_matrix(mode_model(A, L; Lv = Lv, thermo = [false, false, true, true],
-                                   hmom = [true, false, false, false]), 1.0, tab; nsub, fast)
-        qr = R^nsteps * vcat(real(q0), imag(q0))
+        qr = propagate(mode_model(A, L; Lv = Lv, thermo = [false, false, true, true],
+                                  hmom = [true, false, false, false]), 1.0, tab, nsteps,
+                       vcat(real(q0), imag(q0)); nsub, fast)
         bn[j+1] = qr[3] + im * qr[7]
     end
     back(f) = [real(sum(f[j+1] * cis(2π * j * (i - 1) / nx) for j in 0:nx-1)) / nx for i in 1:nx] .* sin(π * zk / H)
@@ -347,9 +400,10 @@ a run between two re-freezes. Needs no shift invariance (terrain, cut cells, DG)
 """
 function linearized_step(model, qb::AbstractVector, Δt, tab::SplitTableau; nsub::Int = 12, fast::Symbol = :hevi,
                          sF = nothing, ε = 1e-6, fast_options...)
+    tab isa EABTableau && throw(ArgumentError("linearized_step: multistep method $(tab.name) (use step_matrix)"))
     n = length(qb)
     sF === nothing && (sF = fast_operator(model, qb; fast = composition(fast)[1], fast_options...))
-    w = MISWork(n, nstages(tab))
+    w = split_work(tab, n)
     qp = zeros(n); qm = zeros(n)
     s = max(1.0, maximum(abs, qb))
     function apply!(out, v)

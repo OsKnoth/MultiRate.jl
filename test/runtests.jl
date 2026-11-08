@@ -294,7 +294,8 @@ end
     # :wrf is first order in dτ (off-centring β = 0.55), so with a fixed ratio nsub the order is 1
     for (tab, nsub, fast, lim, order) in ((:WSRK3, 6, :wrf, gw.dx, 1.0), (:MIS4, 12, :verlet, gw.dz, 2.0),
                                            (:MIS54, 12, :verlet, gw.dz, 2.0), (:LRK4, 12, :verlet, gw.dz, 2.0),
-                                           (:EB4, 12, :verlet, gw.dz, 2.0))
+                                           (:EB4, 12, :verlet, gw.dz, 2.0), (:EPIRKW3b, 4, :verlet, gw.dz, 2.0),
+                                           (:EAB3, 4, :verlet, gw.dz, 2.0))
         Δt1 = nsub * 0.8 * lim / c
         errs = [norm(TS.run_mis(mw, q0, Δt, round(Int, 200 / Δt); tab = TS.mis_tableau(tab), nsub = nsub,
                                 fast = fast) .- qref) for Δt in (200 / ceil(200 / Δt1), 100 / ceil(200 / Δt1))]
@@ -378,6 +379,54 @@ end
         e = [norm(LA.step_matrix(m, 1.0, tab; nsub = n, fast) - Rex) for n in (12, 24)]
         @test abs(log2(e[1] / e[2]) - p) < 0.2
     end
+end
+
+@testset "TimeStepping: EPIRK(-W) and exponential Adams–Bashforth in stage-ODE form" begin
+    LA = MultiRate.LinearAnalysis
+    # orders with an arbitrary L (not the Jacobian): EPIRK-W 3, EAB k; classical EPIRK4 drops to 1
+    for (name, p) in ((:EPIRKW3a, 3), (:EPIRKW3b, 3), (:EAB2, 2), (:EAB3, 3), (:EAB4, 4), (:EPIRK4, 1))
+        _, r = TS.mis_observed_order(TS.mis_tableau(name); n = (20, 40, 80))
+        @test abs(r[end] - p) < 0.15
+    end
+    # EPIRK4 with L = Jacobian of the full right-hand side: order 4
+    L0, G0 = TS.ORDER_TEST_L, TS.order_test_G
+    J(y) = L0 + [0.5cos(y[1]) 2y[2]; -0.3y[2]-sin(y[1]) -0.3y[1]]
+    qref = TS._rk4_reference(L0, G0, [1.0, 0.5], 1.0, 20000)
+    e4 = map((20, 40)) do m
+        y = [1.0, 0.5]
+        for _ in 1:m
+            A = J(y); y = TS.mis_step_exact(A, x -> L0 * x + G0(x) - A * x, y, 1 / m, TS.mis_tableau(:EPIRK4))
+        end
+        norm(y - qref)
+    end
+    @test log2(e4[1] / e4[2]) > 3.6
+    @test TS.fast_time(TS.mis_tableau(:EPIRKW3b)) ≈ 1 + 0.34706341174296320958
+    @test TS.fast_time(TS.mis_tableau(:EAB3)) == 1
+    # production stage-ODE step converges to the exact φ-functions (Suzuki loop: order 4)
+    m = LA.staggered_mode(0.9; C_sound = 1.0, C_adv = 0.1)
+    for name in (:EPIRKW3a, :EPIRKW3b, :EAB3)
+        tab = TS.mis_tableau(name)
+        Rex = LA.step_matrix(m, 1.0, tab; fast = :exact)
+        e = [norm(LA.step_matrix(m, 1.0, tab; nsub = n, fast = :verlet_s4) - Rex) for n in (4, 8)]
+        @test abs(log2(e[1] / e[2]) - 4) < 0.3
+    end
+    # stable for slow steps with small Courant numbers only (coupling with the fast acoustics)
+    amp(name, ca) = LA.max_amplification(θ -> LA.staggered_mode(θ; C_sound = 7ca, C_adv = ca),
+                                         TS.mis_tableau(name); fast = :exact)
+    @test amp(:EPIRKW3a, 0.2) <= 1 + 1e-6 && amp(:EPIRKW3a, 0.5) > 1.5
+    @test amp(:EAB3, 0.05) < 1.001 && amp(:EAB3, 0.2) > 1.5
+    # multistep bookkeeping: the start-up steps, then EAB; reset! starts again
+    tab = TS.mis_tableau(:EAB3)
+    w = TS.split_work(tab, 4)
+    @test w.nhist == 0
+    sF = TS.fast_operator(m, zeros(4))
+    q = [1.0, 0.0, 0.5, 0.0]
+    for _ in 1:3
+        TS.mis_step!(q, m, q, 1.0, tab, sF, w; nsub = 4, fast = :verlet)
+    end
+    @test w.nhist == 3
+    @test TS.reset!(w).nhist == 0
+    @test_throws ArgumentError LA.linearized_step(m, zeros(4), 1.0, tab)
 end
 
 @testset "LinearAnalysis: MIS amplification (Knoth–Wensch, MISDG grid)" begin

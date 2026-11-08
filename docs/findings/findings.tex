@@ -516,6 +516,83 @@ oscillation, EB4 with \code{hevi} shows grid-scale noise.}
 \end{itemize}
 
 %======================================================================
+\section{EPIRK(-W) and exponential Adams--Bashforth with the MIS fast loops}\label{sec:epirk}
+
+\paragraph{Methods.} Both are written in the stage-ODE form of Section~\ref{sec:etd}: the
+$\varphi$-function combinations that KIOPS evaluates in the EPI/EPIRK codes of Tokman and Gaudreault
+become fast integrations with a polynomial forcing.
+\begin{itemize}
+\item EPIRK (\code{EPIRKTableau}):
+  $Y_i = q^n + a_{i1}\psi_1(g_{i1}hL)\,hN(q^n) + \sum_{j\ge2} a_{ij}\psi_j(g_{ij}hL)\,h\,\Delta^{(j-1)}r$,
+  $\psi_j=\sum_k p_{jk}\varphi_k$, $r(y)=N(y)-N(q^n)-L(y-q^n)=S(y)-S(q^n)$. For each distinct $g>0$ of a
+  row one fast integration from $q^n$ over $gh$ of $W' = LW - Lq^n + \sum_k\tau^{k-1}G_k$,
+  $G_k=\sum_j a_{ij}p_{jk}V_j/((k-1)!\,g)$; terms with $g=0$ are explicit. Tableaus of Narayanamurthi,
+  Tranquilli, Sandu, Tokman (2019): \code{EPIRKW3a}, \code{EPIRKW3b} (EPIRK-W, order 3 for any $L$;
+  fast time $2.27h$ and $1.35h$) and \code{EPIRK4} (classical order 4, only for $L=\partial N/\partial q$).
+\item Exponential Adams--Bashforth (\code{EABTableau}, \code{EAB2}--\code{EAB4}), the multistep form of
+  Gaudreault's EPI methods for an arbitrary $L$: one fast integration per step, $Y'=LY+p(\tau)$ from
+  $q^n$ over $h$, $p$ the polynomial through $S(q^{n-m})$ at $\tau=-m$, all $S$ with the current frozen
+  $L$ (the history stores $q$ and $N$). Start-up with EB4.
+\end{itemize}
+
+\paragraph{Orders} (exact fast stages, $L\ne$ Jacobian): EPIRKW3a/b 3.0, EAB2/3/4 2.0/3.0/3.95;
+EPIRK4 drops to 0.97 and has 3.9 with $L$ = Jacobian. The production step agrees with the exact
+$\varphi$-functions and converges with order 4 with the Suzuki loop.
+
+\paragraph{Stability} (MISDG grid, exact fast stages, $C_\mathrm{sound}=7C_\mathrm{adv}$, maximum amplification):
+\begin{center}
+\footnotesize\begin{tabular}{lccccc}
+\toprule
+$C_\mathrm{adv}$ & 0.1 & 0.2 & 0.3 & 0.5 & 1.0\\
+\midrule
+MIS54, LRK4 & 1 & 1 & 1 & 1 & 1\\
+EB4 & 1 & 1 & 1 & 1 & 1.025\\
+EPIRKW3a / W3b & 1 & 1 & 1.04 / 1.11 & 1.9 & 3.2 / 3.4\\
+EPIRK4 ($L\ne J$) & 1.003 & 1.03 & 1.10 & 1.27 & 1.35\\
+EAB2 / 3 / 4 & 1.08 / 1.02 / 1.02 & 1.4 / 1.7 / 2.0 & 1.5 / 1.8 / 2.2 & 1.5 / 1.8 / 2.2 & 1.5 / 1.8 / 2.2\\
+\bottomrule
+\end{tabular}
+\end{center}
+Without acoustics EPIRK-W is stable up to $C_\mathrm{adv}=1.4$ and EAB2/3/4 up to the
+Adams--Bashforth limits $\approx 0.4/0.4/0.2$: the instability comes from the coupling with the fast acoustics.
+
+\begin{center}\includegraphics[width=\textwidth]{../images/epirk_eab_stability.png}\end{center}
+
+\paragraph{Nonlinear FV gravity wave} (300\,km, wave error in K, \code{hevi}, $n_\mathrm{sub}$ at the acoustic limit):
+\begin{center}
+\begin{tabular}{lccccccc}
+\toprule
+$\dt$ [s] & 67 & 33 & 20 & 10 & 5 & 2.5 & 1\\
+$c\dt/\Delta x$ & 9.3 & 4.7 & 2.8 & 1.4 & 0.7 & 0.35 & 0.14\\
+\midrule
+MIS54 & 1.1e-4 & 1.1e-4 & 1.1e-4 & 7.0e-5 & & & 4.2e-6\\
+EB4 & 1.6e-4 & 1.2e-4 & 9.1e-5 & 9.0e-5 & 8.8e-5 & 3.6e-5 & 4.2e-6\\
+EPIRKW3a & unst. & unst. & 1.2e-2 & unst. & & & \\
+EPIRKW3b & unst. & unst. & unst. & 8.4e-5 & unst. & 3.6e-5 & 4.2e-6\\
+EPIRK4 & 8.0e-4 & 2.7e-3 & 4.3e-4 & 1.6e-4 & & & \\
+EAB3 & unst. & unst. & unst. & unst. & unst. & 3.7e-5 & 4.2e-6\\
+\bottomrule
+\end{tabular}
+\end{center}
+All converge to the same solution at small steps, but EPIRK-W and EAB are usable only where the
+acoustics are almost resolved ($c\dt/\Delta x\lesssim0.5$), which defeats the multirate idea.
+
+\paragraph{Why.}
+\begin{itemize}
+\item The W-order of EPIRK-W is a classical (non-stiff) order for an arbitrary matrix; nothing
+  controls the method for $\|hL\|\gg1$ (Narayanamurthi et al.\ note that $A=J$ may be needed for
+  stability). In their applications $A$ approximates the full Jacobian.
+\item EAB extrapolates $S$ from previous steps. Through the coupling with advection $S$ carries the
+  fast oscillation, and polynomial extrapolation of $e^{i\omega t}$ with $\omega h\gg1$ amplifies it.
+  EB4 interpolates only inside the step, Lawson in the frame moving with $e^{tL}$.
+\item The classical EPIRK4 with $L$ instead of the Jacobian is first order; the real Jacobian would
+  need a Jacobian-vector product of the slow part in every fast substep.
+\end{itemize}
+\paragraph{Consequence.} Keep Lawson (LRK4) and ETD-RK (EB4) next to MIS. A multistep method with
+one slow evaluation per step would need the Lawson form (integrating-factor Adams--Bashforth: the
+stored $S$ propagated by the fast flow; $k$ fast integrations per step), not tried yet.
+
+%======================================================================
 \section{Open questions and next steps}
 
 \begin{itemize}
@@ -531,6 +608,10 @@ oscillation, EB4 with \code{hevi} shows grid-scale noise.}
 \section*{References}
 \begin{itemize}
 \item Artiano et al., arXiv:2610.15775 (2026), HEVI linearization.
+\item M.~Hochbruck, A.~Ostermann, \emph{Acta Numerica} 19 (2010) 209--286, exponential integrators.
+\item S.~Gaudreault, G.~Rainwater, M.~Tokman, \emph{J. Comput. Phys.} 372 (2018), KIOPS.
+\item M.~Narayanamurthi, P.~Tranquilli, A.~Sandu, M.~Tokman, \emph{J. Sci. Comput.} (2019), EPIRK-W and EPIRK-K, arXiv:1701.06528.
+\item M.~Tokman, \emph{J. Comput. Phys.} 230 (2011), EPIRK methods.
 \item W.~Bauer, O.~Knoth, \emph{J. Comput. Appl. Math.} 387 (2021), MIS54.
 \item W.~A.~Gallus, J.~B.~Klemp, \emph{Mon. Wea. Rev.} 128 (2000) 1153--1164, flow over a bell-shaped hill.
 \item O.~Knoth, J.~Wensch, \emph{Mon. Wea. Rev.} 142 (2014), generalized split-explicit RK methods.

@@ -12,6 +12,9 @@ end
 MISWork(nq::Int, ns::Int) = MISWork([zeros(nq) for _ in 1:ns], [zeros(nq) for _ in 1:ns],
                                     zeros(nq), zeros(nq), zeros(nq), zeros(nq))
 
+"""Work arrays of `mis_step!` for the tableau t and nq unknowns (MIS, Lawson, ETD: `MISWork`)."""
+split_work(t::SplitTableau, nq::Int) = MISWork(nq, nstages(t))
+
 """Configuration for split-explicit MIS, independent of the spatial model being integrated.
 
 `fast` selects the fast-system integrator (`:hevi` uses explicit horizontal and implicit
@@ -85,7 +88,7 @@ kwargs are passed to `fast_operator`).
 function mis_step(model, q::AbstractVector, Δt::Real, tab::SplitTableau; nsub::Int = 12, fast::Symbol = :imex,
                   sF = nothing, kwargs...)
     sF === nothing && (sF = fast_operator(model, q; fast = composition(fast)[1], kwargs...))
-    return mis_step!(similar(q), model, q, Δt, tab, sF, MISWork(length(q), nstages(tab)); nsub = nsub, fast = fast)
+    return mis_step!(similar(q), model, q, Δt, tab, sF, split_work(tab, length(q)); nsub = nsub, fast = fast)
 end
 
 """
@@ -104,7 +107,7 @@ function run_mis(model, q0, Δt, nsteps, stepper::MISStepper; monitor = nothing,
     nsub > 24 && @warn "nsub = $nsub fast steps per slow step (ratio > 24)"
     q = Vector{Float64}(q0)
     sF = fast_operator(model, q; fast = composition(fast)[1], stepper.fast_options...)
-    w = MISWork(length(q), nstages(stepper.tableau))
+    w = split_work(stepper.tableau, length(q))
     for n in 1:nsteps
         stepper.refreeze && n > 1 && (n - 1) % stepper.refreeze_every == 0 &&
             (sF = fast_operator(model, q; fast = composition(fast)[1], stepper.fast_options...))

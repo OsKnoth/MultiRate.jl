@@ -169,3 +169,23 @@ function mis_observed_order(tab::SplitTableau; L = ORDER_TEST_L, G = order_test_
     rates = [log2(err[k] / err[k+1]) * log(2) / log(n[k+1] / n[k]) for k in 1:length(n)-1]
     return collect(err), rates
 end
+
+"""Observed order of the exponential Adams–Bashforth method with exact flows; the k-1 start-up
+values are steps of `tab.startup` with exact fast stages."""
+function mis_observed_order(tab::EABTableau; L = ORDER_TEST_L, G = order_test_G, q0 = [1.0, 0.5],
+                            T = 1.0, n = (10, 20, 40))
+    qref = _rk4_reference(L, G, q0, T, 20000)
+    err = map(n) do m
+        h = T / m
+        ys = [copy(q0)]
+        for _ in 1:min(tab.k - 1, m)
+            pushfirst!(ys, mis_step_exact(L, G, ys[1], h, tab.startup))
+        end
+        for _ in length(ys):m
+            pushfirst!(ys, eab_step_exact(L, G, ys[1:tab.k], h, tab))
+        end
+        norm(ys[1] - qref)
+    end
+    rates = [log2(err[k] / err[k+1]) * log(2) / log(n[k+1] / n[k]) for k in 1:length(n)-1]
+    return collect(err), rates
+end

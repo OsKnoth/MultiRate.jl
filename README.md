@@ -47,6 +47,11 @@ stable up to UΔt/Δx = 1.6; Lawson/ETD keep the fast acoustic modes (exact for 
 them. For MIS the best number of substeps is the smallest stable one; Lawson/ETD need `_s4` at
 that number.
 
+**EPIRK-W** (`:EPIRKW3a`, `:EPIRKW3b`, Tokman et al.), the classical **EPIRK4** and **exponential
+Adams–Bashforth** (`:EAB2`…`:EAB4`, the multistep EPI form) run in the same stage-ODE form with the
+MIS fast loops. They are correct (orders 3, 3, 4 with the Jacobian, 2–4) but stable only where the
+acoustics are almost resolved (cΔt/Δx ≲ 0.5 on the gravity wave), see [FINDINGS](docs/FINDINGS.md) §10.
+
 ![](docs/images/lawson_mis_gravity_wave.png)
 
 `L` and its split `L_I` can be chosen locally. That choice is the subject of the project:

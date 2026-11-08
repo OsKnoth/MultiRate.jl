@@ -268,3 +268,74 @@ The total error (with the mean): MIS 0.9–1.4e-3 K at all steps; LRK4/EB4 with 
   `_s4` at the smallest stable nsub (its weights |w| ≤ 0.66 allow the regular dτ) reaches the
   exact-propagator error; more substeps or `_y6` bring nothing. Cost 5× the second-order loop.
   With a second-order loop the error decreases only like (Δt/nsub)² and needs nsub ≳ 4× larger.
+
+## 10. EPIRK(-W) and exponential Adams–Bashforth with the MIS fast loops
+
+**Methods** (`src/TimeStepping/epirk.jl`). Both are written in the stage-ODE form of §9, so the
+φ-function combinations that KIOPS evaluates in the EPI/EPIRK codes of Tokman and Gaudreault are
+fast integrations with a polynomial forcing (`fast_solve_poly!`):
+
+- **EPIRK** (`EPIRKTableau`): Y_i = qⁿ + a_i1 ψ_1(g_i1 hL) h N(qⁿ) + Σ_j a_ij ψ_j(g_ij hL) h Δ^{(j−1)}r,
+  ψ_j = Σ_k p_jk φ_k, r(y) = N(y) − N(qⁿ) − L(y − qⁿ) = S(y) − S(qⁿ). For each distinct g > 0 in a row
+  one fast integration from qⁿ over gh of W' = LW − Lqⁿ + Σ_k τ^{k−1} G_k, with
+  G_k = Σ_j a_ij p_jk V_j/((k−1)! g); terms with g = 0 are explicit. Tableaus (Narayanamurthi,
+  Tranquilli, Sandu, Tokman, J. Sci. Comput. 2019): `:EPIRKW3a`, `:EPIRKW3b` (EPIRK-W, order 3
+  for any L; fast time 2.27h and 1.35h per step) and `:EPIRK4` (the classical order-4 method of
+  their epirkk4 coefficients, order 4 only for L = ∂N/∂q; fast time 3.06h).
+- **Exponential Adams–Bashforth** (`EABTableau`, `:EAB2`…`:EAB4`; Hochbruck & Ostermann 2010), the
+  multistep form of Gaudreault's EPI methods for an arbitrary L: one fast integration per step,
+  Y' = LY + p(τ) from qⁿ over h, p the polynomial through S(q^{n−m}) at τ = −m, all S with the
+  current frozen L (S(q^{n−m}) = N(q^{n−m}) − L_n q^{n−m}; the history stores q and N). Start-up: EB4.
+  Fast time 1·h per step and one N evaluation per step.
+
+**Orders** (exact fast stages, non-commuting test problem, L ≠ Jacobian): EPIRKW3a 3.0, EPIRKW3b
+3.0, EAB2/3/4 2.0/3.0/3.95; EPIRK4 0.97 (1st order), and 3.9 with L = Jacobian. The production
+step agrees with the exact φ-functions; with `verlet_s4` it converges with order 4.
+
+**Stability** (`examples/linear_analysis/epirk_eab_stability.jl`, MISDG grid, exact fast stages;
+maximum amplification):
+
+| C_adv (C_sound = 7 C_adv) | 0.1 | 0.2 | 0.3 | 0.5 | 1.0 |
+|---|---|---|---|---|---|
+| MIS54, LRK4 | 1 | 1 | 1 | 1 | 1 |
+| EB4 | 1 | 1 | 1 | 1 | 1.025 |
+| EPIRKW3a / W3b | 1 | 1 | 1.04 / 1.11 | 1.9 | 3.2 / 3.4 |
+| EPIRK4 (L ≠ J) | 1.003 | 1.03 | 1.10 | 1.27 | 1.35 |
+| EAB2 / EAB3 / EAB4 | 1.08 / 1.02 / 1.02 | 1.4 / 1.7 / 2.0 | 1.5 / 1.8 / 2.2 | 1.5 / 1.8 / 2.2 | 1.5 / 1.8 / 2.2 |
+
+Without acoustics EPIRK-W is stable up to C_adv = 1.4 and EAB2/3/4 up to the Adams–Bashforth
+limits ≈ 0.4/0.4/0.2: the instability comes from the coupling with the fast acoustics.
+
+![](images/epirk_eab_stability.png)
+
+**Nonlinear FV gravity wave** (300 km, RK4 reference, `hevi`, nsub at the acoustic limit; wave error [K]):
+
+| Δt [s] (UΔt/Δx, cΔt/Δx) | 67 (0.53, 9.3) | 33 (0.27, 4.7) | 20 (0.16, 2.8) | 10 (0.08, 1.4) | 5 (0.04, 0.7) | 2.5 | 1 |
+|---|---|---|---|---|---|---|---|
+| MIS54 | 1.1e-4 | 1.1e-4 | 1.1e-4 | 7.0e-5 | | | 4.2e-6 |
+| EB4 | 1.6e-4 | 1.2e-4 | 9.1e-5 | 9.0e-5 | 8.8e-5 | 3.6e-5 | 4.2e-6 |
+| EPIRKW3a | unstable | unstable | 1.2e-2 | unstable | | | |
+| EPIRKW3b | unstable | unstable | unstable | 8.4e-5 | unstable | 3.6e-5 | 4.2e-6 |
+| EPIRK4 | 8.0e-4 | 2.7e-3 | 4.3e-4 | 1.6e-4 | | | |
+| EAB2/3/4 | unstable | unstable | unstable | unstable | unstable | 7.8e-3 / 3.7e-5 / – | 4.2e-6 |
+
+All converge to the same solution at small steps (the implementation is right), but EPIRK-W and
+EAB are usable only at slow steps where the acoustics would almost be resolved (cΔt/Δx ≲ 0.5),
+which defeats the multirate idea.
+
+**Why:**
+
+- The W-order of EPIRK-W is a classical (non-stiff) order for an arbitrary matrix; nothing controls
+  the method for ‖hL‖ ≫ 1. Narayanamurthi et al. note themselves that A = J may be needed for
+  stability. In their applications A is (an approximation of) the full Jacobian, and the step is
+  limited by accuracy, not by a fast/slow split.
+- EAB extrapolates S from the previous steps. Through the coupling with advection S carries the
+  fast acoustic oscillation, and polynomial extrapolation of e^{iωt} over ωh ≫ 1 amplifies it.
+  ETD-RK (EB4) interpolates only within the step, Lawson in the frame moving with e^{tL}.
+- The classical EPIRK4 with L instead of the Jacobian is first order; using the real Jacobian would
+  need a Jacobian-vector product of the slow part in every fast substep.
+
+**Consequence:** of the exponential methods, keep Lawson (LRK4) and ETD-RK (EB4) next to MIS. A
+multistep method with one slow evaluation per step would need the Lawson form (integrating-factor
+Adams–Bashforth: extrapolate e^{(t_n−t)L}S, i.e. propagate the stored S by the fast flow; k fast
+integrations per step) — not tried yet.

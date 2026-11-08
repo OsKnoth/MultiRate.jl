@@ -150,11 +150,14 @@ end
 MIS4a with the authors' corrected β₅₁), :WSRK3 (Wicker–Skamarock RK3: β = diag(1/3, 1/2, 1)),
 :MIS_KW3 (Knoth–Wolke RK3 in MIS form, c = 0, 1/3, 3/4), :MIS54 (5 stages, Bauer & Knoth,
 J. Comput. Appl. Math. 387 (2021), Table 2). :LRK4, :LRK3, :LRK2 give Lawson tableaus
-(`lawson_tableau`), :EB1, :ETD2, :EB4 ETD tableaus (`etd_tableau`), so the drivers can select
+(`lawson_tableau`), :EB1, :ETD2, :EB4 ETD tableaus (`etd_tableau`), :EPIRKW3a, :EPIRKW3b,
+:EPIRK4 (`epirk_tableau`), :EAB1 … :EAB4 exponential Adams–Bashforth (`eab_tableau`), so the drivers can select
 them by name."""
 function mis_tableau(name::Symbol)
     name in (:LRK4, :LRK3, :LRK2) && return lawson_tableau(name)
     name in (:EB1, :ETD2, :EB4) && return etd_tableau(name)
+    name in (:EPIRKW3a, :EPIRKW3b, :EPIRK4) && return epirk_tableau(name)
+    name in (:EAB1, :EAB2, :EAB3, :EAB4) && return eab_tableau(name)
     name == :WSRK3 && return MISTableau(name, zeros(3, 3), [1/3 0 0; 0 1/2 0; 0 0 1.0], zeros(3, 3))
     name == :MIS2 && return MISTableau(name,
         [0 0 0; 0.536946566710 0 0; 0.480892968551 0.500561163566 0],
