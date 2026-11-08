@@ -35,6 +35,14 @@ coupling conditions:
 MIS3C (coefficients as in ClimaTimeSteppers.jl) is only second order once `L ≠ 0`, which still has
 to be checked against the paper.
 
+**Lawson RK** (`:LRK4`, `:LRK3`, `:LRK2`, selected like the MIS tableaus; `TABLE=LRK4` in the
+drivers): integrating-factor RK for `q' = N(q)` with `e^{τL}` computed by the same fast loops as MIS
+(`:hevi`, `:verlet`, …). Orders 4/3/2 with exact propagators, fast time 2.5 Δt per step for LRK4.
+It is exact for `S = 0` and very accurate with exact propagators (pulse error 190× below MIS54),
+but with the second-order fast loops its error is the fast-loop error, and on the nonlinear FV
+gravity wave it is not better than MIS4. It needs a high-order propagator (see
+[docs/FINDINGS.md](docs/FINDINGS.md) §8).
+
 `L` and its split `L_I` can be chosen locally. That choice is the subject of the project:
 
 | Splitting | Typical choice of `L_I` | Removes the step limit from |

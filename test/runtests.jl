@@ -293,7 +293,7 @@ end
     dev = norm(qref .- q0)
     # :wrf is first order in dτ (off-centring β = 0.55), so with a fixed ratio nsub the order is 1
     for (tab, nsub, fast, lim, order) in ((:WSRK3, 6, :wrf, gw.dx, 1.0), (:MIS4, 12, :verlet, gw.dz, 2.0),
-                                           (:MIS54, 12, :verlet, gw.dz, 2.0))
+                                           (:MIS54, 12, :verlet, gw.dz, 2.0), (:LRK4, 12, :verlet, gw.dz, 2.0))
         Δt1 = nsub * 0.8 * lim / c
         errs = [norm(TS.run_mis(mw, q0, Δt, round(Int, 200 / Δt); tab = TS.mis_tableau(tab), nsub = nsub,
                                 fast = fast) .- qref) for Δt in (200 / ceil(200 / Δt1), 100 / ceil(200 / Δt1))]
@@ -333,6 +333,25 @@ end
         _, r = TS.mis_observed_order(tab; n = (20, 40, 80))
         @test all(abs.(r .- pmis) .< 0.15)
     end
+end
+
+@testset "TimeStepping: Lawson RK with the fast integrators as propagator" begin
+    LA = MultiRate.LinearAnalysis
+    @test TS.fast_time(TS.mis_tableau(:LRK4)) ≈ 2.5
+    @test TS.fast_time(TS.mis_tableau(:MIS4)) ≈ sum(TS.mis_tableau(:MIS4).d)
+    @test_throws ArgumentError TS.LawsonTableau(:ssp3, [0 0 0; 1 0 0; 1/4 1/4 0], [1/6, 1/6, 2/3])  # c₃ < c₂
+    for (name, p) in ((:LRK2, 2), (:LRK3, 3), (:LRK4, 4))
+        _, r = TS.mis_observed_order(TS.mis_tableau(name); n = (40, 80, 160))
+        @test abs(r[end] - p) < 0.3
+    end
+    # the production Verlet loop converges to the exact propagator (second order in the substep)
+    m = LA.staggered_mode(0.9; C_sound = 3.0, C_adv = 0.4)
+    tab = TS.mis_tableau(:LRK4)
+    Rex = LA.step_matrix(m, 1.0, tab; fast = :exact)
+    e = [norm(LA.step_matrix(m, 1.0, tab; nsub = n, fast = :verlet) - Rex) for n in (24, 48)]
+    @test rate(e...) > 1.9
+    # stable where MIS is: MISDG grid, C_sound = 7
+    @test LA.max_amplification(θ -> LA.staggered_mode(θ; C_sound = 7.0, C_adv = 1.0), tab; fast = :verlet, nsub = 12) < 1
 end
 
 @testset "LinearAnalysis: MIS amplification (Knoth–Wensch, MISDG grid)" begin

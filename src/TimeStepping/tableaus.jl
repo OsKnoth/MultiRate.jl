@@ -1,8 +1,12 @@
-# MIS tableaus
+# MIS and Lawson tableaus
+
+"""Tableau of a split step for q' = N(q) with frozen fast part L: `MISTableau` or `LawsonTableau`.
+`mis_step!` dispatches on it, so `run_mis`, the drivers and `LinearAnalysis` accept both."""
+abstract type SplitTableau end
 
 """MIS tableau in the ClimaTimeSteppers convention: row i is paper stage i+1, column j multiplies
 (Y_{j+1} - qⁿ) for α, γ and S(Y_j) for β."""
-struct MISTableau
+struct MISTableau <: SplitTableau
     name::Symbol
     α::Matrix{Float64}
     β::Matrix{Float64}
@@ -11,6 +15,56 @@ struct MISTableau
 end
 MISTableau(name, α, β, γ) = MISTableau(name, α, β, γ, vec(sum(β; dims = 2)))
 nstages(t::MISTableau) = length(t.d)
+
+"""
+    LawsonTableau(name, A, b)
+
+Lawson (integrating-factor) form of the explicit RK method (A, b, c = A·1) for q' = N(q) with the
+fast part L frozen at qⁿ and S = N - L: with the fast flow φ_τ (Z' = L Z, including the constant
+forcing of L),
+    Y_i = φ_{c_i Δt}(qⁿ) + Δt Σ_j a_ij e^{(c_i - c_j) Δt L} S(Y_j),
+    qⁿ⁺¹ = φ_Δt(qⁿ) + Δt Σ_j b_j e^{(1 - c_j) Δt L} S(Y_j).
+Each sum is evaluated by propagating through the distinct nodes in increasing order, adding the
+terms of the stages at each node; φ_τ is the fast integrator of the MIS step (`fast_solve!` with
+no slow forcing). Needs c_j ≤ c_i whenever a_ij ≠ 0.
+"""
+struct LawsonTableau <: SplitTableau
+    name::Symbol
+    A::Matrix{Float64}
+    b::Vector{Float64}
+    c::Vector{Float64}
+    nodes::Vector{Float64}          # distinct nodes, increasing, nodes[1] = 0
+    function LawsonTableau(name::Symbol, A::AbstractMatrix, b::AbstractVector)
+        c = vec(sum(A; dims = 2))
+        s = length(b)
+        all(A[i, j] == 0 || c[j] <= c[i] for i in 1:s, j in 1:s) ||
+            throw(ArgumentError("Lawson form needs c_j ≤ c_i for a_ij ≠ 0"))
+        nodes = sort(unique(vcat(0.0, c)))
+        new(name, Matrix{Float64}(A), Vector{Float64}(b), c, nodes)
+    end
+end
+nstages(t::LawsonTableau) = length(t.b)
+
+"""Fast integration time per large step (in units of Δt): Σ_i d_i for MIS; for Lawson the
+propagations of the stages, where φ_{cΔt}(qⁿ) is computed once per node."""
+fast_time(t::MISTableau) = sum(t.d)
+function fast_time(t::LawsonTableau)
+    st = [lawson_start(t, t.A[i, :], t.c[i]) for i in 2:nstages(t)]
+    sf = lawson_start(t, t.b, 1.0)
+    return maximum(vcat(st, sf)) + sum(t.c[2:end] .- st) + (1 - sf)
+end
+
+"""Node from which a Lawson stage with weights w and node c starts: the smallest c_j with w_j ≠ 0
+(the stage begins with the cached φ_{c_j Δt}(qⁿ)), or c itself if all w_j vanish."""
+lawson_start(t::LawsonTableau, w, c) = (js = findall(!iszero, w); isempty(js) ? c : minimum(t.c[js]))
+
+"""Lawson tableaus: :LRK4 (classical RK4), :LRK3 (Kutta's RK3, c = 0, 1/2, 1), :LRK2 (midpoint)."""
+function lawson_tableau(name::Symbol)
+    name == :LRK4 && return LawsonTableau(name, [0 0 0 0; 1/2 0 0 0; 0 1/2 0 0; 0 0 1 0], [1/6, 1/3, 1/3, 1/6])
+    name == :LRK3 && return LawsonTableau(name, [0 0 0; 1/2 0 0; -1 2 0], [1/6, 2/3, 1/6])
+    name == :LRK2 && return LawsonTableau(name, [0 0; 1/2 0], [0.0, 1.0])
+    error("unknown Lawson tableau $name (:LRK4, :LRK3, :LRK2)")
+end
 
 """
     mis_from_paper(name, α, β, γ)
@@ -46,8 +100,10 @@ end
 """Tables: :MIS2, :MIS3C, :MIS4, :MIS4a (Knoth & Wensch 2014, values as in ClimaTimeSteppers.jl,
 MIS4a with the authors' corrected β₅₁), :WSRK3 (Wicker–Skamarock RK3: β = diag(1/3, 1/2, 1)),
 :MIS_KW3 (Knoth–Wolke RK3 in MIS form, c = 0, 1/3, 3/4), :MIS54 (5 stages, Bauer & Knoth,
-J. Comput. Appl. Math. 387 (2021), Table 2)."""
+J. Comput. Appl. Math. 387 (2021), Table 2). :LRK4, :LRK3, :LRK2 give Lawson tableaus
+(`lawson_tableau`), so the drivers can select them by name."""
 function mis_tableau(name::Symbol)
+    name in (:LRK4, :LRK3, :LRK2) && return lawson_tableau(name)
     name == :WSRK3 && return MISTableau(name, zeros(3, 3), [1/3 0 0; 0 1/2 0; 0 0 1.0], zeros(3, 3))
     name == :MIS2 && return MISTableau(name,
         [0 0 0; 0.536946566710 0 0; 0.480892968551 0.500561163566 0],

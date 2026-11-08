@@ -29,7 +29,7 @@ equations with gravity on DGSEM, terrain-following FV and cut-cell FV}
 This report collects the results of the numerical experiments with MultiRate.jl in the order they
 were obtained: background-free discretizations, the Agnesi hills, gravity waves, the MIS tableaus,
 linear acoustics with advection after the MISDG experiments, the linearized production models and
-a matrix-free analysis of the linearized step. The recurring result is that the slow part
+a matrix-free analysis of the linearized step, and Lawson RK with the MIS fast integrators. The recurring result is that the slow part
 $S = N - L$ of a split-explicit step must not contain terms whose Courant number with the large step
 is large. Two instances are identified: the vertical transport of horizontal momentum by the fast
 vertical velocity (Agnesi a100 and the long-channel gravity wave, $U\dt/\Delta z = 13$--$22$), and a
@@ -362,14 +362,69 @@ product) finds eigenvalues of largest modulus of such a map.
 \end{itemize}
 
 %======================================================================
+\section{Lawson RK with the MIS fast integrators as propagator}\label{sec:lawson}
+
+\code{TimeStepping.LawsonTableau} (\code{:LRK4} classical RK4, \code{:LRK3} Kutta, \code{:LRK2}
+midpoint) is selected by name like the MIS tableaus (environment variable \code{TABLE} in the
+drivers). With the fast flow $\varphi_\tau$ of the frozen $L$ (including its constant forcing) and
+$S = N - L$,
+\begin{equation}
+  Y_i = \varphi_{c_i\dt}(q^n) + \dt\sum_j a_{ij}\,e^{(c_i-c_j)\dt L}S(Y_j),\qquad
+  q^{n+1} = \varphi_{\dt}(q^n) + \dt\sum_j b_j\,e^{(1-c_j)\dt L}S(Y_j).
+\end{equation}
+The sums are evaluated by propagating through the distinct nodes in increasing order;
+$\varphi_{c\dt}(q^n)$ is computed once per node. Since $\varphi_\tau$ is affine, $\varphi_\tau(x+d) =
+\varphi_\tau(x) + e^{\tau L}d$, so the affine fast flow can be used throughout. The propagator is the
+fast loop of the MIS step (\code{fast\_solve!} without slow forcing, $d\tau\approx\dt/n_\mathrm{sub}$).
+\code{mis\_step!} dispatches on the tableau type, so \code{run\_mis}, the drivers and
+\code{LinearAnalysis} work unchanged. Fast integration time per step: LRK4 $2.5\dt$, MIS4 $1.44\dt$.
+
+\begin{itemize}
+\item \textbf{Order} with exact propagators (non-commuting test): LRK2 2, LRK3 3, LRK4 4. With the
+  Verlet loop the step converges to the exact one at order 2 in $d\tau$.
+\item \textbf{Linear stability} is limited by the advection Courant number, as for RK4:
+  $C_\mathrm{adv}\le1.75$ (LRK4), 1.62 (LRK3) on the Knoth--Wensch test (MIS54: 2.06); stable fraction
+  of the box 0.78 (MIS54: 0.99). On the MISDG grid ($C_\mathrm{adv} = C_\mathrm{sound}/7$) LRK4 with
+  Verlet and $n_\mathrm{sub} = 12$ is stable up to $C_\mathrm{sound} = 10$, where MIS4 and MIS54 with
+  Verlet are already unstable; $|\rho|-1\approx10^{-8}$ against $10^{-5}$ for MIS4.
+\item \textbf{Accuracy with exact propagators:} the pulse error is 190 times smaller than with MIS54
+  at the same step ($5.3\cdot10^{-6}$ against $9.9\cdot10^{-4}$), order 4. Lawson is exact for
+  $S = 0$; MIS with $\alpha,\gamma\ne0$ is not. For an unbalanced initial state (the gravity-wave
+  $\theta'$ at constant pressure) all MIS tableaus damp or dephase the fast acoustic part by a
+  $\dt$-independent amount ($4\cdot10^{-3}$ relative in the linear Boussinesq wave, also for the
+  $k = 0$ mode); Lawson keeps it ($5\cdot10^{-13}$).
+\item \textbf{Accuracy with the real fast loops:} the propagator error enters directly. Pulse with
+  Verlet: the LRK4 error is the second-order Verlet error (rates 2.00), the same as for MIS54.
+  Nonlinear FV gravity wave (300\,km, \code{:hevi}) against explicit RK4 on $N$:
+\end{itemize}
+\begin{center}
+\begin{tabular}{lccc}
+\toprule
+max $|\theta'-\theta'_\mathrm{RK4}|$ at $z = 5$\,km [K] & $\dt = 67$\,s & 34\,s & 17\,s\\
+\midrule
+MIS4  & $1.1\cdot10^{-3}$ & $8.6\cdot10^{-4}$ & $6.0\cdot10^{-4}$\\
+MIS54 & $9.4\cdot10^{-4}$ & $7.9\cdot10^{-4}$ & $5.7\cdot10^{-4}$\\
+LRK4  & $1.6\cdot10^{-3}$ & $1.7\cdot10^{-3}$ & $3.7\cdot10^{-4}$\\
+\bottomrule
+\end{tabular}
+\end{center}
+($\max\theta'_\mathrm{RK4} = 4.4\cdot10^{-3}$\,K, $n_\mathrm{sub} = 12$.) All methods are dominated by
+the fast-loop error (vertical Crank--Nicolson at large vertical Courant numbers).
+
+\paragraph{Consequence.} With second-order fast loops Lawson brings no gain over MIS4; its
+fourth-order accuracy needs an accurate propagator, i.e.\ the high-order (Yoshida) fast integrator
+or an exact or high-order vertical solve. A MIS run with a small step is not a neutral reference
+for Lawson (MIS's own acoustic damping); RK4 on $N$ is.
+
+%======================================================================
 \section{Open questions and next steps}
 
 \begin{itemize}
 \item a1 terrain FV: identify the terrain term in $S$ (Section~\ref{sec:matfree}).
 \item MIS3C: second order with $L\ne0$; compare with Knoth \& Wensch (2014).
 \item Cut cells: warm layer in the lowest cells downstream of the hill.
-\item From the MISDG plan: a high-order (Yoshida) composition fast integrator; optionally Lawson-RK4
-  and ETDRK4 (talk in \code{docs/talks/misdg}).
+\item From the MISDG plan: a high-order (Yoshida) composition fast integrator, which Lawson needs
+  (Section~\ref{sec:lawson}); optionally ETDRK4 (talk in \code{docs/talks/misdg}).
 \item A linear IMEX fast solver as in the MATLAB reference (one sparse LU of $I-\gamma\Delta\tau L_I$),
   wider choices of the implicit part (adaptive masks), retained HDG traces in 2D.
 \end{itemize}

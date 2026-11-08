@@ -19,13 +19,13 @@ vertical tendencies). `fast_options` are passed to the model's `fast_operator` c
 The model-specific fast operator and work arrays are allocated by `run_mis`.
 """
 struct MISStepper{K<:NamedTuple}
-    tableau::MISTableau
+    tableau::SplitTableau
     nsub::Int
     fast::Symbol
     refreeze::Bool
     refreeze_every::Int
     fast_options::K
-    function MISStepper(tableau::MISTableau, nsub::Integer, fast::Symbol, refreeze::Bool,
+    function MISStepper(tableau::SplitTableau, nsub::Integer, fast::Symbol, refreeze::Bool,
                         refreeze_every::Integer, fast_options::NamedTuple)
         nsub > 0 || throw(ArgumentError("nsub must be positive"))
         refreeze_every > 0 || throw(ArgumentError("refreeze_every must be positive"))
@@ -33,7 +33,7 @@ struct MISStepper{K<:NamedTuple}
     end
 end
 
-MISStepper(; tab::MISTableau = mis_tableau(:MIS4a), nsub::Integer = 12, fast::Symbol = :imex,
+MISStepper(; tab::SplitTableau = mis_tableau(:MIS4a), nsub::Integer = 12, fast::Symbol = :imex,
            refreeze::Bool = true, refreeze_every::Integer = 1, fast_options::NamedTuple = NamedTuple()) =
     MISStepper(tab, nsub, fast, refreeze, refreeze_every, fast_options)
 
@@ -82,7 +82,7 @@ end
 Allocating convenience version of `mis_step!` (fast operator frozen at q unless sF is given;
 kwargs are passed to `fast_operator`).
 """
-function mis_step(model, q::AbstractVector, Δt::Real, tab::MISTableau; nsub::Int = 12, fast::Symbol = :imex,
+function mis_step(model, q::AbstractVector, Δt::Real, tab::SplitTableau; nsub::Int = 12, fast::Symbol = :imex,
                   sF = nothing, kwargs...)
     sF === nothing && (sF = fast_operator(model, q; fast = fast, kwargs...))
     return mis_step!(similar(q), model, q, Δt, tab, sF, MISWork(length(q), nstages(tab)); nsub = nsub, fast = fast)
@@ -114,7 +114,7 @@ function run_mis(model, q0, Δt, nsteps, stepper::MISStepper; monitor = nothing,
     return q
 end
 
-function run_mis(model, q0, Δt, nsteps; tab::MISTableau = mis_tableau(:MIS4a), nsub::Int = 12,
+function run_mis(model, q0, Δt, nsteps; tab::SplitTableau = mis_tableau(:MIS4a), nsub::Int = 12,
                  fast::Symbol = :imex, refreeze::Bool = true, refreeze_every::Int = 1,
                  monitor = nothing, every::Int = 1, kwargs...)
     stepper = MISStepper(; tab, nsub, fast, refreeze, refreeze_every, fast_options = (; kwargs...))

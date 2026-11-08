@@ -72,6 +72,37 @@ function mis_step_exact(L::AbstractMatrix, G, q::AbstractVector, Δt::Real, tab:
     return Z
 end
 
+"""Lawson step for q' = L q + G(q) with the exact propagator e^{τL} (same node ordering and
+caching as the production `mis_step!` for a `LawsonTableau`)."""
+function mis_step_exact(L::AbstractMatrix, G, q::AbstractVector, Δt::Real, tab::LawsonTableau)
+    s, nodes = nstages(tab), tab.nodes
+    E = Dict{Float64,Matrix{Float64}}()
+    prop(x, τ) = get!(() -> exp(τ * Δt * L), E, τ) * x
+    cache = [copy(q)]
+    cached(k) = (while length(cache) < k; push!(cache, prop(cache[end], nodes[length(cache)+1] - nodes[length(cache)])); end; cache[k])
+    S = Vector{Vector{Float64}}(undef, s)
+    function stage(wts, c)
+        c0 = lawson_start(tab, wts, c)
+        k0 = findfirst(==(c0), nodes)
+        X = copy(cached(k0)); cur = c0
+        for k in k0:length(nodes)
+            ν = nodes[k]; ν > c && break
+            ν > cur && (X = prop(X, ν - cur); cur = ν)
+            for j in 1:s
+                (wts[j] != 0 && tab.c[j] == ν) && (X += Δt * wts[j] * S[j])
+            end
+        end
+        cur < c && (X = prop(X, c - cur))
+        return X
+    end
+    for i in 1:s
+        S[i] = G(i == 1 ? q : stage(tab.A[i, :], tab.c[i]))
+    end
+    return stage(tab.b, 1.0)
+end
+
+mis_rk_tableau(tab::LawsonTableau) = (tab.A, tab.b, tab.c)
+
 # Non-commuting test problem: fast rotation, nonlinear slow part
 const ORDER_TEST_L = [0.0 4.0; -4.0 0.0]
 order_test_G(q) = [0.5sin(q[1]) + q[2]^2, -0.3q[1] * q[2] + cos(q[1])]
@@ -94,7 +125,7 @@ frequency 4 and a nonlinear slow part, so L and G do not commute) against a fine
 and the observed rates between successive step counts `n`. Includes the MIS coupling
 conditions, which `rk_order` does not see.
 """
-function mis_observed_order(tab::MISTableau; L = ORDER_TEST_L, G = order_test_G, q0 = [1.0, 0.5],
+function mis_observed_order(tab::SplitTableau; L = ORDER_TEST_L, G = order_test_G, q0 = [1.0, 0.5],
                             T = 1.0, n = (10, 20, 40))
     qref = _rk4_reference(L, G, q0, T, 20000)
     err = map(n) do m

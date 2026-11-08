@@ -8,6 +8,7 @@ policy, so it can be reused with a model implementing this interface:
   * split-explicit MIS / Wicker–Skamarock RK3 (`run_mis`, `mis_step!`) for q' = N(q) with
     the fast part L_n (frozen at qⁿ) and the slow part S = N - L_n,
   * fast integrators for q' = L_n q + f (`fast_solve!`): :imex, :hevi, :verlet, :fb, :wrf,
+  * Lawson RK (`LawsonTableau`, :LRK4, :LRK3, :LRK2) with the fast integrators as propagator,
   * classical RK4 on N (`run_rk4`) as reference.
 
 A discretization provides a model and a fast operator (subtype of `AbstractFastOperator`) and
@@ -21,7 +22,7 @@ export AbstractFastOperator,
        fast_rhs_horizontal!, vertical_apply!, vertical_factor, vertical_solve!,
        fast_rhs_hmomentum!, fast_rhs_hthermo!,
        fast_solve!, IMEX_GM, IMEX_DL, IMEX_AE, IMEX_AI, WRF_BETA,
-       MISTableau, mis_tableau, mis_from_paper, mis_kw, nstages,
+       SplitTableau, MISTableau, LawsonTableau, mis_tableau, lawson_tableau, mis_from_paper, mis_kw, nstages, fast_time,
        mis_rk_tableau, rk_order_residuals, rk_order, mis_step_exact, mis_observed_order,
        MISStepper, MISWork, stage_substeps, mis_step!, mis_step, run_mis, run_rk4
 
@@ -31,6 +32,7 @@ include("interface.jl")
 include("fast.jl")
 include("tableaus.jl")
 include("mis.jl")
+include("lawson.jl")
 include("analysis.jl")
 
 end # module

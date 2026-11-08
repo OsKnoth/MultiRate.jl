@@ -162,3 +162,36 @@ modulus of such a map.
   2–3Δx oscillation of U and W in the lowest three levels on the steep flanks (slope ±0.25), where
   the noise of §2 appears. Not yet separated: fast loop vs slow-step coupling, and which terrain
   term of S = N − L is responsible. Paused (no orography tests for now).
+
+## 8. Lawson RK with the MIS fast integrators as propagator
+
+`TimeStepping.LawsonTableau` (`:LRK4` classical RK4, `:LRK3` Kutta, `:LRK2` midpoint; selectable by
+name like the MIS tableaus, env `TABLE` in the drivers). With the fast flow φ_τ of the frozen L
+(including its constant forcing) and S = N − L:
+Y_i = φ_{c_iΔt}(qⁿ) + Δt Σ_j a_ij e^{(c_i−c_j)ΔtL} S(Y_j). The propagator is the fast loop of the MIS
+step (`fast_solve!` without slow forcing, dτ ≈ Δt/nsub); φ_{cΔt}(qⁿ) is computed once per node.
+`mis_step!` dispatches on the tableau type, so `run_mis`, the drivers and `LinearAnalysis` work
+unchanged. Fast integration time per step: LRK4 2.5 Δt (MIS4 1.44 Δt).
+
+- **Order** (exact propagators, non-commuting test): LRK2 2, LRK3 3, LRK4 4. With the Verlet loop
+  the step converges to the exact one at order 2 in dτ.
+- **Linear stability:** limited by the advection Courant number as for RK4 — C_adv ≤ 1.75 (LRK4),
+  1.62 (LRK3) on the Knoth–Wensch test (MIS54 2.06); stable fraction of the box 0.78 (MIS54 0.99).
+  On the MISDG grid (C_adv = C_sound/7) LRK4 with Verlet, nsub = 12, is stable up to C_sound = 10,
+  where MIS4 and MIS54 with Verlet are already unstable (equal-length Lawson propagations vs the
+  rounding of d_i nsub in MIS); |ρ| − 1 ≈ 1e-8 vs 1e-5 for MIS4.
+- **Accuracy, exact propagators:** pulse error 190× smaller than MIS54 at the same step
+  (5.3e-6 vs 9.9e-4), order 4. Lawson is exact for S = 0; MIS with α, γ ≠ 0 is not: for an
+  unbalanced initial state (the gravity-wave θ′ at constant pressure) all MIS tableaus damp or
+  dephase the fast acoustic part by a Δt-independent amount (4e-3 relative in the linear
+  Boussinesq wave, also for the k = 0 mode), Lawson keeps it (5e-13).
+- **Accuracy with the real fast loops:** the propagator error enters directly. Pulse with Verlet:
+  LRK4 error = the 2nd-order Verlet error (rates 2.00), the same as MIS54. Nonlinear FV gravity
+  wave (300 km, `:hevi`) against explicit RK4 on N: max θ′ error 1.6e-3 / 1.7e-3 / 3.7e-4 K at
+  Δt = 67 / 34 / 17 s for LRK4, 1.1e-3 / 8.6e-4 / 6.0e-4 K for MIS4 (max θ′ 4.4e-3 K). All
+  methods are dominated by the fast-loop error (vertical Crank–Nicolson at large vertical Courant
+  numbers).
+- **Consequence:** with second-order fast loops Lawson brings no gain over MIS4; its order-4 accuracy
+  needs an accurate propagator — the high-order (Yoshida) fast integrator (plan phase 5), or an
+  exact/high-order vertical solve. Note: a MIS run with a small step is not a neutral reference for
+  Lawson (MIS's own acoustic damping); use RK4 on N.

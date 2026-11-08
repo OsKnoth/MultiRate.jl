@@ -24,7 +24,7 @@ const zc = parse(Float64, get(ENV, "BUBBLE_Z", "2000"))
 const T = length(ARGS) > 1 && ARGS[2] != "-" ? parse(Float64, ARGS[2]) : 120.0
 const table_default, nsub_default, fast_default = default_scheme(disc)
 const NSUB = parse(Int, get(ENV, "NSUB", string(nsub_default)))
-const TABLE = table_default
+const TABLE = Symbol(get(ENV, "TABLE", string(table_default)))
 const FAST = length(ARGS) > 2 ? Symbol(ARGS[3]) : fast_default
 
 all(x -> x > 0, (LX, H, P, NEX, NEZ, NSUB, rx, rz)) || error("lengths, degrees, and counts must be positive")

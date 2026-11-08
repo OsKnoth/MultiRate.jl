@@ -96,7 +96,7 @@ vertical_solve!(Y, s::LinearFastOp, F, Ys) = (Y .= F \ Ys)
 Matrix of one MIS step for the linear model m (stage i: round(d_i nsub) fast substeps, as in
 `mis_step!`). `fast = :exact` solves the fast stages exactly.
 """
-function step_matrix(m::LinearSplitModel, Δt, tab::MISTableau; nsub::Int = 12, fast::Symbol = :verlet)
+function step_matrix(m::LinearSplitModel, Δt, tab::SplitTableau; nsub::Int = 12, fast::Symbol = :verlet)
     n = size(m.N, 1)
     R = zeros(n, n)
     e = zeros(n)
@@ -128,7 +128,7 @@ spectral_radius(R) = maximum(abs, eigvals(R))
 max over the Fourier modes θ_j = 2π j / nmodes (j = 1 … nmodes-1) of the spectral radius of
 the step matrix of `modefun(θ)`; kwargs go to `step_matrix`.
 """
-max_amplification(modefun, tab::MISTableau; nmodes::Int = 40, Δt = 1.0, kwargs...) =
+max_amplification(modefun, tab::SplitTableau; nmodes::Int = 40, Δt = 1.0, kwargs...) =
     maximum(spectral_radius(step_matrix(modefun(2π * j / nmodes), Δt, tab; kwargs...)) for j in 1:nmodes-1)
 
 # ------------------------------------------------------------------ test problems
@@ -173,7 +173,7 @@ pulses are back at the start) with slow step h: relative L2 error of p and u at 
 exact semi-discrete solution, computed per Fourier mode. kwargs go to `step_matrix`
 (`nsub`, `fast`).
 """
-function pulse_error(tab::MISTableau, h; nx::Int = 400, Lx = 1e6, c = 350.0, U = 50.0,
+function pulse_error(tab::SplitTableau, h; nx::Int = 400, Lx = 1e6, c = 350.0, U = 50.0,
                      T = 3.5Lx / c, kwargs...)
     nsteps = round(Int, T / h)
     abs(nsteps * h - T) < 1e-9T || throw(ArgumentError("T/h must be an integer"))
@@ -240,7 +240,7 @@ The long-channel gravity wave of `examples/euler2d_gravity_wave_long.jl` for the
 Returns (x, b_numerical, b_exact) at the cell-centre level nearest H/2 and time T, with b
 normalized to an initial maximum of 1 (multiply by 0.01 K for θ′).
 """
-function gravity_wave_section(tab::MISTableau, Δt; nsub::Int = 12, fast::Symbol = :hevi_verlet, nx::Int = 300,
+function gravity_wave_section(tab::SplitTableau, Δt; nsub::Int = 12, fast::Symbol = :hevi_verlet, nx::Int = 300,
                               Lx = 6000e3, H = 10e3, nz::Int = 16, a = 100e3, c = 347.0, N = 0.01, U = 20.0,
                               T = 60000.0)
     nsteps = round(Int, T / Δt)
@@ -345,7 +345,7 @@ Action of the linearized production MIS step about qb, v ↦ (Φ(qb + h v) - Φ(
 with h = ε max(1, max|qb|) / max|v|. Φ is `mis_step!` with the fast operator frozen at qb (or sF), as in
 a run between two re-freezes. Needs no shift invariance (terrain, cut cells, DG).
 """
-function linearized_step(model, qb::AbstractVector, Δt, tab::MISTableau; nsub::Int = 12, fast::Symbol = :hevi,
+function linearized_step(model, qb::AbstractVector, Δt, tab::SplitTableau; nsub::Int = 12, fast::Symbol = :hevi,
                          sF = nothing, ε = 1e-6, fast_options...)
     n = length(qb)
     sF === nothing && (sF = fast_operator(model, qb; fast = fast, fast_options...))

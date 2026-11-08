@@ -3,7 +3,7 @@
 # The grid aspect ratio (20 km × 625 m node spacing) makes explicit acoustics in the vertical
 # very expensive; this is the regime in which HEVI pays off.
 #
-#     julia --project=examples examples/euler2d_gravity_wave_long.jl [dg|fv] [fast]   # env NSUB (default 12)
+#     julia --project=examples examples/euler2d_gravity_wave_long.jl [dg|fv] [fast]   # env NSUB (default 12), TABLE (default MIS4; e.g. LRK4)
 # fast: dg: hevi (default), verlet, fb, imex;  fv: wrf (default), verlet, fb
 #
 # Output: gravity_wave_long_<disc>.vtkhdf, .png, _section.csv
@@ -14,4 +14,5 @@ disc = length(ARGS) >= 1 ? Symbol(ARGS[1]) : :dg                # dg or fv
 fast = length(ARGS) >= 2 ? Symbol(ARGS[2]) : nothing            # default: hevi (dg), wrf (fv)
 gravity_wave(; disc = disc, name = "gravity_wave_long_$(disc)", L = 6000e3, a = 100e3, T = 60000.0,
              P = 4, NEX = 75, NEZ = 4,          # DG nodes / FV cells: 300 × 16 (20 km × 625 m)
-             fast = fast, nsub = haskey(ENV, "NSUB") ? parse(Int, ENV["NSUB"]) : nothing)
+             fast = fast, nsub = haskey(ENV, "NSUB") ? parse(Int, ENV["NSUB"]) : nothing,
+             table = haskey(ENV, "TABLE") ? Symbol(ENV["TABLE"]) : nothing)
