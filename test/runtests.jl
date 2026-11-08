@@ -491,6 +491,29 @@ end
         @test errs[2] < 0.05 * dev
         @test rate(errs...) > 1.7
     end
+    # frozen pressure: p/Θ (:ratio) or dp/dΘ at the faces (:derivative); exact split, linear fast
+    # part, exact column solve; :derivative converges (:ratio is stable only for c Δt/Δz ≲ 1, see FINDINGS §11)
+    try
+        for mode in (:ratio, :derivative)
+            FV.FV_FROZEN_PRESSURE[] = mode
+            C = zeros(TS.frozen_ncoef(mw)); S = zeros(mw.nq)
+            TS.frozen_data!(C, S, mw, q0)
+            o = TS.frozen_fast!(zeros(mw.nq), mw, C, q0, :all, S)
+            @test maximum(abs.(o .- N0)) < 1e-14 + 1e-10 * maximum(abs, N0)
+            s = FV.frozen_stage_begin!(mw, C, q0)
+            R = 1e-3 .* sin.(1:mw.nq); Y = zeros(mw.nq)
+            FV._frozen_column_solve!(Y, s, mw, 3.0, R)
+            Gv(x) = TS.frozen_fast!(zeros(mw.nq), mw, C, x, :vertical, S)
+            @test maximum(abs.(Y .- 3.0 .* (Gv(q0 .+ Y) .- Gv(q0)) .- R)) < 1e-10 * maximum(abs, R)
+        end
+        FV.FV_FROZEN_PRESSURE[] = :derivative
+        Δt1 = 12 * 0.8 * gw.dz / c
+        errs = [norm(TS.run_frozen(mw, q0, Δt, round(Int, 200 / Δt); tab = TS.mis_tableau(:MIS54), nsub = 12, fast = :hevi) .- qref)
+                for Δt in (200 / ceil(200 / Δt1), 100 / ceil(200 / Δt1))]
+        @test errs[2] < 0.05 * dev && rate(errs...) > 1.7
+    finally
+        FV.FV_FROZEN_PRESSURE[] = :nonlinear
+    end
     @test_throws ErrorException TS.frozen_ncoef(FV.FVModel(FV.FVGrid(8, 4, 40e3, 10e3; zs = x -> 100 * exp(-(x - 2e4)^2 / 1e8)), gas, ρr, Θr))
 end
 

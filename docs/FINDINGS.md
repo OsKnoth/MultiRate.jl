@@ -373,6 +373,27 @@ non-additive (product of frozen θ and live U, W), hence the order loss of MIS4/
 vertical Crank–Nicolson step z ← z + (I − dt/2 J_v)⁻¹ dt G_v(z), where G_v keeps the nonlinear
 p(Θ) and J_v uses a = γp/Θ from the start of the stage and the frozen θz (column solver of `FVFast`).
 
+**Frozen pressure** (`FV_FROZEN_PRESSURE`; fast part linear in z):
+- `:derivative`: ∇p = (dp/dΘ)(y) ∇Θ_z, dp/dΘ frozen at the faces as the discrete derivative
+  (p_r − p_l)/(Θ_r − Θ_l) (γp/Θ at the mean if nearly equal), so F(q, q) = N(q) exactly;
+- `:ratio`: p = (p/Θ)(y) Θ_z, p/Θ frozen at the centres.
+The `:hevi` step is then exactly Crank–Nicolson (column solver for α_kΘ_k − β_kΘ_{k−1}).
+
+| MIS54, wave error [K] | 67 s | 100 s | 130 s | 167 s | 200 s |
+|---|---|---|---|---|---|
+| p(Θ_z) nonlinear | 1.1e-4 | 9.6e-5 | 1.6e-4 | 1.2e-4 | 1.6e-4 |
+| dp/dΘ frozen | 1.2e-4 | 1.0e-4 | 2.1e-4 | 1.9e-4 | 2.6e-4 |
+| p/Θ frozen | unstable | unstable | unstable | unstable | unstable |
+| linearized L | 1.1e-4 | 9.6e-5 | 2.0e-4 | 2.4e-4 | 3.1e-4 |
+
+`:ratio` converges (3.3e-7, 1.3e-6, 4.6e-6 at Δt = 0.5, 1, 2 s) but is stable only for cΔt/Δz ≲ 1.
+Why: the frozen argument is treated explicitly over the slow step, so it must be non-stiff. With
+p = (p/Θ)(y)Θ_z the fast pressure responds to δΘ only with (p/Θ)δΘ = γ⁻¹(dp/dΘ)δΘ; the rest,
+(γ−1)(p/Θ)δΘ, comes through the frozen coefficient — about 30 % of the acoustic stiffness is
+explicit, and the fast loop has sound speed c/√γ. With dp/dΘ frozen the fast loop has the full
+stiffness and the coefficient varies only like d²p/dΘ² ∇Θ (slow); θ_face is harmless for the same
+reason (advected). Rule: freeze coefficients, not parts of the stiff response.
+
 **Orders** (toy problem: oscillator with coefficient c(y) = 1 + 0.5 sin y₁ frozen, nonlinear slow
 part; exact fast stages):
 

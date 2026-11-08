@@ -657,6 +657,54 @@ is $N(q)$.
   \code{FV\_VADV\_FAST}.
 \end{itemize}
 
+\paragraph{Frozen pressure.} Two further options freeze the pressure as well
+(\code{FV\_FROZEN\_PRESSURE}); the fast part is then linear in $z$:
+\begin{itemize}
+\item \code{:derivative}: $\nabla p = (\mathrm dp/\mathrm d\Theta)(y)\,\nabla\Theta_z$ with
+  $\mathrm dp/\mathrm d\Theta$ frozen at the faces. It is taken as the discrete derivative
+  $(p_r-p_l)/(\Theta_r-\Theta_l)$ of the two neighbouring cells ($\gamma p/\Theta$ at the mean
+  $\Theta$ if they are nearly equal), so that it reproduces the pressure difference of $N$ and
+  $F(q,q)=N(q)$ holds exactly.
+\item \code{:ratio}: $p = (p/\Theta)(y)\,\Theta_z$ with $p/\Theta$ frozen at the centres
+  ($F(q,q)=N(q)$ trivially).
+\end{itemize}
+With a linear vertical part the implicit step of \code{hevi} is exactly Crank--Nicolson; the column
+solver is written for a pressure difference $\alpha_k\Theta_k-\beta_k\Theta_{k-1}$ at the $z$-face
+$k$ ($\alpha_k=\beta_k=(\mathrm dp/\mathrm d\Theta)_k$, resp.\ $\alpha_k=(p/\Theta)_k$,
+$\beta_k=(p/\Theta)_{k-1}$).
+
+\emph{Results} (gravity wave, wave error in K, \code{hevi} at the substep limit):
+\begin{center}
+\begin{tabular}{lccccc}
+\toprule
+$\dt$ [s] & 67 & 100 & 130 & 167 & 200\\
+\midrule
+MIS54, $p(\Theta_z)$ & 1.1e-4 & 9.6e-5 & 1.6e-4 & 1.2e-4 & 1.6e-4\\
+MIS54, $\mathrm dp/\mathrm d\Theta$ frozen & 1.2e-4 & 1.0e-4 & 2.1e-4 & 1.9e-4 & 2.6e-4\\
+MIS54, $p/\Theta$ frozen & unst. & unst. & unst. & unst. & unst.\\
+MIS54, linearized $L$ & 1.1e-4 & 9.6e-5 & 2.0e-4 & 2.4e-4 & 3.1e-4\\
+MIS4, $\mathrm dp/\mathrm d\Theta$ frozen & 2.6e-4 & 3.3e-4 & 3.8e-4 & 4.2e-4 & 1.6e-3\\
+\bottomrule
+\end{tabular}
+\end{center}
+The \code{:ratio} form converges (MIS54: $3.3\cdot10^{-7}$, $1.3\cdot10^{-6}$, $4.6\cdot10^{-6}$ at
+$\dt=0.5,1,2$\,s) but is stable only for $c\dt/\Delta z\lesssim1$ (unstable from $\dt=5$\,s, $\Delta z=625$\,m).
+
+\emph{Why.} What is frozen must be non-stiff as a function of $y$: the derivative of $F$ with respect
+to its first argument, $F_{(1,0)}$, is treated explicitly over the whole slow step. With
+$p=(p/\Theta)(y)\,\Theta_z$ a perturbation $\delta\Theta$ changes the fast pressure only by
+$(p/\Theta)\,\delta\Theta=\gamma^{-1}(\mathrm dp/\mathrm d\Theta)\,\delta\Theta$; the rest,
+$(\gamma-1)(p/\Theta)\,\delta\Theta$, enters through the frozen coefficient,
+$F_{(1,0)}\ni\Theta\,\partial_\Theta(p/\Theta)\,\delta\Theta$, i.e.\ about 30\,\% of the acoustic
+stiffness is explicit and the fast loop carries sound waves with the wrong speed $c/\sqrt\gamma$.
+With $\mathrm dp/\mathrm d\Theta$ frozen the fast loop has the full acoustic stiffness and the
+frozen coefficient varies only with $\mathrm d^2p/\mathrm d\Theta^2\,\nabla\Theta$, a smooth slow
+quantity. The same criterion explains why freezing $\theta_\mathrm{face}$ is harmless: $\theta$ is
+advected, its variation is slow. Rule: \emph{freeze coefficients, not parts of the stiff response.}
+The frozen $\mathrm dp/\mathrm d\Theta$ costs a little accuracy against the nonlinear $p(\Theta_z)$
+(up to 1.6 times at 200\,s, still better than the linearized split) and makes the fast part linear,
+which is what an implicit vertical solver or a DG/HDG fast operator needs.
+
 \paragraph{Orders} (toy oscillator with frozen coefficient $c(y)=1+0.5\sin y_1$, exact fast stages):
 \begin{center}
 \begin{tabular}{lcc}

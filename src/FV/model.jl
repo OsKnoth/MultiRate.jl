@@ -17,12 +17,13 @@ struct FVCache
     mdx::Matrix{Float64}
     mdz::Matrix{Float64}
     cc::Vector{Matrix{Float64}}   # cut-cell third-order advection work arrays, (nx, nz) each
+    frozen::Base.RefValue{Any}    # column solver of the frozen split (src/FV/frozen.jl)
 end
 FVCache(g) = FVCache(zeros(g.nx,g.nz),zeros(g.nx,g.nz+1),zeros(g.nx,g.nz),zeros(g.nx,g.nz),
                      zeros(g.nx,g.nz),zeros(g.nx,g.nz),zeros(g.nx+1,g.nz),zeros(g.nx,g.nz+1),
                      zeros(g.nx+1,g.nz),zeros(g.nx+1,g.nz),zeros(g.nx,g.nz+1),zeros(g.nx,g.nz+1),
                      zeros(g.nx,g.nz),zeros(g.nx,g.nz),
-                     g isa CutCellFVGrid ? [zeros(g.nx,g.nz) for _ in 1:10] : Matrix{Float64}[])
+                     g isa CutCellFVGrid ? [zeros(g.nx,g.nz) for _ in 1:10] : Matrix{Float64}[], Ref{Any}(nothing))
 
 struct FVModel{G}
     grid::G
