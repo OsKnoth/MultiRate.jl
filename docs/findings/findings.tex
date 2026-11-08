@@ -812,6 +812,34 @@ $2.4\cdot10^{-4}$ against $7.9\cdot10^{-5}$ / $2.2\cdot10^{-4}$ at 67 / 130\,s).
 MIS54 is therefore not the dominant time error on this test. Frozen order 3 together with additive
 order 4 is not reachable with 5 stages (residual $1.5\cdot10^{-5}$).
 
+\paragraph{Application-specific methods: FV and DG separately} (\code{app\_stability.jl},
+\code{search\_app.jl}). The 1D test does not predict the stability of the frozen splits. Column
+Fourier blocks of the real operators ($J$ of $N$, $L=\partial F/\partial z$ with the coefficients
+frozen at a hydrostatic state with uniform $U$, gravity and the vertical discretization included,
+exact fast stages) show growth of 5--25\,\% per step for MIS54 and MISF53 on FV from
+$C_\mathrm{adv}\approx0.4$, and $\rho\approx1.9$ on DG at $C_\mathrm{adv}=1.2$. Mechanism: $\rho$ is
+advected in the fast part, while the $\Theta$ advection is split by the frozen face $\theta$ into
+$\bar\theta\bar u\,\delta\rho$ (fast) and $\bar u(\delta\Theta-\bar\theta\delta\rho)$ (slow). Such
+instabilities grow from rounding and stay invisible in a 3000\,s run. Methods designed on the
+blocks (5 stages, frozen order 3, from MISF53):
+\begin{center}
+\begin{tabular}{lcc}
+\toprule
+& FV: $\max\rho-1$, $C_\mathrm{adv}\le1.6$, $U=10/20/40$ & DG: $\max\rho-1$, $C_\mathrm{adv}\le1.2$, $U=20/40$\\
+\midrule
+MIS54 & 0.16 / 0.18 / 0.10 & 0.94 / 0.96\\
+MISF53 & 0.14 / 0.26 / 0.26 & 0.96 / 0.73\\
+MIS\_FV53 & $\le6\cdot10^{-4}$ & 0.90 / 0.76\\
+MIS\_DG53 & & $\le1.4\cdot10^{-4}$\\
+\bottomrule
+\end{tabular}
+\end{center}
+Nonlinear: in the FV long run (36000\,s, $\dt=200$\,s) only MIS\_FV53 survives; its 3000\,s wave error
+is $1.2\cdot10^{-4}$ / $1.8\cdot10^{-4}$ at 130 / 200\,s (MIS54: $1.6\cdot10^{-4}$ / $1.6\cdot10^{-4}$). DG
+(Verlet): MIS\_DG53 runs at $\dt=150$\,s ($6.0\cdot10^{-4}$), where MIS54, MISF53 and MIS\_FV53 fail; at
+130\,s it gives $4.1\cdot10^{-4}$ against $2.2\cdot10^{-4}$ for MIS54. All methods fail at $\dt\ge167$\,s
+(DG blocks: $\rho>3$ at $C_\mathrm{adv}=1.6$ for every method).
+
 \paragraph{Frozen split for DG} (also on terrain). Volume: the mass and $\Theta$ two-point fluxes
 $A_{ab}v_n$, $B_{ab}v_n$ are written as $(A/\rho_a)(y)\tfrac12\tilde m_a+(A/\rho_b)(y)\tfrac12\tilde m_b$
 with the live momentum, the pressure $\{p\}$ of the nodal $p(\Theta_z)$, gravity with the frozen ratio

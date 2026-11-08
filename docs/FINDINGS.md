@@ -480,6 +480,29 @@ Order 3 with a frozen coefficient confirmed (toy problem, test). Gravity wave, f
 as good as MIS54 but not better: the [.,o] error of MIS54 is not the dominant time error here.
 Frozen order 3 together with additive order 4 is not reachable with 5 stages (residual 1.5e-5).
 
+**Application-specific methods: FV and DG separately** (`MethodDesign/app_stability.jl`,
+`search_app.jl`). The 1D acoustic-advection test does not predict the stability of the frozen
+splits. Column Fourier blocks of the real operators (J of N, L = ∂F/∂z with the coefficients
+frozen at a hydrostatic state with uniform U; gravity and the vertical discretization included;
+exact fast stages) show growth of 5–25 % per step for MIS54/MISF53 on FV from C_adv ≈ 0.4, and
+ρ ≈ 1.9 on DG at C_adv = 1.2. Mechanism: ρ is advected in the fast part, Θ advection is split by
+the frozen face θ into θ̄ū δρ (fast) and ū(δΘ − θ̄δρ) (slow). Such instabilities start from rounding
+and stay invisible in a 3000 s run, but not in long runs. Methods designed on the blocks
+(5 stages, frozen order 3, starting from MISF53):
+
+| | FV max ρ − 1, C_adv ≤ 1.6, U = 10/20/40 | DG max ρ − 1, C_adv ≤ 1.2, U = 20/40 |
+|---|---|---|
+| MIS54 | 0.16 / 0.18 / 0.10 | 0.94 / 0.96 |
+| MISF53 | 0.14 / 0.26 / 0.26 | 0.96 / 0.73 |
+| MIS_FV53 | ≤ 6e-4 | 0.90 / 0.76 |
+| MIS_DG53 | | ≤ 1.4e-4 |
+
+Nonlinear: FV long run (36000 s, Δt = 200 s) only MIS_FV53 survives (3000 s wave error 1.2e-4 /
+1.8e-4 at 130 / 200 s, MIS54 1.6e-4 / 1.6e-4). DG (Verlet, 3000 s): MIS_DG53 runs at Δt = 150 s
+(6.0e-4), where MIS54 (1.4), MISF53 and MIS_FV53 fail; at 130 s 4.1e-4 against 2.2e-4 for MIS54;
+all fail at ≥ 167 s (DG column blocks: ρ > 3 at C_adv = 1.6 for every method). Also MIS_FV42
+(4 stages, frozen order 2) for FV; 4 stages with frozen order 3 gave no stable FV method.
+
 **Frozen split for DG** (`src/DGSEM/Euler2D/frozen.jl`, also on terrain):
 - volume (flux differencing): mass and Θ two-point fluxes A_ab v_n, B_ab v_n written as
   (A/ρ_a)(y) ½ m̃_a + (A/ρ_b)(y) ½ m̃_b with the live momentum m of z (the two-point means and

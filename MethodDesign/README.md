@@ -29,6 +29,12 @@ Separate environment (Symbolics, Optim, ForwardDiff):
 - `search_stable.jl` — stability-constrained search: candidates projected onto the order
   conditions, Nelder–Mead on Σ max(0, ρ − 1)² over a (C_sound, C_adv) grid plus 10⁻³·error
   constant²; optional start from a stable package tableau (`… 5 3 4 2.0 MIS54`).
+- `app_stability.jl` — application-specific stability: column Fourier blocks of the *real* FV and
+  DG frozen splits (J of `rhs_nonlinear!`, L = ∂F/∂z of `frozen_fast!`, coefficients frozen at a
+  hydrostatic state with uniform U; whole column with gravity and the vertical discretization),
+  exact-fast-stage MIS step in the eigenbasis of L (checked against `LinearAnalysis.step_matrix`).
+- `search_app.jl` — the search of `search_stable.jl` with the application penalty
+  (`… search_app.jl fv 5 3 MISF53 3 1.6`, `… dg 5 3 MISF53 2 1.2`).
 
 ## Can we derive explicit order conditions for MIS from the B-series theory? Yes.
 
@@ -91,6 +97,27 @@ to its child vertex, the root colour being free).
    but not better here: on this test the time error is dominated by other terms, not by the
    mixed tree [.,o] that MIS54 misses. MISF43 (4 stages, earlier, not stability-selected) is
    unstable (amplification 1.035–1.11).
+   **The 1D test is not enough: FV and DG need their own methods.** On the column blocks of the
+   frozen splits (gravity-wave grids, U = 10/20/40 m/s) the methods that are stable on the 1D test
+   grow by 5–25 % per step (FV MIS54 from C_adv = 0.4). Reason: in the frozen split ρ is
+   advected in the fast part, while Θ advection is split by the frozen face θ into θ̄ū δρ (fast)
+   and ū(δΘ − θ̄δρ) (slow); the 1D test has no such coupling. Methods designed on the blocks
+   (`search_app.jl`, ρ − 1 ≤ 1e-3 counted as stable):
+
+   | | frozen order | FV: max ρ − 1, C_adv ≤ 1.6 (U = 10/20/40) | DG: max ρ − 1, C_adv ≤ 1.2 (U = 20/40) |
+   |---|---|---|---|
+   | MIS54 | 2 | 0.16 / 0.18 / 0.10 | 0.94 / 0.96 |
+   | MISF53 | 3 | 0.14 / 0.26 / 0.26 | 0.96 / 0.73 |
+   | MIS_FV42 (from MIS4) | 2 | 7e-4 / 7e-3 / 7e-4 | |
+   | **MIS_FV53** (from MISF53) | 3 | **−3e-4 / −1e-4 / 6e-4** (2.0: 2e-2 / −3e-4 / 1e-3) | 0.90 / 0.76 |
+   | **MIS_DG53** (from MISF53) | 3 | | **1.3e-4 / 1.4e-4** (C_adv 1.6: > 3 for all methods) |
+
+   4 stages with frozen order 3 found no stable FV method (penalty stalls at 0.11). Nonlinear
+   checks (`examples/frozen_new_methods_fv.jl`, `…_dg.jl`): FV, long run 36000 s at Δt = 200 s
+   (C_adv 1.6): only MIS_FV53 survives (MIS54, MISF53, MIS_FV42 blow up); its 3000 s wave error
+   1.2e-4 / 1.8e-4 at 130 / 200 s (MIS54 1.6e-4 / 1.6e-4). DG (Verlet): MIS_DG53 is the only
+   method that runs at Δt = 150 s (6.0e-4; MIS54 1.4, MIS_FV53 unstable), at 130 s 4.1e-4
+   (MIS54 2.2e-4); all fail at 167 s and above.
 2. **Frozen order 4.** 26 conditions at order 4. 6 stages give 51 free coefficients; the search
    reaches residuals 1e-6 … 1e-4 so far, not zero — either more stages or the time-dependent
    weights below are needed.
