@@ -1,0 +1,6 @@
+[deps]
+ADTypes = "47edcb42-4c32-4615-8424-f2b9edc5f35b"
+ForwardDiff = "f6369f11-7733-5829-9624-2563aa707210"
+MultiRate = "6618ee61-23c6-49fa-af9e-3e7fc963e7f5"
+Optim = "429524aa-4258-5aef-a3af-852621145aeb"
+Symbolics = "0c5d862f-8b57-4792-8d23-62f2024744c7"

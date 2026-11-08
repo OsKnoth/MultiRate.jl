@@ -57,7 +57,9 @@ subtracting a linearized fast operator, N(q) = F(q, q) with the slow part (momen
 the face θ frozen at the stage values and the nonlinear acoustic-gravity part evolving in the fast
 loop (`:verlet` or `:hevi`). On the gravity wave it stays stable and accurate up to UΔt/Δx = 1.6
 where the linearized split degrades; with a non-additive F the MIS4/MIS54 orders drop to 2
-(mixed B-series trees), [FINDINGS](docs/FINDINGS.md) §11.
+(mixed B-series trees), [FINDINGS](docs/FINDINGS.md) §11. The frozen split also exists for DG
+(`src/DGSEM/Euler2D/frozen.jl`); order conditions from the bicoloured B-series and the search for
+new methods are in [MethodDesign/](MethodDesign/README.md) (§12).
 
 ![](docs/images/frozen_gravity_wave.png)
 

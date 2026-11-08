@@ -666,7 +666,7 @@ is $N(q)$.
   $\Theta$ if they are nearly equal), so that it reproduces the pressure difference of $N$ and
   $F(q,q)=N(q)$ holds exactly.
 \item \code{:ratio}: $p = (p/\Theta)(y)\,\Theta_z$ with $p/\Theta$ frozen at the centres
-  ($F(q,q)=N(q)$ trivially).
+  ($F(q,q)=N(q)$ trivially); tried and removed from the code after the results below.
 \end{itemize}
 With a linear vertical part the implicit step of \code{hevi} is exactly Crank--Nicolson; the column
 solver is written for a pressure difference $\alpha_k\Theta_k-\beta_k\Theta_{k-1}$ at the $z$-face
@@ -749,11 +749,73 @@ step sizes in both splits; MIS\_KW3 is stable only at small steps.
 \begin{center}\includegraphics[width=\textwidth]{../images/frozen_gravity_wave_sections.png}\end{center}
 
 %======================================================================
+\section{Order conditions from the bicoloured B-series, new methods, frozen DG}\label{sec:bseries}
+
+\paragraph{Order conditions} (\code{MethodDesign/}). For $y'=F(y,y)$ with the first argument frozen
+the B-series runs over bicoloured trees: the colour of an edge says which argument is
+differentiated (black: frozen $y$, white: evolving $z$). With $Y_j=B(\eta_j)$, $Z_i(\lambda)=B(\zeta_i(\lambda))$
+the stage ODE gives, for $t=[t_{b1}\dots t_{bk},t_{w1}\dots t_{wl}]$,
+\begin{align*}
+\zeta_i(t)(\lambda)&=\sum_j\alpha_{ij}\eta_{j+1}(t)+\lambda\sum_j\gamma_{ij}\eta_{j+1}(t)
++\int_0^\lambda\sum_j a_{ij}(\mu)\prod_m\eta_j(t_{bm})\prod_m\zeta_i(t_{wm})(\mu)\,d\mu,\\
+\eta_{i+1}(t)&=\zeta_i(t)(1),
+\end{align*}
+(the algorithm of Knoth \& Wensch with shifted initial values, extended by the $\gamma$ terms of MIS;
+$a_{ij}=\beta_{ij}$ for MIS) and the conditions $\eta_{s+1}(t)=1/\gamma(t)$. Explicit (symbolic)
+conditions in $\alpha,\beta,\gamma$ are produced by \code{order\_conditions.jl}. Number of trees per
+order 1--5: 1, 2, 7, 26, 107 (additive $F$: 1, 2, 6, 18, 60). The recursion reproduces the measured
+orders (additive / frozen): WSRK3, MIS2, MIS3C 2/2; MIS4, MIS4a 3/2; MIS54 4/2, failing only the
+mixed tree $[\cdot,\circ]=F^{(2)}_{(1,1)}FF$ at order 3; MIS\_KW3 3/3. BSeries.jl (Ranocha,
+Ketcheson) covers RK, additive RK and Rosenbrock methods; ODE stages with a two-argument $F$
+(colour on the edges, stage series polynomial in $\lambda$) are not covered, but could be added as a
+new method type.
+
+\paragraph{New methods.} 4-stage MIS methods satisfying all 10 bicoloured conditions of order 3 form
+a family (\code{search.jl}). A first member, MISF43 (not selected for stability), on the frozen FV
+gravity wave (\code{hevi}, wave error in K):
+\begin{center}
+\begin{tabular}{lccccc}
+\toprule
+$\dt$ [s] & 67 & 100 & 130 & 167 & 200\\
+\midrule
+MISF43 & 1.3e-4 & 1.2e-4 & 1.1e-4 & 1.6e-4 & 3.0e-4\\
+MIS4 & 2.3e-4 & 3.1e-4 & 3.1e-4 & 3.3e-4 & 1.6e-3\\
+MIS54 & 1.1e-4 & 9.6e-5 & 1.6e-4 & 1.2e-4 & 1.6e-4\\
+\bottomrule
+\end{tabular}
+\end{center}
+Its linear amplification on the MISDG acoustic-advection test is 1.035--1.11, so stable members of
+the family still have to be selected. Frozen order 4 with 6 stages: residuals down to $2.6\cdot10^{-6}$,
+no exact solution found yet. Further ideas (time-dependent weights $a_{ij}(\lambda)$, pruning of
+trees by the structure of the split) are listed in \code{MethodDesign/README.md}.
+
+\paragraph{Frozen split for DG} (also on terrain). Volume: the mass and $\Theta$ two-point fluxes
+$A_{ab}v_n$, $B_{ab}v_n$ are written as $(A/\rho_a)(y)\tfrac12\tilde m_a+(A/\rho_b)(y)\tfrac12\tilde m_b$
+with the live momentum, the pressure $\{p\}$ of the nodal $p(\Theta_z)$, gravity with the frozen ratio
+of the logarithmic to the arithmetic mean of $\rho$. Faces (LMARS): upwind side, $\rho_\mathrm{up}/\rho$,
+$\rho_mc_m$, $\theta_\mathrm{up}$ frozen; mass, $\Theta$ and pressure parts live. Slow: momentum
+advection. $F(q,q)=N(q)$ to rounding; the fast part is linear in $z$ except the nodal $p(\Theta_z)$.
+Fast loop: explicit Verlet; a DG HEVI loop for the frozen split is still to be written.
+\begin{center}
+\begin{tabular}{lccc}
+\toprule
+DG gravity wave, wave error [K] & $\dt=67$\,s & 130\,s & 200\,s\\
+\midrule
+MIS54 frozen \code{verlet} & 7.9e-5 & \textbf{2.2e-4} & unst.\\
+MIS54 linearized \code{verlet} & 7.9e-5 & unst. & unst.\\
+MIS54 linearized \code{hevi} & 7.9e-5 & unst. & unst.\\
+MIS4 frozen / linearized & 2.2e-4 & unst. & unst.\\
+WSRK3 frozen / linearized & 3.1e-4 & unst. & unst.\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+%======================================================================
 \section{Open questions and next steps}
 
 \begin{itemize}
-\item Frozen split (Section~\ref{sec:frozen}): MIS coefficients of order 3/4 for non-additive $F$,
-  the frozen split for DGSEM and cut cells.
+\item Frozen split: stable members of the frozen-order-3 family, frozen order 4 (Section~\ref{sec:bseries}),
+  a HEVI loop for the frozen DG split, the frozen split with cut cells.
 \item a1 terrain FV: identify the terrain term in $S$ (Section~\ref{sec:matfree}).
 \item MIS3C: second order with $L\ne0$; compare with Knoth \& Wensch (2014).
 \item Cut cells: warm layer in the lowest cells downstream of the hill.

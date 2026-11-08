@@ -57,7 +57,7 @@ using ..Common: open_vtkhdf, write_vtkhdf!, plot_fields
 using ..TimeStepping: AbstractFastOperator, rhs_nonlinear, IMEX_GM
 import ..TimeStepping: rhs_nonlinear!, fast_operator, fast_apply!, fast_rhs_thermo!, fast_rhs_momentum!,
                        interface_update!, fast_rhs_horizontal!, fast_rhs_horizontal_relaxed!, vertical_apply!, vertical_factor, vertical_solve!,
-                       fast_rhs_hthermo!, fast_rhs_hmomentum!
+                       fast_rhs_hthermo!, fast_rhs_hmomentum!, frozen_ncoef, frozen_data!, frozen_fast!
 using ..HDGRelaxTheta: gll, lagrange_basis, gauss_legendre
 import ..HDGRelaxTheta: initial_state, tendency
 using ..SplitExplicitEuler: mass_theta_flux, gravity_mean
@@ -77,5 +77,6 @@ include("fast_operator.jl")
 include("fast_split.jl")
 include("hevi.jl")
 include("diagnostics.jl")
+include("frozen.jl")
 
 end # module

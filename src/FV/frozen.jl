@@ -8,21 +8,22 @@
 # θx, θz are the upwinded face values of θ = Θ/ρ of the full operator (3rd order, upwind direction
 # from U, W of y). The pressure in the fast part (`FV_FROZEN_PRESSURE`):
 #   :nonlinear   p(Θ_z), the full equation of state (nothing frozen)
-#   :ratio       p = (p/Θ)(y) Θ_z, p/Θ frozen at the centres
 #   :derivative  ∇p = (dp/dΘ)(y) ∇Θ_z, dp/dΘ frozen at the faces: the discrete derivative
 #                (p_r - p_l)/(Θ_r - Θ_l) of the two neighbouring cells (γ p/Θ at the mean Θ if
 #                they are nearly equal), so that it reproduces the pressure difference of N.
-# In all cases F(q, q) = N(q); with :ratio and :derivative the fast part is linear in z.
+# In both cases F(q, q) = N(q); with :derivative the fast part is linear in z. (Freezing p/Θ,
+# p = (p/Θ)(y) Θ_z, was tried and removed: it puts (γ-1)/γ of the acoustic stiffness into the frozen
+# argument and is stable only for c Δt/Δz ≲ 1, see docs/FINDINGS.md §11.)
 
-"""Pressure in the fast part of the frozen FV split: `:nonlinear` (default), `:ratio` (p/Θ frozen)
-or `:derivative` (dp/dΘ frozen at the faces). Read in every call."""
+"""Pressure in the fast part of the frozen FV split: `:nonlinear` (default) or `:derivative`
+(dp/dΘ frozen at the faces). Read in every call."""
 const FV_FROZEN_PRESSURE = Ref(:nonlinear)
 
 _flat_only(m::FVModel) = (m.grid isa CutCellFVGrid || m.grid.terrain) &&
     error("frozen split: flat FV grids only (no terrain, no cut cells)")
 
-"""Coefficient vector C = [θx (nx nz); θz (nx (nz+1)); P1 (nx nz); P2 (nx (nz+1))]: P1 = p/Θ at the
-centres (:ratio) or dp/dΘ at the x-faces (:derivative), P2 = dp/dΘ at the z-faces (:derivative)."""
+"""Coefficient vector C = [θx (nx nz); θz (nx (nz+1)); P1 (nx nz); P2 (nx (nz+1))]: P1, P2 = dp/dΘ
+at the x- and z-faces (:derivative, otherwise unused)."""
 frozen_ncoef(m::FVModel) = (_flat_only(m); 2 * (m.grid.nx * m.grid.nz + m.grid.nx * (m.grid.nz + 1)))
 
 @inline _θx(C, g, i, k) = C[i+(k-1)*g.nx]
@@ -67,9 +68,7 @@ function frozen_data!(C, S, m::FVModel, q)
         C[i+(k-1)*nx] = interp3(θ[ip(g, i - 2), k], θ[ip(g, i - 1), k], θ[i, k], θ[ip(g, i + 1), k], U)
         k > 1 && (C[nx*nz+i+(k-1)*nx] = face_z(θ, i, k, nz, q[iW(g, i, k)]))
         Θc = q[iΘ(g, i, k)]
-        if mode === :ratio
-            C[o3+i+(k-1)*nx] = pressure(m.gas, Θc) / Θc
-        elseif mode === :derivative
+        if mode === :derivative
             C[o3+i+(k-1)*nx] = _dpdΘ(m.gas, q[iΘ(g, i - 1, k)], Θc)
             k > 1 && (C[o3+nx*nz+i+(k-1)*nx] = _dpdΘ(m.gas, q[iΘ(g, i, k - 1)], Θc))
         end
@@ -115,7 +114,7 @@ end
 
 """Pressure difference p'_{right/top} - p'_{left/bottom} across an x-face (dir = 1) or z-face
 (dir = 2) of the fast part, for the selected pressure form (pp holds p' at the centres for
-:nonlinear and :ratio)."""
+:nonlinear)."""
 @inline function _dp(m, C, z, pp, mode, i, k, dir)
     g = m.grid
     if mode === :derivative
@@ -141,8 +140,7 @@ function frozen_fast!(out, m::FVModel, C, z, part::Symbol, F)
     if (rU || rW) && mode !== :derivative
         @inbounds for k in 1:nz, i in 1:nx
             Θ = z[iΘ(g, i, k)]
-            p = mode === :ratio ? _P1(C, g, i, k) * Θ : pressure(m.gas, Θ)
-            pp[i, k] = p - m.pbal[i, k]
+            pp[i, k] = pressure(m.gas, Θ) - m.pbal[i, k]
         end
     end
     @inbounds for k in 1:nz, i in 1:nx
@@ -192,8 +190,8 @@ pressure difference α_k Θ_k - β_k Θ_{k-1} at the z-face k (WRF elimination o
     W_{k-1} [-r β_k θ_{k-1} + c² g/(2Δz)] + W_k [1 + r θ_k (α_k + β_k)]
     + W_{k+1} [-r α_k θ_{k+1} - c² g/(2Δz)] = R^W_k - (c/Δz)(α_k R^Θ_k - β_k R^Θ_{k-1}) - (c g/2)(R^ρ_{k-1} + R^ρ_k),
 r = (c/Δz)². :nonlinear α_k = a_k, β_k = a_{k-1} with a = γ p/Θ at the start of the stage
-(approximate Jacobian); :ratio α_k = (p/Θ)_k, β_k = (p/Θ)_{k-1}; :derivative α_k = β_k = (dp/dΘ)_k
-(exact: the vertical part is then linear and the step is Crank–Nicolson)."""
+(approximate Jacobian); :derivative α_k = β_k = (dp/dΘ)_k (exact: the vertical part is then linear
+and the step is Crank–Nicolson)."""
 mutable struct FrozenColumn
     α::Matrix{Float64}
     β::Matrix{Float64}
@@ -220,8 +218,6 @@ function frozen_stage_begin!(m::FVModel, C, z)
     @inbounds for k in 2:g.nz, i in 1:g.nx
         if mode === :derivative
             s.α[i, k] = s.β[i, k] = _P2(C, g, i, k)
-        elseif mode === :ratio
-            s.α[i, k] = _P1(C, g, i, k); s.β[i, k] = _P1(C, g, i, k - 1)
         else
             a(kk) = (Θ = z[iΘ(g, i, kk)]; m.gas.γ * pressure(m.gas, Θ) / Θ)
             s.α[i, k] = a(k); s.β[i, k] = a(k - 1)
@@ -280,7 +276,7 @@ function _frozen_column_solve!(Y, s::FrozenColumn, m::FVModel, c, R)
 end
 
 """Linearly implicit Crank–Nicolson step of the vertical part G_v:
-z ← z + (I - dt/2 J_v)⁻¹ dt G_v(z) (= Crank–Nicolson for :ratio and :derivative)."""
+z ← z + (I - dt/2 J_v)⁻¹ dt G_v(z) (= Crank–Nicolson for :derivative)."""
 function frozen_vertical_step!(z, m::FVModel, C, dt, k, y)
     s = _frozen_column(m)
     frozen_fast!(k, m, C, z, :vertical, k)        # F unused for :vertical

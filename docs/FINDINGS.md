@@ -376,7 +376,7 @@ p(Θ) and J_v uses a = γp/Θ from the start of the stage and the frozen θz (co
 **Frozen pressure** (`FV_FROZEN_PRESSURE`; fast part linear in z):
 - `:derivative`: ∇p = (dp/dΘ)(y) ∇Θ_z, dp/dΘ frozen at the faces as the discrete derivative
   (p_r − p_l)/(Θ_r − Θ_l) (γp/Θ at the mean if nearly equal), so F(q, q) = N(q) exactly;
-- `:ratio`: p = (p/Θ)(y) Θ_z, p/Θ frozen at the centres.
+- `:ratio`: p = (p/Θ)(y) Θ_z, p/Θ frozen at the centres (tried, then removed from the code).
 The `:hevi` step is then exactly Crank–Nicolson (column solver for α_kΘ_k − β_kΘ_{k−1}).
 
 | MIS54, wave error [K] | 67 s | 100 s | 130 s | 167 s | 200 s |
@@ -436,3 +436,53 @@ MIS_KW3 is stable only at small steps despite its order 3.
 **Next:** MIS coefficients for the frozen form (order 3/4 with the mixed trees, time-dependent
 weights a_ij^p), the frozen split for DG and with cut cells, a frozen θ_z in a fully implicit
 vertical step (Newton for p(Θ)).
+
+## 12. Order conditions from the bicoloured B-series, new methods, frozen split for DG
+
+**Order conditions** (`MethodDesign/`, see its README). For y' = F(y, y) with the first argument
+frozen, the B-series runs over *bicoloured* trees (edge colour = which argument is
+differentiated). The recursion of Knoth & Wensch (DocuMISBI, with shifted initial values),
+extended by the γ terms of MIS, gives the stage series and the conditions η_{s+1}(t) = 1/γ(t)
+(`MethodDesign/BiColourMIS.jl`; symbolic in α, β, γ with `order_conditions.jl`). Trees per order:
+1, 2, 7, 26, 107 (additive F: 1, 2, 6, 18, 60). The recursion reproduces the measured orders of all
+tableaus (additive / frozen): WSRK3, MIS2, MIS3C 2/2; MIS4, MIS4a 3/2; MIS54 4/2 (fails only
+[.,o] = F_(1,1)FF at order 3); MIS_KW3 3/3.
+
+**New methods** (`MethodDesign/search.jl`): 4-stage MIS methods satisfying all 10 bicoloured
+conditions up to order 3 form a family (found from every start). A first member, MISF43 (not yet
+selected for stability), on the frozen FV gravity wave (`hevi`, wave error [K]):
+
+| Δt [s] | 67 | 100 | 130 | 167 | 200 |
+|---|---|---|---|---|---|
+| MISF43 | 1.3e-4 | 1.2e-4 | 1.1e-4 | 1.6e-4 | 3.0e-4 |
+| MIS4 | 2.3e-4 | 3.1e-4 | 3.1e-4 | 3.3e-4 | 1.6e-3 |
+| MIS54 | 1.1e-4 | 9.6e-5 | 1.6e-4 | 1.2e-4 | 1.6e-4 |
+
+but its linear amplification on the MISDG acoustic-advection test is 1.035–1.11 (C_adv 0.5–2,
+c/U = 7): the family must be searched for stable members. Frozen order 4 with 6 stages: residuals
+down to 2.6e-6, no exact solution found yet.
+
+**Frozen split for DG** (`src/DGSEM/Euler2D/frozen.jl`, also on terrain):
+- volume (flux differencing): mass and Θ two-point fluxes A_ab v_n, B_ab v_n written as
+  (A/ρ_a)(y) ½ m̃_a + (A/ρ_b)(y) ½ m̃_b with the live momentum m of z (the two-point means and
+  1/ρ frozen), pressure {p} of the nodal nonlinear p(Θ_z), gravity with the frozen ratio of the
+  logarithmic to the arithmetic mean of ρ and the live ρ;
+- faces (LMARS): upwind side, ρ_up/ρ, ρ_m c_m and θ_up frozen; mass, Θ and pressure parts live;
+- slow: momentum advection, volume f_ρ(ū, w̄) and face m_f u_up and the inner m u_ñ;
+- F(q, q) = N(q) to rounding (flat and terrain); fast part linear in z except the nodal p(Θ_z);
+  coefficients per volume pair and face node pair, linear, so a stage needs one fast operator.
+Fast loop: explicit Verlet (thermodynamic / momentum rows); a DG HEVI loop for the frozen split is
+not written yet.
+
+DG gravity wave (300 km, P = 4, 30 × 4 elements, wave error [K], RK4 reference):
+
+| | Δt = 67 s | 130 s | 200 s |
+|---|---|---|---|
+| MIS54 frozen `verlet` | 7.9e-5 | **2.2e-4** | unstable |
+| MIS54 linearized `verlet` | 7.9e-5 | unstable | unstable |
+| MIS54 linearized `hevi` | 7.9e-5 | unstable | unstable |
+| MIS4 frozen / linearized | 2.2e-4 | unstable | unstable |
+| WSRK3 frozen / linearized | 3.1e-4 | unstable | unstable |
+
+At 67 s frozen and linearized agree; at 130 s only the frozen MIS54 survives. The explicit Verlet
+loop needs 150–470 substeps; a frozen DG HEVI loop is the next step.

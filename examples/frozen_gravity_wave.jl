@@ -6,7 +6,7 @@
 # T = 3000 s), reference explicit RK4 on N. Frozen split (`TimeStepping.run_frozen`):
 # N(q) = F(q, q), fast part with the nonlinear p(Θ) and the face θ frozen at the stage values,
 # slow part momentum advection; with FV_FROZEN_PRESSURE = :derivative dp/dΘ is frozen at the faces
-# as well (fast part linear). (:ratio, p/Θ frozen, is stable only for c Δt/Δz ≲ 1, not shown.)
+# as well (fast part linear).
 # Linearized split (`run_mis`): fast operator L frozen at qⁿ,
 # S = N - L. Fast loops :verlet (explicit) and :hevi, nsub at the substep limit. Wave error of θ′
 # at z = 5 km (horizontal mean removed) against the slow step.

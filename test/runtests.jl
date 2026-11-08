@@ -12,6 +12,7 @@ const E2 = MultiRate.Euler2D
 const FV = MultiRate.FV2D
 const TS = MultiRate.TimeStepping
 const CM = MultiRate.Common
+include(joinpath(@__DIR__, "..", "MethodDesign", "BiColourMIS.jl"))
 
 rate(e1, e2) = log2(e1 / e2)
 
@@ -491,10 +492,10 @@ end
         @test errs[2] < 0.05 * dev
         @test rate(errs...) > 1.7
     end
-    # frozen pressure: p/Θ (:ratio) or dp/dΘ at the faces (:derivative); exact split, linear fast
-    # part, exact column solve; :derivative converges (:ratio is stable only for c Δt/Δz ≲ 1, see FINDINGS §11)
+    # frozen pressure dp/dΘ at the faces (:derivative): exact split, linear fast part, exact column
+    # solve, converges
     try
-        for mode in (:ratio, :derivative)
+        for mode in (:derivative,)
             FV.FV_FROZEN_PRESSURE[] = mode
             C = zeros(TS.frozen_ncoef(mw)); S = zeros(mw.nq)
             TS.frozen_data!(C, S, mw, q0)
@@ -515,6 +516,39 @@ end
         FV.FV_FROZEN_PRESSURE[] = :nonlinear
     end
     @test_throws ErrorException TS.frozen_ncoef(FV.FVModel(FV.FVGrid(8, 4, 40e3, 10e3; zs = x -> 100 * exp(-(x - 2e4)^2 / 1e8)), gas, ρr, Θr))
+end
+
+@testset "MethodDesign: bicoloured B-series of MIS with frozen first argument" begin
+    BC = Main.BiColourMIS
+    @test [length(BC.trees(n)) for n in 1:4] == [1, 2, 7, 26]
+    @test [count(BC.additive, BC.trees(n)) for n in 1:4] == [1, 2, 6, 18]
+    # orders: additive F / non-additive F, as observed with the frozen toy problem
+    for (name, pa, pf) in ((:WSRK3, 2, 2), (:MIS4a, 3, 2), (:MIS54, 4, 2), (:MIS_KW3, 3, 3))
+        t = TS.mis_tableau(name)
+        m = BC.mis_method(name, t.α, t.β, t.γ)
+        @test BC.order_of(m, 5; additive_only = true, tol = 1e-9) == pa
+        @test BC.order_of(m, 5; tol = 1e-9) == pf
+    end
+    # exact arithmetic: the WSRK3 residual of [o] vanishes exactly
+    t = TS.mis_tableau(:WSRK3)
+    m = BC.mis_method(:WSRK3, Rational{BigInt}.(rationalize.(t.α)), Rational{BigInt}.(rationalize.(t.β)), Rational{BigInt}.(rationalize.(t.γ)))
+    @test all(iszero(r) for (tr, r) in BC.residuals(m, 2))
+end
+
+@testset "Euler2D: frozen split F(q, q) = N(q)" begin
+    gas = CM.Gas()
+    ρr, Θr, θr = CM.stratified_reference(gas)
+    for zs in (x -> 0.0, x -> 300 / (1 + ((x - 20e3) / 4e3)^2))
+        M = E2.Mesh2D(6, 3, 3, 40e3, 10e3; zs)
+        m = E2.Euler2DModel(M, gas, ρr, Θr)
+        q = CM.project2d(m, (x, z) -> (ρ = Θr(z) / (θr(z) + 0.5 * exp(-((x - 15e3) / 5e3)^2)); (ρ, 10ρ, 2ρ * sin(x / 5e3), Θr(z))))
+        C = zeros(TS.frozen_ncoef(m)); S = zeros(m.nq)
+        TS.frozen_data!(C, S, m, q)
+        F = TS.frozen_fast!(zeros(m.nq), m, C, q, :all, S)
+        N = TS.rhs_nonlinear(m, q)
+        @test maximum(abs.(F .- N)) < 1e-11 * maximum(abs, N)
+        @test TS.frozen_fast!(zeros(m.nq), m, C, q, :thermo, S) .+ TS.frozen_fast!(zeros(m.nq), m, C, q, :momentum, S) ≈ F
+    end
 end
 
 @testset "LinearAnalysis: MIS amplification (Knoth–Wensch, MISDG grid)" begin
