@@ -42,7 +42,7 @@ using ..TimeStepping: AbstractFastOperator, rhs_nonlinear
 import ..TimeStepping: rhs_nonlinear!, fast_operator, fast_apply!, fast_rhs_thermo!, fast_rhs_momentum!,
                        fast_rhs_horizontal!, vertical_apply!, vertical_factor, vertical_solve!,
                        fast_rhs_hmomentum!, fast_rhs_hthermo!, hevi_loop!, fast_forcing, fast_mass,
-                       fast_workspace, fast_rosenbrock_amf!
+                       fast_workspace, fast_rosenbrock_amf!, frozen_ncoef, frozen_data!, frozen_fast!, frozen_stage_begin!, frozen_vertical_step!
 
 export FV_HYDRO_REFERENCE, FVGrid, CutCellFVGrid, FVModel, FVFast, CutCellFVAMF, with_sponge, project2d, total2d, output_fields, sound_speed_max,
        rhs_nonlinear, rhs_nonlinear!, fast_operator, fast_matrix, stratified_reference,
@@ -57,5 +57,6 @@ include("fast_operator.jl")
 include("vertical.jl")
 include("cutcell_solver.jl")
 include("cutcell_amf.jl")
+include("frozen.jl")
 
 end # module

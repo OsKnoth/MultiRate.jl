@@ -593,9 +593,76 @@ one slow evaluation per step would need the Lawson form (integrating-factor Adam
 stored $S$ propagated by the fast flow; $k$ fast integrations per step), not tried yet.
 
 %======================================================================
+\section{MIS with a frozen part of the right-hand side (flat FV)}\label{sec:frozen}
+
+\paragraph{Idea} (Knoth \& Wensch, \emph{B-series and split-explicit methods}; MATLAB \code{SplitExplicit.m}).
+Instead of adding and subtracting a linearized fast operator, the right-hand side is written with
+two arguments, $N(q)=F(q,q)$, the first frozen at the stage values, the second evolving in the fast
+integration,
+\[ Z_i' = \sum_j w_{ij}F(Y_j,Z_i) + \sum_j\frac{\gamma_{ij}}{d_i\dt}(Y_{j+1}-q^n),\quad w_{ij}=\beta_{ij}/d_i, \]
+over $d_i\dt$ from $q^n+\sum_j\alpha_{ij}(Y_{j+1}-q^n)$ (\code{run\_frozen}). For an additive
+$F(y,z)=S(y)+G(z)$ this is the usual MIS step.
+
+\paragraph{FV split} (flat grids). Fast, evolving $z$: $\rho_t=-\partial_xU-\partial_zW$,
+$\Theta_t=-\partial_x(\theta_xU)-\partial_z(\theta_zW)$, $U_t=-\partial_xp'(\Theta)$,
+$W_t=-\partial_zp'(\Theta)-g\rho'$ with the full nonlinear $p(\Theta)$, and the sponge. Frozen
+coefficients $C(y)$: the upwinded face values $\theta_x,\theta_z$ of the full operator (linear in
+$C$, so $\sum_jw_jF(Y_j,Z)=F_f(\sum_jw_jC(Y_j),Z)+\sum_jw_jS(Y_j)$). Slow, frozen $y$: momentum
+advection. $F(q,q)=N(q)$ to rounding; nothing is linearized and no reference state is needed.
+Fast loops: \code{verlet}, \code{fb}, \code{rk4}, compositions, and \code{hevi} (horizontal Verlet
+half steps around a linearly implicit vertical Crank--Nicolson step
+$z\leftarrow z+(I-\tfrac{dt}{2}J_v)^{-1}dt\,G_v(z)$, $G_v$ with the nonlinear $p(\Theta)$, $J_v$ with
+$a=\gamma p/\Theta$ from the start of the stage).
+
+\paragraph{Orders} (toy oscillator with frozen coefficient $c(y)=1+0.5\sin y_1$, exact fast stages):
+\begin{center}
+\begin{tabular}{lcc}
+\toprule
+ & additive $F=S(y)+G(z)$ & frozen coefficient\\
+\midrule
+WSRK3, MIS2, MIS3C & 2 & 2\\
+MIS4, MIS4a & 3 & \textbf{2}\\
+MIS54 & 4 & \textbf{2}\\
+MIS\_KW3 (Knoth--Wolke) & 3 & 3\\
+\bottomrule
+\end{tabular}
+\end{center}
+With a non-additive $F$ the mixed trees ($F^{(2)}_{(1,1)}FF,\dots$) add order conditions that
+MIS4/4a/54 do not satisfy; methods with time-dependent weights $a_{ij}^p$ satisfying them are to be
+constructed with the B-series program.
+
+\paragraph{Gravity wave, 300\,km} (wave error in K, $n_\mathrm{sub}$ at the substep limit):
+\begin{center}
+\begin{tabular}{lccccc}
+\toprule
+$\dt$ [s] ($U\dt/\Delta x$) & 67 (0.53) & 100 (0.8) & 130 (1.04) & 167 (1.33) & 200 (1.6)\\
+\midrule
+MIS54 frozen \code{hevi} & 1.1e-4 & 9.6e-5 & 1.6e-4 & 1.2e-4 & \textbf{1.6e-4}\\
+MIS54 frozen \code{verlet} & 7.4e-5 & 9.2e-5 & 2.1e-4 & 7.1e-5 & 2.1e-4\\
+MIS54 linearized \code{hevi} & 1.1e-4 & 9.6e-5 & 2.0e-4 & 2.4e-4 & 3.1e-4\\
+MIS4 frozen \code{hevi} & 2.3e-4 & 3.1e-4 & 3.1e-4 & 3.3e-4 & 1.6e-3\\
+MIS4 linearized \code{hevi} & 2.3e-4 & 3.1e-4 & 5.9e-4 & 2.7e-2 & unst.\\
+WSRK3 frozen \code{hevi} & 2.5e-4 & 4.2e-4 & 5.1e-4 & 6.6e-4 & 2.9e-3\\
+WSRK3 linearized \code{hevi} & 2.5e-4 & 4.2e-4 & 5.2e-4 & 5.6e-3 & unst.\\
+\bottomrule
+\end{tabular}
+\end{center}
+At $U\dt/\Delta x\lesssim1$ both splits agree; at larger steps the frozen split stays stable and
+accurate where the linearized one degrades or blows up, and MIS54 halves its error at 200\,s. A
+plausible reason: the linearized split puts the transport of $\Theta$ and of the pressure
+perturbation by the slow velocity into $S$ and couples it explicitly to the acoustics; the frozen
+split keeps all mass and $\Theta$ fluxes in the fast loop with the full $U$. MIS4a fails at single
+step sizes in both splits; MIS\_KW3 is stable only at small steps.
+
+\begin{center}\includegraphics[width=\textwidth]{../images/frozen_gravity_wave.png}\end{center}
+\begin{center}\includegraphics[width=\textwidth]{../images/frozen_gravity_wave_sections.png}\end{center}
+
+%======================================================================
 \section{Open questions and next steps}
 
 \begin{itemize}
+\item Frozen split (Section~\ref{sec:frozen}): MIS coefficients of order 3/4 for non-additive $F$,
+  the frozen split for DGSEM and cut cells.
 \item a1 terrain FV: identify the terrain term in $S$ (Section~\ref{sec:matfree}).
 \item MIS3C: second order with $L\ne0$; compare with Knoth \& Wensch (2014).
 \item Cut cells: warm layer in the lowest cells downstream of the hill.

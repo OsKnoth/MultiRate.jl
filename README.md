@@ -52,6 +52,15 @@ Adams–Bashforth** (`:EAB2`…`:EAB4`, the multistep EPI form) run in the same 
 MIS fast loops. They are correct (orders 3, 3, 4 with the Jacobian, 2–4) but stable only where the
 acoustics are almost resolved (cΔt/Δx ≲ 0.5 on the gravity wave), see [FINDINGS](docs/FINDINGS.md) §10.
 
+**Frozen part of the right-hand side** (`TimeStepping.run_frozen`, flat FV): instead of adding and
+subtracting a linearized fast operator, N(q) = F(q, q) with the slow part (momentum advection) and
+the face θ frozen at the stage values and the nonlinear acoustic-gravity part evolving in the fast
+loop (`:verlet` or `:hevi`). On the gravity wave it stays stable and accurate up to UΔt/Δx = 1.6
+where the linearized split degrades; with a non-additive F the MIS4/MIS54 orders drop to 2
+(mixed B-series trees), [FINDINGS](docs/FINDINGS.md) §11.
+
+![](docs/images/frozen_gravity_wave.png)
+
 ![](docs/images/lawson_mis_gravity_wave.png)
 
 `L` and its split `L_I` can be chosen locally. That choice is the subject of the project:

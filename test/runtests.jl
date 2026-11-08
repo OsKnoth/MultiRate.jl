@@ -29,6 +29,22 @@ function jacobian_max_re(f, q0)
     return maximum(real.(eigvals(J)))
 end
 
+"""Toy problem for the frozen split: fast oscillator with a frozen coefficient c(y) (or c = 1,
+additive), slow nonlinear part; N(q) = F_f(c(q), q) + S(q)."""
+struct FrozenToy; additive::Bool; end
+TS.frozen_ncoef(::FrozenToy) = 1
+function TS.frozen_data!(C, S, m::FrozenToy, y)
+    C[1] = m.additive ? 1.0 : 1 + 0.5sin(y[1])
+    S[1] = 0.5sin(y[1]) + y[2]^2; S[2] = -0.3y[1] * y[2] + cos(y[1])
+    return C, S
+end
+function TS.frozen_fast!(out, m::FrozenToy, C, z, part, F)
+    out .= 0
+    part !== :momentum && (out[1] = 4C[1] * z[2] + F[1])
+    part !== :thermo && (out[2] = -4z[1] - 0.5z[1]^3 + F[2])
+    return out
+end
+
 @testset "MultiRate" begin
 
 @testset "v1 HDGRelaxEuler: periodic normal mode" begin
@@ -427,6 +443,55 @@ end
     @test w.nhist == 3
     @test TS.reset!(w).nhist == 0
     @test_throws ArgumentError LA.linearized_step(m, zeros(4), 1.0, tab)
+end
+
+@testset "TimeStepping: MIS with a frozen part of the right-hand side" begin
+    # orders with exact fast stages (RK4, 400 substeps) against a fine RK4 solution
+    function frozen_rates(m, name)
+        Nf(q) = (C = zeros(1); S = zeros(2); TS.frozen_data!(C, S, m, q); TS.frozen_fast!(zeros(2), m, C, q, :all, S))
+        q0 = [1.0, 0.5]; q = copy(q0); h = 1 / 4000
+        for _ in 1:4000
+            k1 = Nf(q); k2 = Nf(q + h / 2 * k1); k3 = Nf(q + h / 2 * k2); k4 = Nf(q + h * k3)
+            q += h / 6 * (k1 + 2k2 + 2k3 + k4)
+        end
+        e = [norm(TS.run_frozen(m, q0, 1 / n, n; tab = TS.mis_tableau(name), nsub = 400, fast = :rk4) - q) for n in (20, 40)]
+        return rate(e...)
+    end
+    # additive F(y, z) = S(y) + G(z): the MIS orders
+    @test frozen_rates(FrozenToy(true), :MIS54) > 3.8
+    @test frozen_rates(FrozenToy(true), :MIS4a) > 2.8
+    # coefficient of the fast part frozen at the stage values: MIS54, MIS4a drop to 2, Knoth–Wolke keeps 3
+    @test 1.8 < frozen_rates(FrozenToy(false), :MIS54) < 2.3
+    @test 1.8 < frozen_rates(FrozenToy(false), :MIS4a) < 2.4
+    @test frozen_rates(FrozenToy(false), :MIS_KW3) > 2.8
+    # FV (flat): F(q, q) = N(q), parts, gravity wave against RK4
+    gas = CM.Gas()
+    ρr, Θr, θr = CM.stratified_reference(gas)
+    gw = FV.FVGrid(40, 10, 100e3, 10e3)
+    # with the hydrostatic reference (as in the FV2D test: the dz = 1 km imbalance would dominate)
+    mw = (FV.FV_HYDRO_REFERENCE[] = true; try FV.FVModel(gw, gas, ρr, Θr) finally FV.FV_HYDRO_REFERENCE[] = false end)
+    q0 = CM.project2d(mw, (x, z) -> (ρ = Θr(z) / (θr(z) + 0.01 * sin(π * z / 10e3) / (1 + ((x - 50e3) / 5e3)^2));
+                                     (ρ, 20ρ, 0.0, Θr(z))))
+    C = zeros(TS.frozen_ncoef(mw)); S = zeros(mw.nq); out = zeros(mw.nq)
+    TS.frozen_data!(C, S, mw, q0)
+    TS.frozen_fast!(out, mw, C, q0, :all, S)
+    N0 = TS.rhs_nonlinear(mw, q0)
+    @test maximum(abs.(out .- N0)) < 1e-14 + 1e-10 * maximum(abs, N0)
+    parts = sum(TS.frozen_fast!(zeros(mw.nq), mw, C, q0, p, S) for p in (:hthermo, :hmomentum, :vertical))
+    @test parts ≈ out
+    @test TS.frozen_fast!(zeros(mw.nq), mw, C, q0, :thermo, S) + TS.frozen_fast!(zeros(mw.nq), mw, C, q0, :momentum, S) ≈ out
+    c = CM.sound_speed_max(mw, q0)
+    nref = ceil(Int, 200 / (0.3 * gw.dz / (c + 20)))
+    qref = TS.run_rk4(mw, q0, 200 / nref, nref)
+    dev = norm(qref .- q0)
+    for (fast, nsub, lim) in ((:verlet, 12, gw.dz), (:hevi, 12, gw.dz))
+        Δt1 = nsub * 0.8 * lim / c
+        errs = [norm(TS.run_frozen(mw, q0, Δt, round(Int, 200 / Δt); tab = TS.mis_tableau(:MIS54), nsub, fast) .- qref)
+                for Δt in (200 / ceil(200 / Δt1), 100 / ceil(200 / Δt1))]
+        @test errs[2] < 0.05 * dev
+        @test rate(errs...) > 1.7
+    end
+    @test_throws ErrorException TS.frozen_ncoef(FV.FVModel(FV.FVGrid(8, 4, 40e3, 10e3; zs = x -> 100 * exp(-(x - 2e4)^2 / 1e8)), gas, ρr, Θr))
 end
 
 @testset "LinearAnalysis: MIS amplification (Knoth–Wensch, MISDG grid)" begin
