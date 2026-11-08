@@ -359,6 +359,15 @@ F(y, z) = S(y) + G(z) this is the usual MIS step.
 - slow, frozen y: momentum advection.
 F(q, q) = N(q) to rounding (4e-16 relative). Nothing is linearized and there is no reference state.
 
+**What is frozen** (y stage values, z fast state): (1) the 3rd-order upwind face θ of the Θ fluxes,
+from θ = Θ/ρ of y, upwind direction from y, weighted sum Σ_j (β_ij/d_i) θ_face(Y_j); (2) the momentum
+advection, once per stage, as constant forcing. Live in every substep: mass fluxes, Θ fluxes
+θ_face·(U, W) with the current U, W, the nonlinear p(Θ), gravity, sponge. Only the Jacobian of the
+implicit vertical CN step of `:hevi` uses γp/Θ from the stage start. Freezing θ_face makes F
+non-additive (product of frozen θ and live U, W), hence the order loss of MIS4/54. Alternative:
+θ_face from z, only the momentum advection frozen: additive, MIS orders kept, but nonlinear upwind
+θ transport in the fast loop. Details in the LaTeX report.
+
 **Fast loops:** `:verlet` (thermo/momentum, as `SplitExplicit.m`), `:fb`, `:rk4`, compositions
 `:verlet_s4` …, and `:hevi`: Strang, horizontal Verlet half steps around a linearly implicit
 vertical Crank–Nicolson step z ← z + (I − dt/2 J_v)⁻¹ dt G_v(z), where G_v keeps the nonlinear

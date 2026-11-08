@@ -614,6 +614,49 @@ half steps around a linearly implicit vertical Crank--Nicolson step
 $z\leftarrow z+(I-\tfrac{dt}{2}J_v)^{-1}dt\,G_v(z)$, $G_v$ with the nonlinear $p(\Theta)$, $J_v$ with
 $a=\gamma p/\Theta$ from the start of the stage).
 
+\paragraph{What is frozen.} With the two-argument form $F(y,z)$, $y$ the stage values and $z$ the
+state of the fast integration, the flat FV split freezes exactly two things:
+\begin{enumerate}
+\item the face values of $\theta$ in the $\Theta$ fluxes: the third-order upwind values
+  $\theta_x,\theta_z$ of the full operator, computed from $\theta=\Theta/\rho$ of $y$ with the upwind
+  direction from $U,W$ of $y$; within stage $i$ the weighted sum
+  $\sum_j(\beta_{ij}/d_i)\,\theta_\mathrm{face}(Y_j)$;
+\item the momentum advection $\partial_x(Uu)+\partial_z(Wu)$, $\partial_x(Uw)+\partial_z(Ww)$,
+  evaluated once per stage at $Y_j$ and added as a constant forcing (with the same weights and the
+  $\gamma$ terms of MIS).
+\end{enumerate}
+Everything else is evaluated at the current $z$ in every substep: the mass fluxes $U,W$, the
+$\Theta$ fluxes $\theta_\mathrm{face}U$, $\theta_\mathrm{face}W$ with the current $U,W$, the pressure
+$p(\Theta)$ from the nonlinear equation of state, gravity $g\rho$ and the sponge. For $y=z=q$ this
+is $N(q)$.
+
+\paragraph{Remarks.}
+\begin{itemize}
+\item Compared with the linearized split nothing of the acoustics is frozen: no $a=\gamma p/\Theta$,
+  no averaged $\bar\theta$, no difference $S=N-L$. The frozen data are values of the full operator,
+  so the split is exact and needs no reference state.
+\item The only linearization left is the Jacobian of the implicit vertical Crank--Nicolson step of
+  \code{hevi}: $a=\gamma p/\Theta$ at the start of the stage, used only in
+  $(I-\tfrac{dt}{2}J_v)^{-1}$; the vertical tendency itself uses the nonlinear $p(\Theta)$. With
+  \code{verlet} nothing is linearized.
+\item Freezing $\theta_\mathrm{face}$ makes $F$ non-additive: $F(y,z)\ne S(y)+G(z)$, because the
+  $\Theta$ flux is a product of a frozen ($\theta$) and a live ($U,W$) factor. This produces the
+  mixed elementary differentials ($F^{(2)}_{(1,1)}FF$, \dots) of the B-series and is the reason why
+  MIS4, MIS4a, MIS54 drop to order 2 in this form.
+\item The freezing is linear in the frozen data ($\Theta$ flux linear in $\theta_\mathrm{face}$, momentum
+  advection additive), so $\sum_jw_jF(Y_j,Z)=F_f(\sum_jw_jC(Y_j),Z)+\sum_jw_jS(Y_j)$: one fast
+  operator per stage, as cheap as one evaluation of the fast part. Freezing a nonlinear function of
+  $y$ (e.g.\ the upwind direction inside the fast loop) would need $F_f$ for every $Y_j$.
+\item Alternative: freeze only the momentum advection and compute $\theta_\mathrm{face}$ from $z$.
+  The split is then additive, $F=S(y)+G(z)$, and the MIS orders are kept (MIS54: 4), but the fast part
+  contains the nonlinear upwind transport of $\theta$ (costlier per substep, and its vertical part is
+  harder to treat implicitly).
+\item Other choices are possible in the same framework, e.g.\ freezing the velocity of the
+  momentum transport (frozen $u$, live $U$: transport of the fast momentum by the slow wind), which
+  would move part of the advection into the fast loop like the vertical transport term of
+  \code{FV\_VADV\_FAST}.
+\end{itemize}
+
 \paragraph{Orders} (toy oscillator with frozen coefficient $c(y)=1+0.5\sin y_1$, exact fast stages):
 \begin{center}
 \begin{tabular}{lcc}
