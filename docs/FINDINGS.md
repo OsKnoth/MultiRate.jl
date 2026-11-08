@@ -462,6 +462,24 @@ but its linear amplification on the MISDG acoustic-advection test is 1.035–1.1
 c/U = 7): the family must be searched for stable members. Frozen order 4 with 6 stages: residuals
 down to 2.6e-6, no exact solution found yet.
 
+**Stability-constrained search** (as in Knoth & Wensch 2014; `MethodDesign/stability.jl`,
+`search_stable.jl`): largest stable C_adv on the acoustic-advection test (C-grid, exact fast
+stages) per C_sound. Random frozen-order-3 methods (4 and 5 stages) are stable only for
+C_sound ≤ 2; the projected MIS4a (4 stages) fails at C_sound = 12 even after optimisation. The
+minimum-norm projection of MIS54 onto all bicoloured conditions ≤ 3, **MISF53**
+(`mis_tableau(:MISF53)`, |Δx| ≈ 0.1), keeps the stability of MIS54:
+
+| C_sound | 0 | 1 | 2 | 3 | 4 | 6 | 8 | 10 | 12 |
+|---|---|---|---|---|---|---|---|---|---|
+| MISF53 (frozen 3, additive 3) | 2.05 | 2.20 | 2.45 | 2.45 | 2.40 | 2.20 | 2.50 | 3.00 | 3.00 |
+| MIS54 (frozen 2, additive 4) | 2.05 | | 2.30 | | 2.70 | | 2.35 | | 3.00 |
+
+Order 3 with a frozen coefficient confirmed (toy problem, test). Gravity wave, frozen split: FV
+`hevi` MISF53 1.1e-4 / 9.6e-5 / 1.4e-4 / 1.4e-4 / 1.6e-4 (Δt = 67 … 200 s), MIS54 1.1e-4 / 9.6e-5 /
+1.6e-4 / 1.2e-4 / 1.6e-4; DG `verlet` 7.2e-5 / 2.4e-4 (67 / 130 s) against 7.9e-5 / 2.2e-4. So MISF53 is
+as good as MIS54 but not better: the [.,o] error of MIS54 is not the dominant time error here.
+Frozen order 3 together with additive order 4 is not reachable with 5 stages (residual 1.5e-5).
+
 **Frozen split for DG** (`src/DGSEM/Euler2D/frozen.jl`, also on terrain):
 - volume (flux differencing): mass and Θ two-point fluxes A_ab v_n, B_ab v_n written as
   (A/ρ_a)(y) ½ m̃_a + (A/ρ_b)(y) ½ m̃_b with the live momentum m of z (the two-point means and

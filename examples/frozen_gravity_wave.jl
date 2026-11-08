@@ -32,8 +32,8 @@ err(q) = all(isfinite, q) ? maximum(abs.(wave(θs(q)) .- wave(yr))) : Inf
 dτ = Dict(:verlet => 0.9 * g.dz / c, :hevi => fast_step(model, q0, :hevi))
 
 steps = (45, 30, 23, 18, 15)                              # Δt = 67 … 200 s
-tabs = (:WSRK3, :MIS4, :MIS4a, :MIS54, :MIS_KW3)
-colors = Dict(:WSRK3 => :gray40, :MIS4 => :darkorange, :MIS4a => :purple, :MIS54 => :seagreen, :MIS_KW3 => :royalblue)
+tabs = (:WSRK3, :MIS4, :MIS4a, :MIS54, :MISF53, :MIS_KW3)
+colors = Dict(:WSRK3 => :gray40, :MIS4 => :darkorange, :MIS4a => :purple, :MIS54 => :seagreen, :MISF53 => :crimson, :MIS_KW3 => :royalblue)
 # (split, fast loop, pressure of the frozen fast part, line style)
 runs = ((:frozen, :hevi, :nonlinear, :solid), (:frozen, :verlet, :nonlinear, :dot),
         (:frozen, :hevi, :derivative, :dashdot), (:linearized, :hevi, :nonlinear, :dash))
@@ -74,7 +74,7 @@ fig2 = Figure(size = (1100, 420))
 ax2 = Axis(fig2[1, 1]; xlabel = "x [km]", ylabel = "θ′ [K]", title = "θ′ at z = 5 km, Δt = 200 s, :hevi at the substep limit")
 lines!(ax2, xs ./ 1e3, yr; color = :black, linewidth = 3, label = "RK4 reference")
 for (k, sty) in (("MIS54 frozen", (:seagreen, :solid)), ("MIS54 linearized", (:seagreen, :dash)),
-                 ("MIS4 frozen", (:darkorange, :solid)), ("MIS_KW3 frozen", (:royalblue, :solid)))
+                 ("MISF53 frozen", (:crimson, :solid)), ("MIS4 frozen", (:darkorange, :solid)), ("MIS_KW3 frozen", (:royalblue, :solid)))
     haskey(sections, k) && all(isfinite, sections[k]) && lines!(ax2, xs ./ 1e3, sections[k]; color = sty[1], linestyle = sty[2], label = k)
 end
 axislegend(ax2; position = :lt)

@@ -149,7 +149,8 @@ end
 """Tables: :MIS2, :MIS3C, :MIS4, :MIS4a (Knoth & Wensch 2014, values as in ClimaTimeSteppers.jl,
 MIS4a with the authors' corrected β₅₁), :WSRK3 (Wicker–Skamarock RK3: β = diag(1/3, 1/2, 1)),
 :MIS_KW3 (Knoth–Wolke RK3 in MIS form, c = 0, 1/3, 3/4), :MIS54 (5 stages, Bauer & Knoth,
-J. Comput. Appl. Math. 387 (2021), Table 2). :LRK4, :LRK3, :LRK2 give Lawson tableaus
+J. Comput. Appl. Math. 387 (2021), Table 2), :MISF53 (MIS54 projected onto the frozen-order-3
+conditions, MethodDesign/). :LRK4, :LRK3, :LRK2 give Lawson tableaus
 (`lawson_tableau`), :EB1, :ETD2, :EB4 ETD tableaus (`etd_tableau`), :EPIRKW3a, :EPIRKW3b,
 :EPIRK4 (`epirk_tableau`), :EAB1 … :EAB4 exponential Adams–Bashforth (`eab_tableau`), so the drivers can select
 them by name."""
@@ -203,5 +204,24 @@ function mis_tableau(name::Symbol)
         α[6,5] =  0.439945196292364; γ[6,5] =  0.148246909195494; β[6,5] =  0.448964988009822
         return mis_from_paper(name, α, β, γ)
     end
+    # MISF53: MIS54 projected (minimum-norm, |Δx| ≈ 0.1) onto all bicoloured order conditions ≤ 3,
+    # i.e. order 3 also for the frozen split N(q) = F(q, q) (MethodDesign/); additive order 3.
+    # Knoth–Wensch C_adv limit ≥ 2.05 for C_sound ≤ 12 (MethodDesign/stability.jl).
+    name == :MISF53 && return MISTableau(name,
+        [0 0 0 0 0;
+         0.051563690870730 0 0 0 0;
+         0.288176208387839 0.237366040355735 0 0 0;
+         0.386426181933435 0.226884120668535 -0.311883003737751 0 0;
+         0.071336206140529 0.439759102553759 0.100672171718086 0.430813910589328 0],
+        [0.224169820125832 0 0 0 0;
+         -0.030923474116757 0.636449295829766 0 0 0;
+         -0.212661135267493 -0.090680928053002 0.403342063320495 0 0;
+         -0.046027730295941 0.354986906394194 0.301752054981687 0.164177159708017 0;
+         -0.039824363933280 -0.062654571166931 -0.092900063675952 0.033041549509142 0.440487189534418],
+        [0 0 0 0 0;
+         0.026055100529186 0 0 0 0;
+         0.259743921769648 0.385911008665460 0 0 0;
+         -0.084812012173229 0.017527045095579 -0.004196238099816 0 0;
+         0.085121165877309 0.059732128761052 -0.256253527165363 0.156391645563470 0])
     error("unknown MIS tableau $name")
 end

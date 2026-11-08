@@ -789,6 +789,29 @@ the family still have to be selected. Frozen order 4 with 6 stages: residuals do
 no exact solution found yet. Further ideas (time-dependent weights $a_{ij}(\lambda)$, pruning of
 trees by the structure of the split) are listed in \code{MethodDesign/README.md}.
 
+\paragraph{Stability-constrained search} (as in Knoth \& Wensch 2014; \code{stability.jl},
+\code{search\_stable.jl}). Criterion: the largest stable $C_\mathrm{adv}$ on the acoustic-advection
+test (C-grid, exact fast stages) for each $C_\mathrm{sound}$. Random frozen-order-3 methods with 4 and 5
+stages are stable only for $C_\mathrm{sound}\le 2$, and the projected MIS4a fails at
+$C_\mathrm{sound}=12$. The minimum-norm projection of MIS54 onto all bicoloured conditions
+$\le3$, \textbf{MISF53} (\code{mis\_tableau(:MISF53)}, $|\Delta x|\approx0.1$), keeps the
+stability of MIS54:
+\begin{center}
+\begin{tabular}{lccccccccc}
+\toprule
+$C_\mathrm{sound}$ & 0 & 1 & 2 & 3 & 4 & 6 & 8 & 10 & 12\\
+\midrule
+MISF53 (frozen 3, additive 3) & 2.05 & 2.20 & 2.45 & 2.45 & 2.40 & 2.20 & 2.50 & 3.00 & 3.00\\
+MIS54 (frozen 2, additive 4) & 2.05 & & 2.30 & & 2.70 & & 2.35 & & 3.00\\
+\bottomrule
+\end{tabular}
+\end{center}
+On the gravity wave with the frozen split MISF53 equals MIS54 (FV \code{hevi}: $1.4\cdot10^{-4}$
+against $1.6\cdot10^{-4}$ at $\dt=130$\,s, both $1.6\cdot10^{-4}$ at 200\,s; DG \code{verlet}: $7.2\cdot10^{-5}$ /
+$2.4\cdot10^{-4}$ against $7.9\cdot10^{-5}$ / $2.2\cdot10^{-4}$ at 67 / 130\,s). The mixed-tree error of
+MIS54 is therefore not the dominant time error on this test. Frozen order 3 together with additive
+order 4 is not reachable with 5 stages (residual $1.5\cdot10^{-5}$).
+
 \paragraph{Frozen split for DG} (also on terrain). Volume: the mass and $\Theta$ two-point fluxes
 $A_{ab}v_n$, $B_{ab}v_n$ are written as $(A/\rho_a)(y)\tfrac12\tilde m_a+(A/\rho_b)(y)\tfrac12\tilde m_b$
 with the live momentum, the pressure $\{p\}$ of the nodal $p(\Theta_z)$, gravity with the frozen ratio

@@ -465,6 +465,8 @@ end
     @test 1.8 < frozen_rates(FrozenToy(false), :MIS54) < 2.3
     @test 1.8 < frozen_rates(FrozenToy(false), :MIS4a) < 2.4
     @test frozen_rates(FrozenToy(false), :MIS_KW3) > 2.8
+    # MISF53 (MIS54 projected onto the bicoloured conditions ≤ 3): frozen order 3
+    @test frozen_rates(FrozenToy(false), :MISF53) > 2.8
     # FV (flat): F(q, q) = N(q), parts, gravity wave against RK4
     gas = CM.Gas()
     ρr, Θr, θr = CM.stratified_reference(gas)

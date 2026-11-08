@@ -21,6 +21,14 @@ Separate environment (Symbolics, Optim, ForwardDiff):
   non-additive F), and the residuals of the MIS tableaus of the package.
 - `search.jl` — numerical search for MIS coefficients that satisfy all bicoloured conditions up to
   order p (LBFGS with AD on Σ residual², then Levenberg–Marquardt with minimum-norm steps).
+- `design_tools.jl` — packing of (α, β, γ), residual vector, projection `refine` onto the order
+  conditions (minimum-norm Levenberg–Marquardt), error constant (norm of the order-(p+1) residuals).
+- `stability.jl` — linear stability on the acoustic-advection test of Knoth & Wensch (2014)
+  (C-grid, exact fast stages): `amplification`, `adv_limit` (largest stable C_adv per C_sound),
+  `stability_penalty`. As a script: the limits of the package tableaus.
+- `search_stable.jl` — stability-constrained search: candidates projected onto the order
+  conditions, Nelder–Mead on Σ max(0, ρ − 1)² over a (C_sound, C_adv) grid plus 10⁻³·error
+  constant²; optional start from a stable package tableau (`… 5 3 4 2.0 MIS54`).
 
 ## Can we derive explicit order conditions for MIS from the B-series theory? Yes.
 
@@ -60,12 +68,29 @@ to its child vertex, the root colour being free).
 
 ## Ideas for new methods
 
-1. **Frozen-order-3 MIS with 4 stages (found).** `search.jl 4 3` finds a whole family of 4-stage
-   methods that satisfy all 10 bicoloured conditions up to order 3 (MIS4/MIS4a satisfy only the 9
-   additive ones … and fail [.,o]). Next: select within the family by
-   - linear stability of the split-explicit step (`MultiRate.LinearAnalysis.max_amplification`
-     on the MISDG/Boussinesq modes at large Courant numbers, with the real fast loops),
-   - small order-4 residuals (error constants), positive stage times d_i, moderate coefficients.
+1. **Frozen order 3 with stability (found: MISF53).** Stability on the Knoth–Wensch test
+   (largest stable C_adv for C_sound = 0, 1, 2, 3, 4, 6, 8, 10, 12; exact fast stages):
+
+   | method | frozen / additive order | error const. | C_adv limits |
+   |---|---|---|---|
+   | MIS4a | 2 / 3 | | 1.95 · 1.70 · 1.65 · 2.05 · 2.95 (C_s = 0, 2, 4, 8, 12) |
+   | MIS54 | 2 / 4 | | 2.05 · 2.30 · 2.70 · 2.35 · 3.00 (C_s = 0, 2, 4, 8, 12) |
+   | random starts, s = 4 / 5 | 3 / 3 | 0.11–0.23 | stable only for C_sound ≤ 2 |
+   | MIS4a projected | 3 / 3 | 0.10 | 1.75 1.60 1.45 1.65 0.00 (C_s = 0, 2, 4, 8, 12) |
+   | MIS4a projected + Nelder–Mead | 3 / 3 | 0.10 | 1.90 1.80 1.85 1.80 1.25 1.35 1.70 2.00 0.55 |
+   | **MISF53** = MIS54 projected | **3 / 3** | **0.024** | **2.05 2.20 2.45 2.45 2.40 2.20 2.50 3.00 3.00** |
+
+   The frozen-order-3 family is large, but its stable part is small: random starts never reached it.
+   The minimum-norm projection of MIS54 onto the 10 bicoloured conditions moves the coefficients
+   by only |Δx| ≈ 0.1 and keeps the stability of MIS54 (`TimeStepping.mis_tableau(:MISF53)`).
+   The 4-stage family seems to have no member stable at C_sound = 12. Frozen order 3 *and*
+   additive order 4 with 5 stages: not found (residual 1.5e-5).
+   Gravity wave, frozen split, wave error [K] at Δt = 67/100/130/167/200 s (FV `hevi`):
+   MISF53 1.1e-4 9.6e-5 1.4e-4 1.4e-4 1.6e-4, MIS54 1.1e-4 9.6e-5 1.6e-4 1.2e-4 1.6e-4; DG
+   (`verlet`, 67/130 s): MISF53 7.2e-5 / 2.4e-4, MIS54 7.9e-5 / 2.2e-4. MISF53 is as good as MIS54
+   but not better here: on this test the time error is dominated by other terms, not by the
+   mixed tree [.,o] that MIS54 misses. MISF43 (4 stages, earlier, not stability-selected) is
+   unstable (amplification 1.035–1.11).
 2. **Frozen order 4.** 26 conditions at order 4. 6 stages give 51 free coefficients; the search
    reaches residuals 1e-6 … 1e-4 so far, not zero — either more stages or the time-dependent
    weights below are needed.
@@ -80,7 +105,8 @@ to its child vertex, the root colour being free).
    actual splits — fewer than for a general F.
 5. **Error-optimal and stability-optimal families** as in Bauer & Knoth (MIS54): minimize the
    order-(p+1) residuals subject to stability on the acoustic-advection test problem, now with the
-   mixed trees included.
+   mixed trees included (`search_stable.jl`, first result MISF53 above; next: 6 stages, frozen
+   order 3 with additive order 4, and the real fast loops in the stability test).
 6. **Lawson/ETD analogues of the frozen form**: replace the constant weights by φ-function weights
    in the stage-ODE form (the polynomial forcing of `etd.jl`), conditions again from the recursion
    with polynomial a_ij(λ).
