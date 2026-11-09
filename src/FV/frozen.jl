@@ -9,7 +9,8 @@
 # from U, W of y). The pressure follows the form of N (`FV_PRESSURE_FORM`, rhs.jl):
 #   :gradp    p(Θ_z), the full equation of state (nothing frozen)
 #   :product  ∇p = (dp/dΘ)_f(y) ∇Θ_z, the face derivative (mean of the cell values γ p/Θ) frozen
-# In both cases F(q, q) = N(q); with :product the fast part is linear in z. (Freezing p/Θ,
+# No background state is subtracted (full p and ρ; models built with FV_HYDRO_REFERENCE are
+# rejected). In both cases F(q, q) = N(q); with :product the fast part is linear in z. (Freezing p/Θ,
 # p = (p/Θ)(y) Θ_z, was tried and removed: it puts (γ-1)/γ of the acoustic stiffness into the frozen
 # argument and is stable only for c Δt/Δz ≲ 1, see docs/FINDINGS.md §11. The earlier secant
 # (p_r - p_l)/(Θ_r - Θ_l) of the :gradp scheme is replaced by the :product scheme, where the
@@ -36,7 +37,7 @@ function frozen_data!(C, S, m::FVModel, q)
     c = m.cache
     u, w, θ = c.u, c.w, c.θ
     mode = FV_PRESSURE_FORM[]
-    mode === :product && _no_background(m)
+    _no_background(m)
     @inbounds for k in 1:nz, i in 1:nx
         ρ = q[iρ(g, i, k)]
         θ[i, k] = q[iΘ(g, i, k)] / ρ
@@ -129,7 +130,7 @@ function frozen_fast!(out, m::FVModel, C, z, part::Symbol, F)
     if (rU || rW) && mode !== :product
         @inbounds for k in 1:nz, i in 1:nx
             Θ = z[iΘ(g, i, k)]
-            pp[i, k] = pressure(m.gas, Θ) - m.pbal[i, k]
+            pp[i, k] = pressure(m.gas, Θ)
         end
     end
     @inbounds for k in 1:nz, i in 1:nx
@@ -150,7 +151,7 @@ function frozen_fast!(out, m::FVModel, C, z, part::Symbol, F)
         end
         rU && hor && (out[iU(g, i, k)] = -_dp(m, C, z, pp, mode, i, k, 1) / dx)
         if rW && ver && k > 1
-            ρw = 0.5 * (z[iρ(g, i, k - 1)] - m.ρbal[i, k-1] + z[iρ(g, i, k)] - m.ρbal[i, k])
+            ρw = 0.5 * (z[iρ(g, i, k - 1)] + z[iρ(g, i, k)])
             out[iW(g, i, k)] = -_dp(m, C, z, pp, mode, i, k, 2) / dz - grav * ρw
         end
     end

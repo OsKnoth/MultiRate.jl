@@ -36,7 +36,7 @@ p=P(\Theta)=p_0\Big(\frac{R\,\Theta}{p_0}\Big)^{\gamma},\qquad P'(\Theta)=\frac{
 \end{align*}
 plus a Rayleigh sponge $-\alpha(z)(q-q_{\rm target})$ near the top (and optionally at the sides). No
 background state is subtracted (the optional \code{FV\_HYDRO\_REFERENCE} subtracts $p_{\rm ref}$,
-$\rho_{\rm ref}$ in the momentum equations; it is off by default and not used here).
+$\rho_{\rm ref}$ in the momentum equations; it is off by default, and the frozen split rejects such models).
 
 \section{Grid and full operator $N$}
 Flat C-grid, $n_x\times n_z$ cells of size $\Delta x\times\Delta z$, periodic in $x$, walls at the bottom and
