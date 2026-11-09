@@ -134,10 +134,11 @@ $c\,\dt/\Delta z\lesssim1$.
 \item With \code{:derivative} the fast part is linear in $z$: $F(y,z)=L(y)z+S(y)$, with the coefficients
   $\tilde\theta$, $P'_f$ of $y$; with \code{:nonlinear} it keeps the cellwise $P(\Theta_z)$.
 \item Mass and $\Theta$ are conserved (flux form), the momentum equations are in flux form as well.
-\item Only the transported $\theta$ is frozen in the $\Theta$ flux; the mass fluxes $U$, $W$ are live. Linearized
-  about a wind $\bar u$ the $\Theta$ flux splits into $\bar\theta\,\delta U=\bar\theta(\bar u\,\delta\rho+\bar\rho\,\delta u)$
-  (fast) and $\bar U\,\delta\theta=\bar u(\delta\Theta-\bar\theta\,\delta\rho)$ (slow): density is advected entirely in the
-  fast part, the advection of $\Theta$ is split. See Section~\ref{sec:mis}.
+\item The $\Theta$ flux of the fast part is simply the live momentum times the frozen $\theta$,
+  $\tilde\theta(y)\,U_z$, $\tilde\theta(y)\,W_z$; the velocity is not formed. Linearized,
+  $\delta(\tilde\theta U)=\bar\theta\,\delta U+\bar U\,\delta\theta$: the term $\bar\theta\,\delta U$ is in the fast part, the
+  term $\bar U\,\delta\theta$ enters only through the frozen argument (slow). The mass flux $\delta U$ is entirely fast.
+  See Section~\ref{sec:mis}.
 \end{enumerate}
 
 \section{Fast integrators}
@@ -193,7 +194,7 @@ $N-L=\partial F/\partial y$. Linearized about a hydrostatic state with uniform w
 invariant under shifts of the columns, and one horizontal Fourier mode gives a block over the whole column
 (\code{MethodDesign/app\_stability.jl}). On the gravity-wave grid ($\Delta x=2.5$\,km, $n_z=16$) the methods
 that are stable on the one-dimensional acoustic-advection test of Knoth and Wensch grow by 5--25\,\% per step
-already from $C_{\rm adv}=\bar u\dt/\Delta x\approx0.4$: the coupling of Section~5, item 4, is not present in that test.
+already from $C_{\rm adv}=\bar u\dt/\Delta x\approx0.4$: the split of the $\Theta$ flux into $\bar\theta\,\delta U$ (fast) and $\bar U\,\delta\theta$ (slow), Section~5, item 4, is not present in that test.
 Methods designed on the column blocks (\code{MethodDesign/search\_app.jl}):
 \begin{center}\footnotesize
 \begin{tabular}{lcc}
