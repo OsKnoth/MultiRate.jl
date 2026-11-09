@@ -3,7 +3,7 @@
 # N(q) = F(q, q) with
 #   fast (evolving z, coefficients from y):
 #     ρ_t = -∂x U - ∂z W,   Θ_t = -∂x(θx(y) U) - ∂z(θz(y) W),
-#     U_t = -∂x p'(Θ),      W_t = -∂z p'(Θ) - g ρ',     sponge -damp (z - qtarget) on all rows,
+#     U_t = -∂x p(Θ),       W_t = -∂z p(Θ) - g ρ,       sponge on W (`sponge!`, sponge.jl),
 #   slow (frozen y): momentum advection ∂x(U u) + ∂z(W u), ∂x(U w) + ∂z(W w).
 # θx, θz are the upwinded face values of θ = Θ/ρ of the full operator (3rd order, upwind direction
 # from U, W of y). The pressure follows the form of N (`FV_PRESSURE_FORM`, rhs.jl):
@@ -157,19 +157,13 @@ function frozen_fast!(out, m::FVModel, C, z, part::Symbol, F)
     end
     @inbounds for k in 1:nz, i in 1:nx
         if fT
-            for j in (iρ(g, i, k), iΘ(g, i, k))
-                out[j] += F[j] - m.damp[j] * (z[j] - m.qtarget[j])
-            end
+            out[iρ(g, i, k)] += F[iρ(g, i, k)]
+            out[iΘ(g, i, k)] += F[iΘ(g, i, k)]
         end
-        if fU
-            j = iU(g, i, k)
-            out[j] += F[j] - m.damp[j] * (z[j] - m.qtarget[j])
-        end
-        if fW && k > 1
-            j = iW(g, i, k)
-            out[j] += F[j] - m.damp[j] * (z[j] - m.qtarget[j])
-        end
+        fU && (out[iU(g, i, k)] += F[iU(g, i, k)])
+        fW && k > 1 && (out[iW(g, i, k)] += F[iW(g, i, k)])
     end
+    fW && sponge!(out, m, z)
     return out
 end
 

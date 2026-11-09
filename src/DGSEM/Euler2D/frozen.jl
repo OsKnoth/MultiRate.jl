@@ -211,10 +211,11 @@ function frozen_fast!(out, m::Euler2DModel, C, z, part::Symbol, F)
     @inbounds for e in 1:Ne, r in 1:NV, j in 1:np, i in 1:np
         k = node_iq(np, e, r, i, j)
         if (r == 1 || r == 4) ? th : mo
-            out[k] += F[k] - m.nres[k] - m.damp[k] * (z[k] - m.qtarget[k])
+            out[k] += F[k] - m.nres[k]
         else
             out[k] = 0.0
         end
     end
+    mo && sponge!(out, m, z)
     return out
 end

@@ -52,6 +52,7 @@ export FV_HYDRO_REFERENCE, FV_PRESSURE_FORM, FVGrid, CutCellFVGrid, FVModel, FVF
 include("grid.jl")
 include("cutcell_grid.jl")
 include("model.jl")
+include("sponge.jl")
 include("advection.jl")
 include("rhs.jl")
 include("fast_operator.jl")

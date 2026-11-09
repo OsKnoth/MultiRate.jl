@@ -143,7 +143,8 @@ function rhs_nonlinear!(out, m::Euler2DModel, q::AbstractVector)
         end
     end
     @inbounds for k in eachindex(out)
-        out[k] -= m.nres[k] + m.damp[k] * (q[k] - m.qtarget[k])
+        out[k] -= m.nres[k]
     end
+    sponge!(out, m, q)
     return out
 end

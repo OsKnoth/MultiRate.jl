@@ -72,6 +72,7 @@ const NV = 4
 include("metric.jl")
 include("grid.jl")
 include("model.jl")
+include("sponge.jl")
 include("rhs.jl")
 include("fast_operator.jl")
 include("fast_split.jl")

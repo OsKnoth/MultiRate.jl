@@ -121,9 +121,7 @@ function rhs_nonlinear!(out, m::FVModel, q::AbstractVector)
             out[iW(g, i, k)] -= dpz / dz + grav * ρw
         end
     end
-    @inbounds for j in eachindex(out)
-        out[j] -= m.damp[j] * (q[j] - m.qtarget[j])
-    end
+    sponge!(out, m, q)
     return out
 end
 
@@ -311,8 +309,6 @@ function rhs_terrain!(out, m::FVModel, q)
             out[iW(g, i, k)] = -(divx + (Fstop - Fsbot) / dη) / J - m.gas.g * ρpert
         end
     end
-    @inbounds for j in eachindex(out)
-        out[j] -= m.damp[j] * (q[j] - m.qtarget[j])
-    end
+    sponge!(out, m, q)
     return out
 end

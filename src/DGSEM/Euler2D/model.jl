@@ -15,7 +15,7 @@ struct Euler2DModel
     ρref::Array{Float64,3}
     Θref::Array{Float64,3}
     pref::Array{Float64,3}
-    damp::Vector{Float64}       # Rayleigh damping rate [1/s] per unknown (sponge), in N
+    damp::Vector{Float64}       # Rayleigh damping rate [1/s] per unknown (sponge, m_z rows only), in N
     qtarget::Vector{Float64}    # state the sponge relaxes to
     vflux::Symbol
     gflux::Symbol
@@ -57,32 +57,6 @@ function Euler2DModel(mesh::Mesh2D, gas::Gas, ρref, Θref; volume_flux::Symbol 
     return m
 end
 
-"""
-    with_sponge(model, qtarget; zD, αtop=0.05, xwidth=0.0, αside=αtop)
-
-Rayleigh damping -α(x,z) (q - qtarget) added to N (slow part):
-top layer α = αtop sin²(π/2 (z - zD)/(H - zD)) for z > zD (Klemp & Lilly 1978 type), and for
-xwidth > 0 lateral layers of that width at both ends of the periodic channel,
-α = αside sin²(π/2 d/xwidth), d = distance into the layer. Stable for α Δt ≲ 1.
-"""
-function with_sponge(m::Euler2DModel, qtarget::AbstractVector; zD::Real, αtop::Real = 0.05,
-                     xwidth::Real = 0.0, αside::Real = αtop)
-    M = m.mesh
-    α = zeros(M.np, M.np, M.Ne)
-    x0, x1 = M.x0, M.x0 + M.Lx
-    for k in eachindex(α)
-        z, x = M.Z[k], M.X[k]
-        a = z > zD ? αtop * sin(π / 2 * (z - zD) / (M.H - zD))^2 : 0.0
-        if xwidth > 0
-            d = max(x0 + xwidth - x, x - (x1 - xwidth))
-            d > 0 && (a = max(a, αside * sin(π / 2 * min(d, xwidth) / xwidth)^2))
-        end
-        α[k] = a
-    end
-    damp = vec(reshape(repeat(reshape(α, M.np, M.np, 1, M.Ne), 1, 1, NV, 1), :))
-    return Euler2DModel(M, m.gas, m.nq, m.ρref, m.Θref, m.pref, damp, Vector{Float64}(qtarget), m.vflux, m.gflux, m.clmars,
-                        m.nres, m.cache, m.fastref)
-end
 
 # (stratified_reference is defined in Common)
 

@@ -351,9 +351,7 @@ function rhs_cutcell!(out,m::FVModel{<:CutCellFVGrid},q)
             out[iW(g,i,k)]=adv+force
         end
     end
-    @inbounds for j in eachindex(out)
-        out[j]-=m.damp[j]*(q[j]-m.qtarget[j])
-    end
+    sponge!(out, m, q)
     return out
 end
 
