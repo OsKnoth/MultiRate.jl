@@ -138,7 +138,59 @@ is the volume term alone, $r_a=P'(\Theta_a)\,(\mathcal G\Theta)_a+\rho_a g\,\mat
 pointwise error of the degree-$p$ differentiation of $\Theta(z)$, of order $\Delta z^{p}$ per element
 (spectral in $p$). An initial state in exact discrete balance is obtained by solving
 $P'(\Theta_a)(\mathcal G\Theta)_a=-\rho_a g$ for $\rho_a$ at given $\Theta$ (nodewise, since the operator
-acts on $\Theta$ only), which needs no change of the scheme.
+acts on $\Theta$ only), which needs no change of the scheme. Section~\ref{sec:wb} gives a variant that
+is exactly balanced for the isothermal and the constant-$\theta$ atmosphere, still without subtraction.
+
+\section{Well-balanced variant}\label{sec:wb}
+Artiano, Knoth, Spichtinger, Ranocha (\emph{Structure-preserving high-order methods for the
+compressible Euler equations in potential temperature formulation for atmospheric flows},
+arXiv:2509.10311) obtain well-balanced DGSEM schemes without any background state: gravity
+$-\rho\nabla\phi$ ($\phi=gz$ the geopotential, a given function) is discretized as a
+non-conservative two-point term $\bar\rho_{ab}\jump{\phi}_{ab}$, the pressure by the two-point flux
+$\avg p$, and the mean $\bar\rho$ is chosen such that $\bar\rho\jump\phi=-\jump p$ holds exactly for the
+hydrostatic state:
+\[
+\text{isothermal: }\ \bar\rho=\avg\rho_{\log}=\frac{\jump\rho}{\jump{\log\rho}},\qquad
+\text{constant }\theta:\ \ \bar\rho=\avg\rho_\gamma=\frac{\gamma-1}{\gamma}\,
+\frac{\jump{\rho^\gamma}}{\jump{\rho^{\gamma-1}}}.
+\]
+(Isothermal: $p=RT\rho$, $\jump{\log\rho}=-\jump\phi/(RT)$, so $\avg\rho_{\log}\jump\phi=-RT\jump\rho=-\jump p$.
+Constant $\theta$: $p=K\theta^\gamma\rho^\gamma$ and $\tfrac{\gamma}{\gamma-1}K\theta^\gamma\rho^{\gamma-1}+\phi=\mathrm{const}$,
+so $\avg\rho_\gamma\jump\phi=-K\theta^\gamma\jump{\rho^\gamma}=-\jump p$.) Since $\phi$ is continuous, gravity has no
+surface term.
+
+\paragraph{Product form with two-point coefficients.} The product form fits this exactly if $\mathrm dp/\mathrm d\Theta$
+is frozen as a \emph{two-point secant} where it appears. Along a $\xi$ line (pair $a=(i,j)$, $b=(k,j)$,
+$\avg{J\xi}_{ab}=\tfrac12\big((J\xi_x,J\xi_z)_a+(J\xi_x,J\xi_z)_b\big)$; $\eta$ lines likewise):
+\begin{align*}
+(\text{pressure})_a&=\frac1{J_a}\sum_k D_{ik}\,P'_{ab}\,\jump{\Theta}_{ab}\,\avg{J\xi}_{ab},\qquad
+P'_{ab}=\frac{\jump p_{ab}}{\jump\Theta_{ab}}\quad\big(\to P'(\Theta)\text{ for }\Theta_a=\Theta_b\big),\\
+(\text{gravity})_a&=\frac1{J_a}\sum_k D_{ik}\,\bar\rho_{ab}\,\jump{\phi}_{ab}\,\avg{J\xi}_{ab}.
+\end{align*}
+With the secant, $P'_{ab}\jump\Theta_{ab}=\jump p_{ab}$, and since $2\avg p_{ab}=2p_a+\jump p_{ab}$ and
+$\sum_{\xi,\eta}\sum_kD_{ik}\avg{J\xi}_{ab}=0$ (discrete metric identities), the pressure term is identical to the
+conservative flux differencing $\frac1{J_a}\sum_k2D_{ik}\avg p_{ab}\avg{J\xi}_{ab}$: the product form loses nothing.
+For the hydrostatic state every pair vanishes separately, $P'_{ab}\jump\Theta_{ab}+\bar\rho_{ab}\jump\phi_{ab}
+=\jump p_{ab}+\bar\rho_{ab}\jump\phi_{ab}=0$, so the volume residual is zero for any degree and mesh. At the faces
+the state is continuous and at rest: $\jump\Theta=0$, $m^*=0$, $\Theta^*=\Theta_L$, and the pressure surface term
+vanishes as well. With the face secant $P'_{L*}=\big(P(\Theta^*)-P(\Theta_L)\big)/(\Theta^*-\Theta_L)$ the surface term
+$P'_{L*}(\Theta^*-\Theta_L)=p(\Theta^*)-p_L$ is the conservative one, too.
+
+\paragraph{Frozen form.} Freeze the coefficients where they appear, from $y$:
+\[
+P'_{ab}(y)=\frac{\jump{p_y}_{ab}}{\jump{\Theta_y}_{ab}},\qquad
+R_{ab}(y)=\frac{\bar\rho_{ab}(y)}{\avg{\rho_y}_{ab}},\qquad P'_{L*}(y),
+\]
+and take $\jump{\Theta_z}_{ab}$, $\Theta^*_z-\Theta_{z,L}$ and $R_{ab}\avg{\rho_z}_{ab}\jump\phi_{ab}$ live. The fast part stays
+linear in $z$, $F(q,q)=N(q)$ holds, and at $y=z=q$ hydrostatic the scheme is exactly balanced. This is the
+same secant as in the FV frozen split (\code{FV\_FROZEN\_PRESSURE = :derivative}); the frozen gravity ratio $R$
+is the one of the present conservative implementation.
+
+\paragraph{Other stratifications.} For a general hydrostatic profile (e.g.\ constant Brunt--V\"ais\"al\"a
+frequency, the gravity-wave tests) neither mean is exact; the residual is then of the truncation
+order of the mean, $\bar\rho-\rho^{\rm exact}_{ab}=O(\Delta z^2)$ per pair. Choosing $\avg\rho_\gamma$ (exact for
+constant $\theta$) is the natural default for the troposphere; a profile-adapted mean would have to be a
+mean of $\rho$ alone (horizontal pairs have $\jump\phi=0$ and must not see it).
 
 \section{Summary of the split}
 \begin{center}
@@ -148,8 +200,8 @@ term & frozen from $y$ & live from $z$\\
 \midrule
 volume mass flux & -- & $\avg{m}$\\
 volume $\Theta$ flux & $\avg{\theta}$ & $\avg{m}$\\
-pressure (volume and surface) & nodal $P'=\gamma p/\Theta$ & $\mathcal G\Theta$, $\Theta^*$\\
-gravity & -- & $\rho$\\
+pressure (volume and surface) & nodal $P'=\gamma p/\Theta$ (well-balanced: secants $P'_{ab}$, $P'_{L*}$) & $\mathcal G\Theta$ ($\jump\Theta_{ab}$), $\Theta^*$\\
+gravity & -- (well-balanced: $R_{ab}=\bar\rho_{ab}/\avg{\rho}_{ab}$) & $\rho$ ($\avg\rho_{ab}$)\\
 face $m^*$, $\Theta^*$ & $c_f/\theta_f$, $\theta_f/c_f$ & $\avg{m_n},\jump\Theta,\avg\Theta,\jump{m_n}$\\
 face $\Theta$ flux & $\theta_{\rm up}$, upwind side & $m^*$\\
 \midrule
