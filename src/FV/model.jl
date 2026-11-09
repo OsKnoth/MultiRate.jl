@@ -98,7 +98,9 @@ end
 """
     with_sponge(model, qtarget; zD, αtop=0.05, xwidth=0.0, αside=αtop)
 
-Rayleigh damping -α (q - qtarget) above zD (sin² profile) and optionally in lateral layers.
+Rayleigh damping -α (W - W_target) of the vertical momentum only, above zD (sin² profile) and
+optionally in lateral layers; ρ, Θ and U are not damped (only the W entries of qtarget are used,
+normally W_target = 0).
 """
 function with_sponge(m::FVModel, qtarget::AbstractVector; zD::Real, αtop::Real = 0.05,
                      xwidth::Real = 0.0, αside::Real = αtop)
@@ -112,11 +114,8 @@ function with_sponge(m::FVModel, qtarget::AbstractVector; zD::Real, αtop::Real 
         a
     end
     damp = zeros(m.nq)
-    for k in 1:g.nz, i in 1:g.nx
-        damp[iρ(g, i, k)] = rate(g.xc[i], g.Zc[i, k])
-        damp[iΘ(g, i, k)] = rate(g.xc[i], g.Zc[i, k])
-        damp[iU(g, i, k)] = rate(g.xf[i], g.Zx[i, k])
-        k > 1 && (damp[iW(g, i, k)] = rate(g.xc[i], g.Zf[i, k]))
+    for k in 2:g.nz, i in 1:g.nx
+        damp[iW(g, i, k)] = rate(g.xc[i], g.Zf[i, k])
     end
     return FVModel(g, m.gas, m.nq, m.ρref, m.Θref, m.pref, m.ρbal, m.pbal, damp, Vector{Float64}(qtarget), m.cache, m.fastref)
 end

@@ -34,7 +34,7 @@ p=P(\Theta)=p_0\Big(\frac{R\,\Theta}{p_0}\Big)^{\gamma},\qquad P'(\Theta)=\frac{
 \partial_tU+\partial_x(Uu)+\partial_z(Wu)+\partial_xp&=0,\\
 \partial_tW+\partial_x(Uw)+\partial_z(Ww)+\partial_zp+\rho g&=0,
 \end{align*}
-plus a Rayleigh sponge $-\alpha(z)(q-q_{\rm target})$ near the top (and optionally at the sides). No
+plus a Rayleigh sponge on the vertical momentum only, $-\alpha(z)\,W$, near the top (and optionally at the sides). No
 background state is subtracted (the optional \code{FV\_HYDRO\_REFERENCE} subtracts $p_{\rm ref}$,
 $\rho_{\rm ref}$ in the momentum equations; it is off by default, and the frozen split rejects such models).
 
@@ -98,7 +98,7 @@ transported velocities as upwind face values (the same reconstruction); $A_W$ us
 \partial_tU&=-\frac{\Pi_{i,k}-\Pi_{i-1,k}}{\Delta x},\qquad
 \partial_tW=-\frac{\Pi_{i,k}-\Pi_{i,k-1}}{\Delta z}-g\,\avg{\rho_z}_z,
 \end{align*}
-plus the sponge on all rows, with the pressure difference across a face
+plus the sponge $-\alpha W$ in the $W$ rows, with the pressure difference across a face
 \[
 \text{\code{:gradp}:}\quad \Pi_r-\Pi_l=P(\Theta_{z,r})-P(\Theta_{z,l}),\qquad
 \text{\code{:product}:}\quad \Pi_r-\Pi_l=P'_f(y)\,\big(\Theta_{z,r}-\Theta_{z,l}\big).
