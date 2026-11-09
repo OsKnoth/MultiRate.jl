@@ -29,7 +29,7 @@ function with_sponge(m::Euler2DModel, qtarget::AbstractVector; zD::Real, αtop::
     D4[:, :, 3, :] .= α                          # m_z only
     damp = vec(D4)
     return Euler2DModel(M, m.gas, m.nq, m.ρref, m.Θref, m.pref, damp, Vector{Float64}(qtarget), m.vflux, m.gflux, m.clmars,
-                        m.nres, m.cache, m.fastref)
+                        m.cache, m.fastref)
 end
 
 """Add the sponge -α (m_z - m_z,target) to the m_z rows of out (no other rows)."""

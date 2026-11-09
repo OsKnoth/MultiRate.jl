@@ -15,7 +15,7 @@ Full operator N (DGSEM, strong form):
           (Artiano, Knoth, Spichtinger, Ranocha 2025) or :kg (Kennedy–Gruber)
   gravity non-conservative two-point term ρ_avg (φ_k - φ_i), φ = g z, ρ_avg logarithmic
           (:waruszewski, default), Stolarsky (:artiano) or arithmetic (:souza) mean, as in
-          TrixiAtmo; the residual of the reference state is subtracted (exact balance)
+          TrixiAtmo; no background state is subtracted
   faces   LMARS along the face normal; walls by mirror state
 
 Fast operator L (frozen at the full 2D state qⁿ, made continuous by DSS):

@@ -135,13 +135,19 @@ end
 @testset "Euler2D: x–z slice with terrain" begin
     gas = V3.Gas()
     ρr, Θr, θr = E2.stratified_reference(gas; θ0 = 300.0, N = 0.01)
+    # isothermal atmosphere (T = 250 K): exactly at rest with the logarithmic gravity mean
+    # (:waruszewski, default) and no background state subtracted (Artiano et al.)
+    Tiso = 250.0
+    ρi(z) = 1e5 / (gas.R * Tiso) * exp(-gas.g * z / (gas.R * Tiso))
+    Θi(z) = gas.p00 / gas.R * (gas.R * Tiso * ρi(z) / gas.p00)^(1 / gas.γ)
     for zs in (x -> 0.0, x -> 400.0 * exp(-((x - 10e3) / 2e3)^2))
         M = E2.Mesh2D(5, 3, 3, 20e3, 10e3; zs = zs)
         @test maximum(abs(sum(M.D[i, k] * M.Jξx[k, j, e] + M.D[j, k] * M.Jηx[i, k, e] for k in 1:M.np))
                       for i in 1:M.np, j in 1:M.np, e in 1:M.Ne) < 1e-9                    # metric identities
         m = E2.Euler2DModel(M, gas, ρr, Θr)
+        qi = E2.project2d(m, (x, z) -> (ρi(z), 0.0, 0.0, Θi(z)))
+        @test maximum(abs.(E2.rhs_nonlinear(m, qi))) < 1e-12                               # rest state (isothermal)
         qr = E2.project2d(m, (x, z) -> (ρr(z), 0.0, 0.0, Θr(z)))
-        @test maximum(abs.(E2.rhs_nonlinear(m, qr))) < 1e-12                               # rest state
         q = E2.project2d(m, (x, z) -> (ρr(z) * (1 - 0.01 * exp(-((x - 8e3)^2 + (z - 4e3)^2) / 2e3^2)),
                                        10.0 * ρr(z), 0.0, Θr(z)))
         Nq = E2.rhs_nonlinear(m, q)
@@ -186,7 +192,7 @@ end
         @test e[2] < 0.05 * dev
         @test rate(e...) > 1.7
     end
-    qb = E2.project2d(m, (x, z) -> (ρr(z), 0.0, 0.0, Θr(z)))
+    qb = E2.project2d(m, (x, z) -> (ρi(z), 0.0, 0.0, Θi(z)))                                  # isothermal rest
     q = V3.run_mis(m, qb, 10.0, 3; tab = V3.mis_tableau(:MIS4), nsub = 12, fast = :hevi)
     @test maximum(abs.(q .- qb) ./ max.(abs.(qb), 1.0)) < 1e-10                              # well balanced
 

@@ -13,7 +13,7 @@
 #   fast:  m_f = (ρ_up/2ρ_L) m_nL + (ρ_up/2ρ_R) m_nR - ρ_up/(2ρ_m c_m) (p_R - p_L), θ_up m_f,
 #          p_s with ρ_m c_m/(2ρ) m_n, the inner m·ñ, θ(y) m·ñ, p ñ (all frozen coefficients from y)
 #   slow:  m_f(y) u_up(y) and the inner m u_ñ(y)
-# Walls (mirror state): p_s = p + c m_n (c the LMARS sound speed of y). Reference residual and
+# Walls (mirror state): p_s = p + c m_n (c the LMARS sound speed of y). No background state; the
 # sponge are in the fast part. F(q, q) = N(q) exactly; the fast part is linear in (ρ, m, Θ) of z
 # except for the nodal p(Θ_z).
 
@@ -135,7 +135,7 @@ function frozen_data!(C, S, m::Euler2DModel, q)
     return C, S
 end
 
-"""Fast part F_f(C, z) + F (with reference residual and sponge) on the rows of part
+"""Fast part F_f(C, z) + F (and the sponge on m_z) on the rows of part
 (:thermo = ρ, Θ; :momentum = m_x, m_z; :all)."""
 function frozen_fast!(out, m::Euler2DModel, C, z, part::Symbol, F)
     M = m.mesh
@@ -211,7 +211,7 @@ function frozen_fast!(out, m::Euler2DModel, C, z, part::Symbol, F)
     @inbounds for e in 1:Ne, r in 1:NV, j in 1:np, i in 1:np
         k = node_iq(np, e, r, i, j)
         if (r == 1 || r == 4) ? th : mo
-            out[k] += F[k] - m.nres[k]
+            out[k] += F[k]
         else
             out[k] = 0.0
         end

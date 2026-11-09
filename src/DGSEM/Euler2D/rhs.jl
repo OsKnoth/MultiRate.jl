@@ -142,9 +142,6 @@ function rhs_nonlinear!(out, m::Euler2DModel, q::AbstractVector)
             ez == 1 && wall_nl!(out, m, q, i, 1, e, -M.Jηx[i, 1, e], -M.Jηz[i, 1, e], w[1])
         end
     end
-    @inbounds for k in eachindex(out)
-        out[k] -= m.nres[k]
-    end
     sponge!(out, m, q)
     return out
 end
