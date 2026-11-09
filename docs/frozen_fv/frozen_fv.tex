@@ -16,8 +16,9 @@ For split-explicit (MIS) time integration with a \emph{frozen} right-hand side, 
 first argument $y$ is frozen at the stage values and the second $z$ evolves in the fast loop. This note
 describes the split of the finite-volume discretization on the Arakawa C-grid
 (\code{src/FV/frozen.jl}, flat grids): the potential temperature at the faces and, optionally, the
-derivative $\mathrm dp/\mathrm d\Theta$ at the faces are frozen, the momentum advection is the slow part. With the
-frozen $\mathrm dp/\mathrm d\Theta$ the fast part is linear in $z$ and its vertically implicit (HEVI) step is a
+derivative $\mathrm dp/\mathrm d\Theta$ at the faces are frozen, the momentum advection is the slow part. Two FV
+schemes are provided, with the pressure gradient $\nabla p$ or in product form $(\mathrm dp/\mathrm d\Theta)\nabla\Theta$; for the
+product form the analytic $\mathrm dp/\mathrm d\Theta$ is frozen, the fast part is linear in $z$ and its vertically implicit (HEVI) step is a
 tridiagonal solve per column. A well-balanced variant without background subtraction, following
 Artiano et al., is given, and the consequences for the stability of MIS methods are summarized.
 \end{abstract}
@@ -68,7 +69,16 @@ stencil, the centred mean $\tfrac12(a_i+a_{i+1})$ is used.
 \partial_tU_{i-1/2,k}&=-A_U-\frac{p_{i,k}-p_{i-1,k}}{\Delta x},\\
 \partial_tW_{i,k-1/2}&=-A_W-\frac{p_{i,k}-p_{i,k-1}}{\Delta z}-g\,\frac{\rho_{i,k-1}+\rho_{i,k}}2,
 \end{align*}
-$p_{i,k}=P(\Theta_{i,k})$. The momentum advection $A_U$, $A_W$ is in flux form with the transporting mass fluxes
+$p_{i,k}=P(\Theta_{i,k})$ (scheme \code{:gradp}, the default of \code{FV\_PRESSURE\_FORM}). The product-form
+scheme \code{:product} replaces the pressure differences by
+\[
+p_{i,k}-p_{i-1,k}\ \to\ P'_{i-1/2,k}\,(\Theta_{i,k}-\Theta_{i-1,k}),\qquad
+P'_{i-1/2,k}=\tfrac12\big(P'(\Theta_{i-1,k})+P'(\Theta_{i,k})\big),\quad P'(\Theta)=\frac{\gamma P(\Theta)}{\Theta},
+\]
+and likewise in $z$: the derivative is computed analytically in the cells and averaged to the face. It is
+defined for all neighbouring values (a secant $\jump p/\jump\Theta$ is not, for equal values), and its pressure
+difference differs from $\jump p$ by $O(\jump\Theta^3)$. Both schemes use the full $p$ and $\rho$, no background
+state. The momentum advection $A_U$, $A_W$ is in flux form with the transporting mass fluxes
 averaged to the momentum control volumes (e.g.\ $\bar U_{i,k}=\tfrac12(U_{i-1/2,k}+U_{i+1/2,k})$) and the
 transported velocities as upwind face values (the same reconstruction); $A_W$ uses the centred mean next to the walls.
 
@@ -77,13 +87,8 @@ transported velocities as upwind face values (the same reconstruction); $A_W$ us
 \begin{itemize}
 \item $\tilde\theta_x(y)$, $\tilde\theta_z(y)$: the upwinded face values of $\theta$ of the full operator, the upwind
   direction from $U$, $W$ of $y$;
-\item optionally (\code{FV\_FROZEN\_PRESSURE = :derivative}) the face secants of the equation of state,
-\[
-P'_{i-1/2,k}(y)=\frac{P(\Theta_{i,k})-P(\Theta_{i-1,k})}{\Theta_{i,k}-\Theta_{i-1,k}},\qquad
-P'_{i,k-1/2}(y)=\frac{P(\Theta_{i,k})-P(\Theta_{i,k-1})}{\Theta_{i,k}-\Theta_{i,k-1}},
-\]
-  with $\gamma p/\Theta$ at the mean $\Theta$ if the two values are nearly equal. The secant reproduces the
-  pressure difference of $N$ exactly: $P'_f(y)\jump{\Theta_y}_f=\jump{p_y}_f$.
+\item for the scheme \code{:product} the face derivatives $P'_f(y)$ (the means of the cell values $\gamma p/\Theta$ of
+  $y$, as in $N$).
 \end{itemize}
 
 \paragraph{Fast part} (\code{frozen\_fast!}), evolving $z$:
@@ -95,8 +100,8 @@ P'_{i,k-1/2}(y)=\frac{P(\Theta_{i,k})-P(\Theta_{i,k-1})}{\Theta_{i,k}-\Theta_{i,
 \end{align*}
 plus the sponge on all rows, with the pressure difference across a face
 \[
-\text{\code{:nonlinear}:}\quad \Pi_r-\Pi_l=P(\Theta_{z,r})-P(\Theta_{z,l}),\qquad
-\text{\code{:derivative}:}\quad \Pi_r-\Pi_l=P'_f(y)\,\big(\Theta_{z,r}-\Theta_{z,l}\big).
+\text{\code{:gradp}:}\quad \Pi_r-\Pi_l=P(\Theta_{z,r})-P(\Theta_{z,l}),\qquad
+\text{\code{:product}:}\quad \Pi_r-\Pi_l=P'_f(y)\,\big(\Theta_{z,r}-\Theta_{z,l}\big).
 \]
 \paragraph{Slow part} $S(y)=(0,0,-A_U(y),-A_W(y))$, the momentum advection evaluated at $y$ only.
 
@@ -116,8 +121,8 @@ term & frozen from $y$ & live from $z$\\
 \midrule
 mass flux & -- & $U$, $W$\\
 $\Theta$ flux & $\tilde\theta_x$, $\tilde\theta_z$, upwind direction & $U$, $W$\\
-pressure \code{:nonlinear} & -- & $P(\Theta)$\\
-pressure \code{:derivative} & face secants $P'_f$ & $\jump\Theta_f$\\
+pressure, scheme \code{:gradp} & -- & $P(\Theta)$\\
+pressure, scheme \code{:product} & face means $P'_f$ of $\gamma p/\Theta$ & $\jump\Theta_f$\\
 gravity & -- & $\avg{\rho}_z$\\
 momentum advection (slow) & everything & --\\
 \bottomrule
@@ -131,8 +136,8 @@ $c\,\dt/\Delta z\lesssim1$.
 \section{Properties}
 \begin{enumerate}
 \item $F(q,q)=N(q)$ exactly in both pressure modes (test: relative difference $\lesssim10^{-10}$).
-\item With \code{:derivative} the fast part is linear in $z$: $F(y,z)=L(y)z+S(y)$, with the coefficients
-  $\tilde\theta$, $P'_f$ of $y$; with \code{:nonlinear} it keeps the cellwise $P(\Theta_z)$.
+\item For the scheme \code{:product} the fast part is linear in $z$: $F(y,z)=L(y)z+S(y)$, with the coefficients
+  $\tilde\theta$, $P'_f$ of $y$; for \code{:gradp} it keeps the cellwise $P(\Theta_z)$.
 \item Mass and $\Theta$ are conserved (flux form), the momentum equations are in flux form as well.
 \item The $\Theta$ flux of the fast part is the live momentum times the frozen $\theta$,
   $\tilde\theta(y)\,U_z$ and $\tilde\theta(y)\,W_z$; it is linear in $z$, no velocity is formed, and $\tilde\theta(y)$ is a
@@ -153,8 +158,8 @@ W_{k-1}\Big[-r\beta_k\theta_{k-1}+\frac{c^2g}{2\Delta z}\Big]+W_k\big[1+r\theta_
 +W_{k+1}\Big[-r\alpha_k\theta_{k+1}-\frac{c^2g}{2\Delta z}\Big]\\
 =R^W_k-\frac c{\Delta z}\big(\alpha_kR^\Theta_k-\beta_kR^\Theta_{k-1}\big)-\frac{c\,g}2\big(R^\rho_{k-1}+R^\rho_k\big),
 \end{multline*}
-then $\rho$ and $\Theta$ by back substitution. \code{:derivative}: $\alpha_k=\beta_k=P'_{k-1/2}(\bar y)$, the vertical
-part is linear and the step is exactly Crank--Nicolson. \code{:nonlinear}: $\alpha_k=a_k$, $\beta_k=a_{k-1}$ with
+then $\rho$ and $\Theta$ by back substitution. \code{:product}: $\alpha_k=\beta_k=P'_{k-1/2}(\bar y)$, the vertical
+part is linear and the step is exactly Crank--Nicolson. \code{:gradp}: $\alpha_k=a_k$, $\beta_k=a_{k-1}$ with
 $a=\gamma p/\Theta$ at the start of the stage (an approximate Jacobian). The factorization is computed once per
 stage and step size (\code{frozen\_stage\_begin!}, \code{frozen\_vertical\_step!}).
 
@@ -176,7 +181,13 @@ $\tfrac{\gamma}{\gamma-1}K\theta^\gamma\rho^{\gamma-1}+\phi=\mathrm{const}$, so 
 is then exactly balanced for these atmospheres, without any background state. The $\Theta$ fluxes vanish at
 rest ($W=0$), the horizontal pressure differences vanish for horizontally homogeneous states.
 
-\paragraph{Frozen form.} Freeze, from $y$, the vertical secant $P'_{k-1/2}$ and the ratio
+\paragraph{Product scheme.} With the product form the hydrostatic balance reads
+$P'_{k-1/2}\jump\Theta+\bar\rho\,g\Delta z=0$. For constant $\theta$ ($\Theta=\theta\rho$, $P'=\gamma K\theta^\gamma\rho^{\gamma-1}$,
+$\jump{\rho^{\gamma-1}}=-\tfrac{\gamma-1}{\gamma K\theta^\gamma}\,g\Delta z$) the balancing mean is
+\[
+\bar\rho=(\gamma-1)\,\frac{\avg{\rho^{\gamma-1}}\,\jump\rho}{\jump{\rho^{\gamma-1}}}\quad(\to\rho\ \text{for equal values}).
+\]
+\paragraph{Frozen form.} Freeze, from $y$, the face derivative $P'_{k-1/2}$ and the ratio
 $R_{k-1/2}=\bar\rho_{k-1/2}/\avg\rho_{k-1/2}$, and take $\jump{\Theta_z}$ and $\avg{\rho_z}$ live:
 \[
 \partial_tW=-\frac{P'_{k-1/2}(y)\,\jump{\Theta_z}_{k-1/2}+R_{k-1/2}(y)\,\avg{\rho_z}_{k-1/2}\,g\Delta z}{\Delta z}.

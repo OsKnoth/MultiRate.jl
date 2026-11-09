@@ -496,28 +496,37 @@ end
         @test errs[2] < 0.05 * dev
         @test rate(errs...) > 1.7
     end
-    # frozen pressure dp/dΘ at the faces (:derivative): exact split, linear fast part, exact column
-    # solve, converges
+    # product-form scheme (FV_PRESSURE_FORM = :product): -(dp/dΘ)_f ∇Θ with the face mean of γ p/Θ,
+    # no background state. Exact frozen split with dp/dΘ frozen, linear fast part, exact column
+    # solve, converges to its own reference; rejects models with a subtracted reference
     try
-        for mode in (:derivative,)
-            FV.FV_FROZEN_PRESSURE[] = mode
-            C = zeros(TS.frozen_ncoef(mw)); S = zeros(mw.nq)
-            TS.frozen_data!(C, S, mw, q0)
-            o = TS.frozen_fast!(zeros(mw.nq), mw, C, q0, :all, S)
-            @test maximum(abs.(o .- N0)) < 1e-14 + 1e-10 * maximum(abs, N0)
-            s = FV.frozen_stage_begin!(mw, C, q0)
-            R = 1e-3 .* sin.(1:mw.nq); Y = zeros(mw.nq)
-            FV._frozen_column_solve!(Y, s, mw, 3.0, R)
-            Gv(x) = TS.frozen_fast!(zeros(mw.nq), mw, C, x, :vertical, S)
-            @test maximum(abs.(Y .- 3.0 .* (Gv(q0 .+ Y) .- Gv(q0)) .- R)) < 1e-10 * maximum(abs, R)
+        FV.FV_PRESSURE_FORM[] = :product
+        @test_throws ErrorException TS.rhs_nonlinear(mw, q0)
+        mp = FV.FVModel(gw, gas, ρr, Θr)
+        N0p = TS.rhs_nonlinear(mp, q0)
+        C = zeros(TS.frozen_ncoef(mp)); S = zeros(mp.nq)
+        TS.frozen_data!(C, S, mp, q0)
+        o = TS.frozen_fast!(zeros(mp.nq), mp, C, q0, :all, S)
+        @test maximum(abs.(o .- N0p)) < 1e-14 + 1e-10 * maximum(abs, N0p)
+        s = FV.frozen_stage_begin!(mp, C, q0)
+        R = 1e-3 .* sin.(1:mp.nq); Y = zeros(mp.nq)
+        FV._frozen_column_solve!(Y, s, mp, 3.0, R)
+        Gv(x) = TS.frozen_fast!(zeros(mp.nq), mp, C, x, :vertical, S)
+        @test maximum(abs.(Y .- 3.0 .* (Gv(q0 .+ Y) .- Gv(q0)) .- R)) < 1e-10 * maximum(abs, R)
+        # time error of the frozen MIS54 run, background-free, the same for both schemes
+        function frozen_err(form)
+            FV.FV_PRESSURE_FORM[] = form
+            qr = TS.run_rk4(mp, q0, 200 / nref, nref)
+            Δt1 = 12 * 0.8 * gw.dz / c
+            e = [norm(TS.run_frozen(mp, q0, Δt, round(Int, 200 / Δt); tab = TS.mis_tableau(:MIS54), nsub = 12, fast = :hevi) .- qr)
+                 for Δt in (200 / ceil(200 / Δt1), 100 / ceil(200 / Δt1))]
+            return e ./ norm(qr .- q0)
         end
-        FV.FV_FROZEN_PRESSURE[] = :derivative
-        Δt1 = 12 * 0.8 * gw.dz / c
-        errs = [norm(TS.run_frozen(mw, q0, Δt, round(Int, 200 / Δt); tab = TS.mis_tableau(:MIS54), nsub = 12, fast = :hevi) .- qref)
-                for Δt in (200 / ceil(200 / Δt1), 100 / ceil(200 / Δt1))]
-        @test errs[2] < 0.05 * dev && rate(errs...) > 1.7
+        ep, eg = frozen_err(:product), frozen_err(:gradp)
+        @test ep[2] < 0.1 && ep[2] < ep[1]
+        @test isapprox(ep, eg; rtol = 0.1)
     finally
-        FV.FV_FROZEN_PRESSURE[] = :nonlinear
+        FV.FV_PRESSURE_FORM[] = :gradp
     end
     @test_throws ErrorException TS.frozen_ncoef(FV.FVModel(FV.FVGrid(8, 4, 40e3, 10e3; zs = x -> 100 * exp(-(x - 2e4)^2 / 1e8)), gas, ρr, Θr))
 end

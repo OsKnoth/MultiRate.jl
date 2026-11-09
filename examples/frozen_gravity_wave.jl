@@ -5,8 +5,8 @@
 # Skamarock & Klemp gravity wave in the 300 km channel (flat FV, 120 × 16 cells, U = 20 m/s,
 # T = 3000 s), reference explicit RK4 on N. Frozen split (`TimeStepping.run_frozen`):
 # N(q) = F(q, q), fast part with the nonlinear p(Θ) and the face θ frozen at the stage values,
-# slow part momentum advection; with FV_FROZEN_PRESSURE = :derivative dp/dΘ is frozen at the faces
-# as well (fast part linear).
+# slow part momentum advection; with FV_PRESSURE_FORM = :product (scheme -(dp/dΘ)_f ∇Θ) dp/dΘ is frozen
+# at the faces as well (fast part linear).
 # Linearized split (`run_mis`): fast operator L frozen at qⁿ,
 # S = N - L. Fast loops :verlet (explicit) and :hevi, nsub at the substep limit. Wave error of θ′
 # at z = 5 km (horizontal mean removed) against the slow step.
@@ -35,15 +35,15 @@ steps = (45, 30, 23, 18, 15)                              # Δt = 67 … 200 s
 tabs = (:WSRK3, :MIS4, :MIS4a, :MIS54, :MISF53, :MIS_KW3)
 colors = Dict(:WSRK3 => :gray40, :MIS4 => :darkorange, :MIS4a => :purple, :MIS54 => :seagreen, :MISF53 => :crimson, :MIS_KW3 => :royalblue)
 # (split, fast loop, pressure of the frozen fast part, line style)
-runs = ((:frozen, :hevi, :nonlinear, :solid), (:frozen, :verlet, :nonlinear, :dot),
-        (:frozen, :hevi, :derivative, :dashdot), (:linearized, :hevi, :nonlinear, :dash))
+runs = ((:frozen, :hevi, :gradp, :solid), (:frozen, :verlet, :gradp, :dot),
+        (:frozen, :hevi, :product, :dashdot), (:linearized, :hevi, :gradp, :dash))
 sections = Dict{String,Vector{Float64}}()
 fig = Figure(size = (1100, 520))
 ax = Axis(fig[1, 1]; xlabel = "U Δt/Δx", ylabel = "wave error max |θ′ − θ′_RK4| at z = 5 km [K]", yscale = log10,
           title = "FV gravity wave: frozen RHS (solid :hevi, dotted :verlet, dash-dot :hevi with dp/dΘ frozen) vs linearized L (dashed)")
 for name in tabs, (kind, fast, pmode, sty) in runs
     tab = TS.mis_tableau(name)
-    MultiRate.FV2D.FV_FROZEN_PRESSURE[] = pmode
+    MultiRate.FV2D.FV_PRESSURE_FORM[] = pmode
     es = Float64[]
     for n in steps
         Δt = T / n
@@ -57,15 +57,15 @@ for name in tabs, (kind, fast, pmode, sty) in runs
             fill(NaN, length(q0))
         end
         push!(es, err(q))
-        n == 15 && fast == :hevi && pmode == :nonlinear && (sections["$name $kind"] = θs(q))
+        n == 15 && fast == :hevi && pmode == :gradp && (sections["$name $kind"] = θs(q))
     end
     @printf("%-8s %-10s %-7s %-10s wave error at Δt = %s: %s\n", name, kind, fast, pmode, join([@sprintf("%.0f", T / n) for n in steps], "/"),
             join([@sprintf("%.1e", e) for e in es], " "))
     cr = [U * T / n / g.dx for n in steps]
     ok = isfinite.(es) .& (es .< 1e-2)
-    any(ok) && scatterlines!(ax, cr[ok], es[ok]; color = colors[name], linestyle = sty, label = "$name $kind $fast" * (pmode == :derivative ? " dp/dΘ" : ""), markersize = 6)
+    any(ok) && scatterlines!(ax, cr[ok], es[ok]; color = colors[name], linestyle = sty, label = "$name $kind $fast" * (pmode == :product ? " product" : ""), markersize = 6)
 end
-MultiRate.FV2D.FV_FROZEN_PRESSURE[] = :nonlinear
+MultiRate.FV2D.FV_PRESSURE_FORM[] = :gradp
 ylims!(ax, 3e-5, 1e-2)
 Legend(fig[1, 2], ax; framevisible = false, labelsize = 10)
 save("frozen_gravity_wave.png", fig)

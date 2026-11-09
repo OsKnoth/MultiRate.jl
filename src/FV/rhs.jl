@@ -9,6 +9,23 @@
     end
 end
 
+"""
+Pressure form of the flat FV operator N (read in every call):
+- `:gradp` (default): -(p_r - p_l)/Δ at the faces, p = P(Θ) in the cells;
+- `:product`: -(dp/dΘ)_f (Θ_r - Θ_l)/Δ, with (dp/dΘ)_f the mean of the cell values γ p/Θ;
+  full p and ρ, no background state subtracted.
+The frozen split (`frozen.jl`) follows: `:gradp` keeps P(Θ_z) in the fast part, `:product` freezes
+(dp/dΘ)_f, so its fast part is linear in z. Flat grids only.
+"""
+const FV_PRESSURE_FORM = Ref(:gradp)
+
+"""The :product scheme subtracts no background state: models built with FV_HYDRO_REFERENCE are rejected."""
+_no_background(m) = (all(iszero, m.pbal) && all(iszero, m.ρbal)) ||
+    error("FV_PRESSURE_FORM = :product: no background subtraction (build the model without FV_HYDRO_REFERENCE)")
+
+"""dp/dΘ at a face: mean of the cell values γ p/Θ."""
+@inline dpdΘ_face(gas, Θl, Θr) = 0.5 * gas.γ * (pressure(gas, Θl) / Θl + pressure(gas, Θr) / Θr)
+
 """In-place N(q); allocation-free (uses the model's FVCache)."""
 function rhs_nonlinear!(out, m::FVModel, q::AbstractVector)
     m.grid isa CutCellFVGrid && return rhs_cutcell!(out,m,q)
@@ -24,6 +41,9 @@ function rhs_nonlinear!(out, m::FVModel, q::AbstractVector)
     w = c.w
     θ = c.θ
     pp = c.pp
+    product = FV_PRESSURE_FORM[] === :product
+    product || FV_PRESSURE_FORM[] === :gradp || error("FV_PRESSURE_FORM: :gradp or :product")
+    product && _no_background(m)
     @inbounds for k in 1:nz, i in 1:nx
         ρ = q[iρ(g, i, k)]
         θ[i, k] = q[iΘ(g, i, k)] / ρ
@@ -80,11 +100,25 @@ function rhs_nonlinear!(out, m::FVModel, q::AbstractVector)
         end
         k + 1 <= nz && (out[iW(g, i, k + 1)] += Wc * wc / dz)
         k >= 2 && (out[iW(g, i, k)] -= Wc * wc / dz)
-        # pressure gradient and gravity (deviations from the reference)
-        out[iU(g, i, k)] -= (pp[i, k] - pp[ip(g, i - 1), k]) / dx
+        # pressure gradient (:gradp or :product) and gravity (deviations from the reference)
+        il = ip(g, i - 1)
+        if product
+            Θc = q[iΘ(g, i, k)]
+            Θl = q[iΘ(g, il, k)]
+            out[iU(g, i, k)] -= dpdΘ_face(m.gas, Θl, Θc) * (Θc - Θl) / dx
+        else
+            out[iU(g, i, k)] -= (pp[i, k] - pp[il, k]) / dx
+        end
         if k > 1
             ρw = 0.5 * (q[iρ(g, i, k - 1)] - m.ρbal[i, k-1] + q[iρ(g, i, k)] - m.ρbal[i, k])
-            out[iW(g, i, k)] -= (pp[i, k] - pp[i, k-1]) / dz + grav * ρw
+            if product
+                Θc = q[iΘ(g, i, k)]
+                Θb = q[iΘ(g, i, k - 1)]
+                dpz = dpdΘ_face(m.gas, Θb, Θc) * (Θc - Θb)
+            else
+                dpz = pp[i, k] - pp[i, k-1]
+            end
+            out[iW(g, i, k)] -= dpz / dz + grav * ρw
         end
     end
     @inbounds for j in eachindex(out)

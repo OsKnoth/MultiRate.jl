@@ -373,9 +373,12 @@ non-additive (product of frozen θ and live U, W), hence the order loss of MIS4/
 vertical Crank–Nicolson step z ← z + (I − dt/2 J_v)⁻¹ dt G_v(z), where G_v keeps the nonlinear
 p(Θ) and J_v uses a = γp/Θ from the start of the stage and the frozen θz (column solver of `FVFast`).
 
-**Frozen pressure** (`FV_FROZEN_PRESSURE`; fast part linear in z):
+**Frozen pressure** (fast part linear in z):
 - `:derivative`: ∇p = (dp/dΘ)(y) ∇Θ_z, dp/dΘ frozen at the faces as the discrete derivative
-  (p_r − p_l)/(Θ_r − Θ_l) (γp/Θ at the mean if nearly equal), so F(q, q) = N(q) exactly;
+  (p_r − p_l)/(Θ_r − Θ_l) (γp/Θ at the mean if nearly equal), so F(q, q) = N(q) exactly. Since replaced
+  by the product-form scheme `FV_PRESSURE_FORM = :product` (N itself uses (dp/dΘ)_f ∇Θ with the analytic
+  γp/Θ averaged to the faces, no background; its frozen split freezes (dp/dΘ)_f), the table below is the
+  secant version;
 - `:ratio`: p = (p/Θ)(y) Θ_z, p/Θ frozen at the centres (tried, then removed from the code).
 The `:hevi` step is then exactly Crank–Nicolson (column solver for α_kΘ_k − β_kΘ_{k−1}).
 
