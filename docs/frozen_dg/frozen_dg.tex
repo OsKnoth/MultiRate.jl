@@ -237,10 +237,9 @@ momentum advection (slow) & everything & --\\
   the frozen coefficients are $A/\rho_a$, $A/\rho_b$, $\rho_{\rm up}/\rho$, the ratio of the logarithmic
   to the arithmetic mean, and the fast part keeps the nonlinear nodal $p(\Theta_z)$. The product form
   removes all $1/\rho$ factors and makes the fast part linear.
-\item MIS stability. In both forms the $\Theta$ flux is $\theta_y m_z$: the live momentum times the
-  frozen $\theta$ (no velocity is formed). Linearized, $\delta(\theta m)=\bar\theta\,\delta m+\bar m\,\delta\theta$: the term
-  $\bar\theta\,\delta m$ is fast, the term $\bar m\,\delta\theta$ enters only through the frozen argument (slow); the mass
-  flux $\delta m$ is entirely fast. On the
+\item MIS stability. In both forms the $\Theta$ flux of the fast part is $\theta_y m_z$, the live momentum times the
+  frozen $\theta$: linear in $z$, no velocity formed. The advection of $\theta$ enters only through the frozen
+  coefficient $\theta_y$. On the
   column Fourier blocks this coupling limits the stability of MIS methods
   (\code{MethodDesign/app\_stability.jl}; methods designed for it: \code{MIS\_DG53}). The analysis has to
   be repeated for the product form.
