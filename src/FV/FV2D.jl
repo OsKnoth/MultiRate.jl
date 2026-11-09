@@ -18,7 +18,8 @@ z = zs(x) + η (H-zs(x))/H. The mapped Jacobian J and terrain slope zx enter con
 as J Fx horizontally and Fz - zx Fx vertically. The lower wall imposes zero normal flux.
 ρ, Θ are at cell centres, U = ρu at x-faces, W = ρw at interior mapped z-faces. On a sloping
 wall the physical vertical velocity can be nonzero while the normal flux remains zero.
-Advection: 3rd-order upwind-biased fluxes (WRF flux3) on flat grids; mapped terrain tendencies
+Advection: at every face a left and a right value from the third-order (κ = 1/3) reconstruction
+of the cell values, the upwind one taken (`recon_left`, `recon_right`, `interp3`) on flat grids; mapped terrain tendencies
 use the metric-consistent C-grid flux form.
 
 Fast operator (frozen at qⁿ): acoustic-gravity part linearized about qⁿ,

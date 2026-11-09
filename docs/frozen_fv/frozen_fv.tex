@@ -44,24 +44,33 @@ interior $z$-faces ($W=0$ at the walls). Velocities at the faces divide by the a
 cells, $u_{i-1/2,k}=U_{i-1/2,k}/\avg\rho_x$, $w_{i,k-1/2}=W_{i,k-1/2}/\avg\rho_z$; $\theta=\Theta/\rho$ at the centres.
 Differences $\delta_x a_{i}=(a_{i+1/2}-a_{i-1/2})/\Delta x$ and likewise in $z$.
 
-\paragraph{Interpolation.} Face values of a centred quantity by the third-order upwind-biased formula
+\paragraph{Face values.} At every face $i+\tfrac12$ a left and a right value are reconstructed from the
+cell values by the third-order ($\kappa=\tfrac13$) formula,
 \[
-I_3(a_{-2},a_{-1},a_0,a_1;v)=\tfrac{7(a_0+a_{-1})-(a_1+a_{-2})}{12}
-+\operatorname{sign}(v)\,\tfrac{(a_1-a_{-2})-3(a_0-a_{-1})}{12},
+a^L_{i+1/2}=\frac{-a_{i-1}+5a_i+2a_{i+1}}6,\qquad
+a^R_{i+1/2}=\frac{2a_i+5a_{i+1}-a_{i+2}}6,
 \]
-$v$ the transporting mass flux; in $z$ next to the walls the centred mean $\tfrac12(a_{-1}+a_0)$.
+and the upwind one is used,
+\[
+a_{i+1/2}=\begin{cases}a^L_{i+1/2},&v\ge0,\\ a^R_{i+1/2},&v<0,\end{cases}
+\]
+$v$ the transporting mass flux at the face (\code{recon\_left}, \code{recon\_right}, \code{interp3} in
+\code{src/FV/advection.jl}). (This is the same value as the third-order upwind-biased flux of WRF, written there
+as a centred fourth-order mean plus a sign-dependent correction; the reconstruction form makes the left and
+right states explicit.) In $z$ at the faces next to the walls, where one of the two states lacks its
+stencil, the centred mean $\tfrac12(a_i+a_{i+1})$ is used.
 
 \paragraph{The operator.}
 \begin{align*}
 \partial_t\rho_{i,k}&=-\delta_xU-\delta_zW,\\
 \partial_t\Theta_{i,k}&=-\delta_x(\tilde\theta_xU)-\delta_z(\tilde\theta_zW),\qquad
-\tilde\theta_x=I_3(\theta;U),\ \tilde\theta_z=I_3(\theta;W)\ \text{at the faces},\\
+\tilde\theta_x,\ \tilde\theta_z\ \text{the upwind face values of }\theta\ \text{for }U,\ W,\\
 \partial_tU_{i-1/2,k}&=-A_U-\frac{p_{i,k}-p_{i-1,k}}{\Delta x},\\
 \partial_tW_{i,k-1/2}&=-A_W-\frac{p_{i,k}-p_{i,k-1}}{\Delta z}-g\,\frac{\rho_{i,k-1}+\rho_{i,k}}2,
 \end{align*}
 $p_{i,k}=P(\Theta_{i,k})$. The momentum advection $A_U$, $A_W$ is in flux form with the transporting mass fluxes
 averaged to the momentum control volumes (e.g.\ $\bar U_{i,k}=\tfrac12(U_{i-1/2,k}+U_{i+1/2,k})$) and the
-transported velocities interpolated by $I_3$; $A_W$ uses the centred mean next to the walls.
+transported velocities as upwind face values (the same reconstruction); $A_W$ uses the centred mean next to the walls.
 
 \section{The frozen split}
 \paragraph{Frozen coefficients} $C(y)$, computed once per stage value $Y_j$ (\code{frozen\_data!}):
