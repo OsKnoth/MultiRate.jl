@@ -36,8 +36,8 @@ The Euler equations with gravity, the pressure gradient in product form:
 \end{align}
 Mass and $\Theta$ are in conservation form; the momentum equation is not (the pressure term is a
 non-conservative product), which is of no concern with gravity present.
-The reference state $(\rho_r,\Theta_r)(z)$ is hydrostatic, $P'(\Theta_r)\partial_z\Theta_r+\rho_r g=0$;
-discretely its residual is subtracted (Section~\ref{sec:balance}).
+The equations are discretized as they stand, without a reference state and without subtracting a
+hydrostatic background (Section~\ref{sec:balance}).
 
 \section{The frozen form}
 Freeze $\theta$ and $P'$ at $y$, everything else from $z$:
@@ -132,14 +132,13 @@ $\Theta^*=\Theta_L+\theta_f m_{n,L}/c_f$, so the pressure surface term is
 $P'_L(\Theta^*-\Theta_L)=c\,m_{n,L}$ (with $P'\theta=c^2$), the LMARS wall pressure $p+\rho c\,u_n$.
 
 \subsection{Hydrostatic balance}\label{sec:balance}
-The reference state is continuous across faces, so all jumps vanish, $\Theta^*=\Theta_r$, $m^*=0$, and its
-discrete momentum residual is
-$r_h=P'(\Theta_r)\,\mathcal G\Theta_r+\rho_r g\,\mathbf e_z$ ($\mathcal G$ the DG gradient incl.\ surface terms).
-The momentum equation is discretized as
-\[
-\partial_t m+\dots+P'(\Theta_y)\,\mathcal G\Theta_z+\rho_z g\,\mathbf e_z-\frac{P'(\Theta_y)}{P'(\Theta_r)}\,r_h=0,
-\]
-exactly balanced at $q=q_r$. The correction is affine in $z$ (it belongs to the fast part as a constant forcing).
+No background state is subtracted. A hydrostatic state given at the nodes, continuous across faces,
+has no jumps ($\Theta^*=\Theta$, $m^*=0$ at interior faces and walls), so the discrete momentum residual
+is the volume term alone, $r_a=P'(\Theta_a)\,(\mathcal G\Theta)_a+\rho_a g\,\mathbf e_z$, i.e.\ the
+pointwise error of the degree-$p$ differentiation of $\Theta(z)$, of order $\Delta z^{p}$ per element
+(spectral in $p$). An initial state in exact discrete balance is obtained by solving
+$P'(\Theta_a)(\mathcal G\Theta)_a=-\rho_a g$ for $\rho_a$ at given $\Theta$ (nodewise, since the operator
+acts on $\Theta$ only), which needs no change of the scheme.
 
 \section{Summary of the split}
 \begin{center}
