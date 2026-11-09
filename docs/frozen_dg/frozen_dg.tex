@@ -1,0 +1,198 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=2.4cm]{geometry}
+\usepackage{amsmath,amssymb,booktabs,hyperref}
+\newcommand{\dt}{\Delta t}
+\newcommand{\avg}[1]{\{\!\{#1\}\!\}}
+\newcommand{\jump}[1]{[\![#1]\!]}
+\newcommand{\code}[1]{\texttt{#1}}
+\title{A frozen split of the DGSEM Euler equations\\with the pressure gradient in product form}
+\author{MultiRate notes}
+\date{\today}
+\begin{document}
+\maketitle
+
+\begin{abstract}
+For split-explicit (MIS) time integration with a \emph{frozen} right-hand side, $N(q)=F(q,q)$, the
+first argument $y$ is frozen at the stage values and the second $z$ evolves in the fast loop.
+We describe a DGSEM discretization of the compressible Euler equations in the variables
+$(\rho,\ m=\rho\mathbf u,\ \Theta=\rho\theta)$ in which this split is natural: the pressure gradient
+is written in product form $\nabla p = P'(\Theta)\nabla\Theta$, the potential temperature $\theta$ and
+the derivative $P'=\mathrm dp/\mathrm d\Theta$ are frozen exactly where they appear, and the interface
+flux is a LMARS variant written directly in the momentum $m$. The fast part is then \emph{linear} in
+$z$ with coefficients frozen at $y$, and $F(q,q)=N(q)$ holds by construction.
+\end{abstract}
+
+\section{Equations}
+With $\Theta=\rho\theta$ the pressure is a function of $\Theta$ alone,
+\[
+p=P(\Theta)=p_0\Big(\frac{R\,\Theta}{p_0}\Big)^{\gamma},\qquad
+P'(\Theta)=\frac{\gamma p}{\Theta}=\frac{c^2}{\theta},\qquad c^2=\frac{\gamma p}{\rho}.
+\]
+The Euler equations with gravity, the pressure gradient in product form:
+\begin{align}
+\partial_t\rho+\nabla\cdot m&=0,\label{eq:rho}\\
+\partial_t\Theta+\nabla\cdot(\theta\,m)&=0,\label{eq:theta}\\
+\partial_t m+\nabla\cdot(m\otimes\mathbf u)+P'(\Theta)\,\nabla\Theta+\rho g\,\mathbf e_z&=0.\label{eq:mom}
+\end{align}
+Mass and $\Theta$ are in conservation form; the momentum equation is not (the pressure term is a
+non-conservative product), which is of no concern with gravity present.
+The reference state $(\rho_r,\Theta_r)(z)$ is hydrostatic, $P'(\Theta_r)\partial_z\Theta_r+\rho_r g=0$;
+discretely its residual is subtracted (Section~\ref{sec:balance}).
+
+\section{The frozen form}
+Freeze $\theta$ and $P'$ at $y$, everything else from $z$:
+\begin{align*}
+F_\rho(y,z)&=-\nabla\cdot m_z,\\
+F_\Theta(y,z)&=-\nabla\cdot(\theta_y\,m_z),\\
+F_m(y,z)&=\underbrace{-\nabla\cdot(m_y\otimes\mathbf u_y)}_{\text{slow }S(y)}
+\;\underbrace{-\,P'(\Theta_y)\nabla\Theta_z-\rho_z g\,\mathbf e_z}_{\text{fast}}.
+\end{align*}
+$F(q,q)$ is \eqref{eq:rho}--\eqref{eq:mom}. The fast part
+\[
+F(y,z)-S(y)=L(y)\,z
+\]
+is linear in $z=(\rho,m,\Theta)_z$; its operator $L(y)$ has the coefficients $\theta_y$ and $P'(\Theta_y)$
+only. Nothing else has to be frozen: the momentum enters linearly, the pressure only through $\nabla\Theta$.
+A stage of MIS integrates
+\[
+\frac{\mathrm dZ}{\mathrm d\tau}=\sum_j\frac{\beta_{ij}}{d_i}\big(S(Y_j)+L(Y_j)Z\big)+\sum_j\frac{\gamma_{ij}}{d_i\dt}(Y_j-y^n),
+\]
+i.e.\ with the weighted coefficients $\bar\theta=\sum_j b_{ij}\theta(Y_j)$, $\bar P'=\sum_j b_{ij}P'(\Theta(Y_j))$,
+$b_{ij}=\beta_{ij}/d_i$ (since $L$ is linear in the coefficients), one linear operator per stage.
+
+\section{DGSEM discretization}
+
+\subsection{Notation}
+Quadrilateral elements mapped from $[-1,1]^2$, $(\xi,\eta)\mapsto\mathbf x$, Jacobian $J$, metric terms
+$J\xi_x, J\xi_z, J\eta_x, J\eta_z$ (discretely satisfying the metric identities), tensor-product LGL nodes of
+degree $p$, collocated quadrature with weights $w_i$, differentiation matrix $D$ (SBP:
+$WD+D^TW=B=\mathrm{diag}(-1,0,\dots,0,1)$). Contravariant components of a vector $v$:
+$\tilde v^\xi=J\xi_x v_x+J\xi_z v_z$, $\tilde v^\eta=J\eta_x v_x+J\eta_z v_z$. At a face node with outward
+unit normal $\mathbf n$ and surface element $s$ (so that $s\,\mathbf n$ is the contravariant normal),
+$v_n=\mathbf v\cdot\mathbf n$; $L$/$R$ denote the inner and the outer trace, $\avg a=\tfrac12(a_L+a_R)$,
+$\jump a=a_R-a_L$.
+
+\subsection{Volume terms}
+In flux-differencing form along the $\xi$ lines (the $\eta$ lines likewise), node $a=(i,j)$, partner
+$b=(k,j)$, with the two-point contravariant normal $\tilde n_{ab}=\tfrac12\big((J\xi_x)_a+(J\xi_x)_b,\ (J\xi_z)_a+(J\xi_z)_b\big)$:
+\begin{align*}
+(\text{mass})_a&=\frac1{J_a}\sum_k 2D_{ik}\ \avg{m_z}_{ab}\cdot\tilde n_{ab},\\
+(\Theta)_a&=\frac1{J_a}\sum_k 2D_{ik}\ \avg{\theta_y}_{ab}\,\avg{m_z}_{ab}\cdot\tilde n_{ab},\\
+(\text{advection, slow})_a&=\frac1{J_a}\sum_k 2D_{ik}\ \big(\avg{m_y}_{ab}\cdot\tilde n_{ab}\big)\avg{\mathbf u_y}_{ab},\\
+(\text{pressure})_a&=P'(\Theta_{y,a})\ \frac1{J_a}\sum_k D_{ik}\,\Theta_{z,b}\,(J\xi_x,J\xi_z)_b
+\quad\big(\text{the conservative metric form of }\nabla\Theta\big),\\
+(\text{gravity})_a&=\rho_{z,a}\,g\,\mathbf e_z .
+\end{align*}
+Since $\sum_kD_{ik}=0$ the mass term is the strong-form divergence of $m_z$; for the $\Theta$ term the
+two-point mean $\avg{\theta_y}$ is the only frozen coefficient. The pressure term is the nodal product of
+the frozen $P'_a$ with the DG gradient of $\Theta_z$ (its surface part in the next section).
+
+\subsection{Interface flux: LMARS in the momentum}
+At a face the normal acoustics of \eqref{eq:theta}--\eqref{eq:mom}, frozen at a face state
+$(\theta_f, c_f)$, is the linear system
+\[
+\partial_t\Theta+\theta_f\,\partial_n m_n=0,\qquad
+\partial_t m_n+\frac{c_f^2}{\theta_f}\,\partial_n\Theta=0,
+\]
+with characteristic speeds $\pm c_f$ and the Riemann invariants $m_n\pm (c_f/\theta_f)\Theta$. Its exact
+Riemann solution at the face is
+\begin{equation}
+m^*=\avg{m_n}-\frac{c_f}{2\theta_f}\,\jump{\Theta},\qquad
+\Theta^*=\avg{\Theta}-\frac{\theta_f}{2c_f}\,\jump{m_n}.\label{eq:riemann}
+\end{equation}
+This is LMARS written in $m$ instead of $\mathbf u$: with $\jump p\approx P'\jump\Theta=(c^2/\theta)\jump\Theta$,
+$m^*=\avg{m_n}-\jump p/(2c)$ and $p^*=P'\Theta^*=\avg p-\tfrac12 c\,\jump{m_n}$, i.e.\ the LMARS
+interface velocity and pressure $w^*=\avg{u_n}-\jump p/(2\rho c)$, $p^*=\avg p-\tfrac12\rho c\jump{u_n}$ with the
+density factor absorbed into the momentum. No density upwinding $\rho_{\rm up}$ and no $1/\rho$ appear:
+$m^*$ is linear in $(m,\Theta)_z$.
+
+The interface fluxes (per unit contravariant normal, outward from $L$):
+\begin{align*}
+\hat f_\rho&=m^*,\qquad \hat f_\Theta=\theta_{\rm up}\,m^*,\qquad
+\hat f_m^{\rm adv}=m^*_y\,\mathbf u_{{\rm up},y}\quad(\text{slow}),
+\end{align*}
+$\theta_{\rm up}$, $\mathbf u_{\rm up}$ the values of the upwind side, the side chosen by the sign of $m^*(y)$.
+In strong form the surface term at a face node of element $L$ is
+\[
+\frac{s}{J\,w}\Big(\hat f-f_L\cdot\mathbf n\Big),\qquad f_{\rho,L}\cdot\mathbf n=m_{n,L},\quad f_{\Theta,L}\cdot\mathbf n=\theta_L m_{n,L},
+\]
+and for the non-conservative pressure term the lifted jump to the interface value,
+\[
+\frac{s}{J\,w}\,P'(\Theta_{y,L})\,\big(\Theta^*-\Theta_{z,L}\big)\,\mathbf n .
+\]
+\paragraph{Frozen face coefficients.} $\theta_f=\avg{\theta_y}$, $c_f=\avg{c_y}$ (or $\max$), the upwind side and
+$\theta_{\rm up}$ from $y$. With $z$ evolving, $m^*$ and $\Theta^*$ are linear in $z$; the face part of the fast
+operator needs $c_f/(2\theta_f)$, $\theta_f/(2c_f)$, $\theta_{\rm up}$ and the nodal $P'_L$, the slow part
+$m^*(y)\,\mathbf u_{\rm up}(y)$.
+\paragraph{Contact discontinuities.} Because $p=P(\Theta)$, a jump in $\Theta$ is a jump in $p$. A contact
+(constant $p$, jump in $\theta$ and $\rho$) has $\jump\Theta=0$ and gets no acoustic dissipation in $m^*$;
+$\theta$ is upwinded in $\hat f_\Theta$, $\rho$ is carried by the central $\avg{m_n}$.
+\paragraph{Walls.} Mirror state $m_{n,R}=-m_{n,L}$, $\Theta_R=\Theta_L$: $m^*=0$ and
+$\Theta^*=\Theta_L+\theta_f m_{n,L}/c_f$, so the pressure surface term is
+$P'_L(\Theta^*-\Theta_L)=c\,m_{n,L}$ (with $P'\theta=c^2$), the LMARS wall pressure $p+\rho c\,u_n$.
+
+\subsection{Hydrostatic balance}\label{sec:balance}
+The reference state is continuous across faces, so all jumps vanish, $\Theta^*=\Theta_r$, $m^*=0$, and its
+discrete momentum residual is
+$r_h=P'(\Theta_r)\,\mathcal G\Theta_r+\rho_r g\,\mathbf e_z$ ($\mathcal G$ the DG gradient incl.\ surface terms).
+The momentum equation is discretized as
+\[
+\partial_t m+\dots+P'(\Theta_y)\,\mathcal G\Theta_z+\rho_z g\,\mathbf e_z-\frac{P'(\Theta_y)}{P'(\Theta_r)}\,r_h=0,
+\]
+exactly balanced at $q=q_r$. The correction is affine in $z$ (it belongs to the fast part as a constant forcing).
+
+\section{Summary of the split}
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+term & frozen from $y$ & live from $z$\\
+\midrule
+volume mass flux & -- & $\avg{m}$\\
+volume $\Theta$ flux & $\avg{\theta}$ & $\avg{m}$\\
+pressure (volume and surface) & nodal $P'=\gamma p/\Theta$ & $\mathcal G\Theta$, $\Theta^*$\\
+gravity & -- & $\rho$\\
+face $m^*$, $\Theta^*$ & $c_f/\theta_f$, $\theta_f/c_f$ & $\avg{m_n},\jump\Theta,\avg\Theta,\jump{m_n}$\\
+face $\Theta$ flux & $\theta_{\rm up}$, upwind side & $m^*$\\
+\midrule
+momentum advection (slow) & everything & --\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Properties}
+\begin{enumerate}
+\item $F(q,q)=N(q)$ by construction: $N$ \emph{is} the product-form DGSEM with these fluxes.
+\item The fast part is linear in $z$. A HEVI fast loop needs one linear solve per column with the frozen
+  vertical coefficients (no Newton iteration for $p(\Theta)$, unlike the conservative form, where the
+  nodal $p(\Theta_z)$ is nonlinear). The coefficients of a stage are the $b_{ij}$-weighted means of
+  $\theta$, $P'$, $c_f/\theta_f$ over the stage values.
+\item Mass and $\Theta$ are conserved; momentum is not (non-conservative pressure).
+\item Linear acoustics: for constant frozen coefficients the volume part is skew-adjoint in the energy
+  $\tfrac12\sum w J\big(|m|^2+(c^2/\theta^2)\Theta^2\big)$ (SBP), and the exact Riemann solver
+  \eqref{eq:riemann} adds the dissipation
+  $-\sum_{\rm faces} s\,w\,\tfrac{c}{2}\big(\jump{m_n}^2+\tfrac{c^2}{\theta^2}\jump\Theta^2\big)\le0$
+  (upwind flux of the symmetrized variables $(m_n,\,c\,\Theta/\theta)$).
+  Variable coefficients add terms of the size of their variation, as usual.
+\item Only $\theta$ and $P'$ (and the face sound speed) are frozen, the ``coefficients'' of the
+  fast operator; no part of the stiff response sits in the frozen argument. This is the rule of thumb
+  found for the FV frozen split (freezing $p/\Theta$ instead of $\mathrm dp/\mathrm d\Theta$ was unstable).
+\end{enumerate}
+
+\section{Relation to the current implementation and open points}
+\begin{itemize}
+\item \code{src/DGSEM/Euler2D/frozen.jl} splits the \emph{conservative} DGSEM (pressure $\{p\}$ in the
+  two-point momentum flux, gravity with a logarithmic mean of $\rho$, LMARS in the velocity): there
+  the frozen coefficients are $A/\rho_a$, $A/\rho_b$, $\rho_{\rm up}/\rho$, the ratio of the logarithmic
+  to the arithmetic mean, and the fast part keeps the nonlinear nodal $p(\Theta_z)$. The product form
+  removes all $1/\rho$ factors and makes the fast part linear.
+\item MIS stability. In both forms the $\Theta$ flux is $\theta_y m_z$: linearized about a wind $\bar u$,
+  its fast part is $\bar\theta\,\delta m=\bar\theta(\bar u\,\delta\rho+\bar\rho\,\delta u)$ and its slow part
+  $\bar m\,\delta\theta$. Density is advected in the fast part, $\Theta$ advection is split. On the
+  column Fourier blocks this coupling limits the stability of MIS methods
+  (\code{MethodDesign/app\_stability.jl}; methods designed for it: \code{MIS\_DG53}). The analysis has to
+  be repeated for the product form.
+\item To do: implementation (\code{frozen\_ncoef}, \code{frozen\_data!}, \code{frozen\_fast!} with the
+  product-form $N$), test $F(q,q)=N(q)$, the frozen HEVI column solve, gravity-wave and terrain tests,
+  and a comparison of the product form with the conservative DGSEM.
+\end{itemize}
+\end{document}
