@@ -1,8 +1,10 @@
-# Grid: Cartesian C-grid in 3D, periodic in x and y, walls at z = 0 and z = H, optionally cut by a
-# terrain z_s(x, y) (cut cells). The flat grid is the special case with all fractions equal to 1.
+# Grid: C-grid in 3D, periodic in x and y, walls at the ground and at z = H. A terrain z_s(x, y)
+# either cuts the Cartesian cells (cut cells) or maps the grid (terrain following, Gal-Chen
+# z = z_s + η (H - z_s)/H). The flat grid is the special case with all fractions equal to 1 and
+# the trivial metric (J = 1, z_x = z_y = 0); the operator always uses fractions and metric.
 
 """
-    Grid3D(nx, ny, nz, Lx, Ly, H; zs = nothing, box = nothing, αmin = 0.2)
+    Grid3D(nx, ny, nz, Lx, Ly, H; zs = nothing, terrain = :cut, box = nothing, αmin = 0.2, mask_width = 1)
 
 Uniform C-grid with nx × ny × nz cells on [0, Lx] × [0, Ly] × [0, H]. With a terrain function
 `zs(x, y)` the cells are cut (Cartesian cut cells): `Vf[i,j,k]` is the fluid volume fraction of a
@@ -13,7 +15,17 @@ column of a cell is `clamp(z_top - max(zs, z_bot), 0, Δz)`). Small cut cells us
 volume `Veff = max(Vf, αmin)` in the divisions (mass and Θ are conserved with these weights);
 fully solid cells (Vf = 0) are frozen. `box = (x0, x1, y0, y1, h)`: a rectangular obstacle
 [x0, x1] × [y0, y1] × [0, h] on the ground, with exact fractions (aligned with the grid faces:
-only full and solid cells; shifted: cut cells).
+only full and solid cells; shifted: cut cells). `mask`: the cut cells and their neighbours within
+`mask_width` cells (x, y, z), the region treated implicitly by `implicit = :mask` (model); `Mx`,
+`My` mark the horizontal faces of masked cells.
+
+`terrain = :follow`: the terrain `zs` maps the grid instead (Gal-Chen): z = z_s + η J,
+J = 1 - z_s/H, cells uniform in (x, y, η) with all fractions 1. `Jc`, `Jx`, `Jy`: J in the cell
+columns and at the x- and y-face columns; `zxf`, `zyf`: ∂z/∂x|η, ∂z/∂y|η at the η-faces of the
+cell columns (centred terrain slope (z_s(x+Δx/2) - z_s(x-Δx/2))/Δx, so that a uniform flow is
+preserved); `zxx`, `zyy`: at the η-faces of the x- and y-face columns (slope (z_s,i - z_s,i-1)/Δx
+of the cell values, so that the discrete metric identity δx J = -δη z_x holds); `Zc`, `Zf`
+physical heights of the centres and η-faces.
 """
 struct Grid3D
     nx::Int
@@ -37,7 +49,20 @@ struct Grid3D
     Ay::Array{Float64,3}          # open fraction of the left y-face (nx, ny, nz)
     Az::Array{Float64,3}          # open fraction of the lower z-face (nx, ny, nz+1)
     full::BitArray{3}             # Vf == 1 (third-order stencils allowed)
+    mask::BitArray{3}             # cut cells and their neighbours (implicit region)
+    Mx::Array{Float64,3}          # 1 on the x-faces of masked cells, else 0
+    My::Array{Float64,3}          # 1 on the y-faces of masked cells, else 0
     cut::Bool
+    follow::Bool                  # terrain-following metric
+    Jc::Matrix{Float64}           # J = 1 - z_s/H: cell columns (nx, ny)
+    Jx::Matrix{Float64}           #   x-face columns
+    Jy::Matrix{Float64}           #   y-face columns
+    zxf::Array{Float64,3}         # ∂z/∂x|η at the η-faces of the cell columns (nx, ny, nz+1)
+    zyf::Array{Float64,3}         # ∂z/∂y|η at the η-faces of the cell columns
+    zxx::Array{Float64,3}         # ∂z/∂x|η at the η-faces of the x-face columns
+    zyy::Array{Float64,3}         # ∂z/∂y|η at the η-faces of the y-face columns
+    Zc::Array{Float64,3}          # physical heights of the centres (nx, ny, nz)
+    Zf::Array{Float64,3}          # physical heights of the η-faces (nx, ny, nz+1)
     zs::Any
     αmin::Float64
 end
@@ -64,12 +89,18 @@ const _GW = (0.3478548451374538, 0.6521451548625462, 0.6521451548625462, 0.34785
 """Length of the overlap of the intervals [a0, a1] and [b0, b1]."""
 @inline _ov(a0, a1, b0, b1) = max(0.0, min(a1, b1) - max(a0, b0))
 
-function Grid3D(nx, ny, nz, Lx, Ly, H; zs = nothing, box = nothing, αmin = 0.2)
+function Grid3D(nx, ny, nz, Lx, Ly, H; zs = nothing, terrain::Symbol = :cut, box = nothing, αmin = 0.2,
+                mask_width = 1)
     zs !== nothing && box !== nothing && error("Grid3D: give zs or box, not both")
+    terrain in (:cut, :follow) || error("terrain: :cut or :follow")
+    follow = zs !== nothing && terrain === :follow
+    zcut = follow ? nothing : zs
     dx, dy, dz = Lx / nx, Ly / ny, H / nz
     xc = [(i - 0.5) * dx for i in 1:nx]; yc = [(j - 0.5) * dy for j in 1:ny]; zc = [(k - 0.5) * dz for k in 1:nz]
     xf = [(i - 1) * dx for i in 1:nx]; yf = [(j - 1) * dy for j in 1:ny]; zf = [(k - 1) * dz for k in 1:nz+1]
     Vf = ones(nx, ny, nz); Ax = ones(nx, ny, nz); Ay = ones(nx, ny, nz); Az = ones(nx, ny, nz + 1)
+    zs_ = zs
+    zs = zcut
     if zs !== nothing
         # quadrature points of a cell footprint and of the faces
         for k in 1:nz, j in 1:ny, i in 1:nx
@@ -110,6 +141,34 @@ function Grid3D(nx, ny, nz, Lx, Ly, H; zs = nothing, box = nothing, αmin = 0.2)
     end
     Az[:, :, 1] .= 0.0; Az[:, :, nz+1] .= 0.0                   # walls
     invV = [v > 0 ? 1 / max(v, αmin) : 0.0 for v in Vf]
+    cutc = 0 .< Vf .< 1
+    mask = falses(nx, ny, nz)
+    w = mask_width
+    for k in 1:nz, j in 1:ny, i in 1:nx
+        Vf[i, j, k] > 0 || continue
+        mask[i, j, k] = any(cutc[mod1(i + a, nx), mod1(j + b, ny), kk] for a in -w:w, b in -w:w, kk in max(1, k - w):min(nz, k + w))
+    end
+    Mx = [Float64(mask[i, j, k] || mask[mod1(i - 1, nx), j, k]) for i in 1:nx, j in 1:ny, k in 1:nz]
+    My = [Float64(mask[i, j, k] || mask[i, mod1(j - 1, ny), k]) for i in 1:nx, j in 1:ny, k in 1:nz]
+    # terrain-following metric (trivial for Cartesian grids)
+    h(x, y) = follow ? Float64(zs_(x, y)) : 0.0
+    zsc = [h(xc[i], yc[j]) for i in 1:nx, j in 1:ny]
+    (maximum(zsc) < H && minimum(zsc) >= 0) || error("terrain must satisfy 0 ≤ zs < H")
+    Jc = 1 .- zsc ./ H
+    Jx = [1 - h(xf[i], yc[j]) / H for i in 1:nx, j in 1:ny]
+    Jy = [1 - h(xc[i], yf[j]) / H for i in 1:nx, j in 1:ny]
+    sx = [(h(xc[i] + dx / 2, yc[j]) - h(xc[i] - dx / 2, yc[j])) / dx for i in 1:nx, j in 1:ny]
+    sy = [(h(xc[i], yc[j] + dy / 2) - h(xc[i], yc[j] - dy / 2)) / dy for i in 1:nx, j in 1:ny]
+    sxx = [(zsc[i, j] - zsc[mod1(i - 1, nx), j]) / dx for i in 1:nx, j in 1:ny]
+    syy = [(zsc[i, j] - zsc[i, mod1(j - 1, ny)]) / dy for i in 1:nx, j in 1:ny]
+    fac = [1 - zf[k] / H for k in 1:nz+1]
+    zxf = [sx[i, j] * fac[k] for i in 1:nx, j in 1:ny, k in 1:nz+1]
+    zyf = [sy[i, j] * fac[k] for i in 1:nx, j in 1:ny, k in 1:nz+1]
+    zxx = [sxx[i, j] * fac[k] for i in 1:nx, j in 1:ny, k in 1:nz+1]
+    zyy = [syy[i, j] * fac[k] for i in 1:nx, j in 1:ny, k in 1:nz+1]
+    Zc = [zsc[i, j] + zc[k] * Jc[i, j] for i in 1:nx, j in 1:ny, k in 1:nz]
+    Zf = [zsc[i, j] + zf[k] * Jc[i, j] for i in 1:nx, j in 1:ny, k in 1:nz+1]
     return Grid3D(nx, ny, nz, Lx, Ly, H, dx, dy, dz, xc, yc, zc, xf, yf, zf, Vf, invV, Ax, Ay, Az,
-                  Vf .== 1, zs !== nothing || box !== nothing, zs === nothing ? box : zs, Float64(αmin))
+                  Vf .== 1, mask, Mx, My, zs !== nothing || box !== nothing, follow, Jc, Jx, Jy, zxf, zyf, zxx, zyy, Zc, Zf,
+                  follow ? zs_ : (zs === nothing ? box : zs), Float64(αmin))
 end

@@ -16,12 +16,13 @@ solve for W (`column.jl`). No background state is subtracted; the sponge damps W
 module FV3D
 
 using ..Common: Gas, pressure
+using LinearAlgebra, SparseArrays
 using ..FV2D: interp3, interp2
 import ..TimeStepping: rhs_nonlinear!, frozen_ncoef, frozen_data!, frozen_fast!, frozen_stage_begin!,
                        frozen_vertical_step!
 
 export Grid3D, Model3D, project3d, total3d, with_sponge, sponge!, sound_speed_max, theta_prime,
-       vertical_velocity, hydrostatic_column, level, FV3D_PRESSURE_FORM, iρ, iU, iV, iW, iΘ, nunknowns
+       vertical_velocity, hydrostatic_column, balanced_state, level, FV3D_PRESSURE_FORM, iρ, iU, iV, iW, iΘ, nunknowns
 
 include("grid.jl")
 include("model.jl")

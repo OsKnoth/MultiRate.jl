@@ -598,6 +598,38 @@ end
             @test all(isfinite, qe) && maximum(abs, F3.vertical_velocity(mb, qe)) < 5
             @test abs(F3.total3d(mb, qe, :ρ) / F3.total3d(mb, q0, :ρ) - 1) < 1e-12
         end
+        # mask (cut cells and neighbours) with the implicit masked step: parts, exact implicit matrix
+        mk = F3.Model3D(F3.Grid3D(8, 8, 6, 20e3, 20e3, 6e3; zs = hill, αmin = 0.01), gas, ρr, Θr; implicit = :mask)
+        @test count(mk.grid.mask) > count(0 .< mk.grid.Vf .< 1)
+        qk = F3.project3d(mk, (x, y, z) -> (ρr(z) * (1 + 1e-3 * sin(x / 3e3)), 10ρr(z), 5ρr(z), 0.1ρr(z) * sin(π * z / 6e3), Θr(z)))
+        Ck = zeros(TS.frozen_ncoef(mk)); Sk = zeros(mk.nq); TS.frozen_data!(Ck, Sk, mk, qk)
+        ok(p) = TS.frozen_fast!(zeros(mk.nq), mk, Ck, qk, p, Sk)
+        @test maximum(abs, ok(:hthermo) + ok(:hmomentum) + ok(:vertical) - ok(:all)) < 1e-14 * maximum(abs, ok(:all))
+        sk = TS.frozen_stage_begin!(mk, Ck, qk)
+        vk = 1e-3 .* sin.(1:mk.nq)
+        Gk(x) = TS.frozen_fast!(zeros(mk.nq), mk, Ck, x, :vertical, Sk)
+        @test maximum(abs, sk.J * vk - (Gk(qk .+ vk) - Gk(qk))) < 1e-10 * maximum(abs, sk.J * vk)
+        # terrain following (Gal-Chen): zs = 0 is the flat grid, discrete GCL, constant θ, parts,
+        # exact column solve, conservation, W at rest in the balanced state
+        gt0 = F3.Grid3D(8, 8, 6, 20e3, 20e3, 6e3; zs = (x, y) -> 0.0, terrain = :follow)
+        @test TS.rhs_nonlinear(F3.Model3D(gt0, gas, ρr, Θr), qf) == TS.rhs_nonlinear(F3.Model3D(gf, gas, ρr, Θr), qf)
+        gt = F3.Grid3D(8, 8, 6, 20e3, 20e3, 6e3; zs = (x, y) -> 600.0 * exp(-((x - 10e3)^2 + (y - 10e3)^2) / 3e3^2), terrain = :follow)
+        mt = F3.Model3D(gt, gas, ρr, Θr)
+        Nc = TS.rhs_nonlinear(mt, F3.project3d(mt, (x, y, z) -> (1.0, 10.0, 5.0, 0.0, 300.0)))
+        @test maximum(abs(Nc[F3.iρ(gt, i, j, k)]) for i in 1:8, j in 1:8, k in 2:6) < 1e-15
+        @test maximum(abs(Nc[F3.iΘ(gt, i, j, k)] - 300 * Nc[F3.iρ(gt, i, j, k)]) for i in 1:8, j in 1:8, k in 1:6) < 1e-13
+        qt = F3.project3d(mt, (x, y, z) -> (ρr(z) * (1 + 1e-3 * sin(x / 3e3)), 10ρr(z), 5ρr(z), 0.1ρr(z) * sin(π * z / 6e3), Θr(z)))
+        Ct = zeros(TS.frozen_ncoef(mt)); St = zeros(mt.nq); TS.frozen_data!(Ct, St, mt, qt)
+        ot(p) = TS.frozen_fast!(zeros(mt.nq), mt, Ct, qt, p, St)
+        Nt = TS.rhs_nonlinear(mt, qt)
+        @test maximum(abs, ot(:hthermo) + ot(:hmomentum) + ot(:vertical) - Nt) < 1e-14 * maximum(abs, Nt)
+        @test abs(F3.total3d(mt, Nt, :ρ)) < 1e-14 * F3.total3d(mt, qt, :ρ)
+        st = TS.frozen_stage_begin!(mt, Ct, qt)
+        Yt = zeros(mt.nq); F3.column_solve!(Yt, st, mt, 3.0, R)
+        Gt(x) = TS.frozen_fast!(zeros(mt.nq), mt, Ct, x, :vertical, St)
+        @test maximum(abs.(Yt .- 3.0 .* (Gt(qt .+ Yt) .- Gt(qt)) .- R)) < 1e-9 * maximum(abs, R)
+        Nb = TS.rhs_nonlinear(mt, F3.balanced_state(mt, Θr, ρr))
+        @test maximum(abs(Nb[F3.iW(gt, i, j, k)]) for i in 1:8, j in 1:8, k in 2:6) < 1e-13
         # second-order convergence of the frozen MIS54 / HEVI step from a balanced state
         g = F3.Grid3D(20, 2, 8, 100e3, 10e3, 10e3); m = F3.Model3D(g, gas, ρr, Θr)
         ρb = F3.hydrostatic_column(m, Θr; ρbottom = ρr(g.zc[1]))

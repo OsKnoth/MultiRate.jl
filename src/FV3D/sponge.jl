@@ -14,7 +14,7 @@ function with_sponge(m::Model3D, qtarget::AbstractVector; zD::Real, αtop::Real 
         z = g.zf[k]
         damp[iW(g, i, j, k)] = z > zD ? αtop * sin(π / 2 * (z - zD) / (g.H - zD))^2 : 0.0
     end
-    return Model3D(g, m.gas, m.nq, m.ρref, m.Θref, damp, Vector{Float64}(qtarget), m.cache)
+    return Model3D(g, m.gas, m.nq, m.ρref, m.Θref, damp, Vector{Float64}(qtarget), m.cache, m.implicit)
 end
 
 """Add the sponge -α (W - W_target) to the W rows of out (no other rows)."""
