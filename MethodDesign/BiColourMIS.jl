@@ -32,7 +32,7 @@ The arithmetic is generic: Float64, Rational{BigInt} (exact residuals) or any nu
 """
 module BiColourMIS
 
-export BTree, trees, order, density, additive, notation, Method, mis_method, eta, residuals, order_of
+export BTree, trees, order, density, additive, linear_z, linear_y, in_class, notation, Method, mis_method, eta, residuals, order_of
 
 # ------------------------------------------------------------------ bicoloured trees
 
@@ -53,6 +53,17 @@ order(t::BTree) = 1 + sum((order(c) for (_, c) in t.children); init = 0)
 density(t::BTree) = order(t) * prod((density(c) for (_, c) in t.children); init = 1)
 """Each vertex has children of one colour only (the trees of an additive F = f(y) + g(z))."""
 additive(t::BTree) = (length(unique(w for (w, _) in t.children)) <= 1) && all(additive(c) for (_, c) in t.children)
+"""Each vertex has at most one white child: F affine in the evolving argument, F(y, z) = S(y) + A(y) z
+(F_(k,l) = 0 for l ≥ 2), as the frozen FV and DG splits with the product-form pressure."""
+linear_z(t::BTree) = count(w for (w, _) in t.children) <= 1 && all(linear_z(c) for (_, c) in t.children)
+"""Each vertex has at most one black child: F affine in the frozen argument."""
+linear_y(t::BTree) = count(!w for (w, _) in t.children) <= 1 && all(linear_y(c) for (_, c) in t.children)
+"""Tree classes: :general (any F), :additive (F = f(y) + g(z)), :linz (F = S(y) + A(y) z),
+:linz_additive (F = f(y) + A z), :liny (affine in y), :bilinear (affine in both)."""
+in_class(t::BTree, class::Symbol) =
+    class === :general ? true : class === :additive ? additive(t) : class === :linz ? linear_z(t) :
+    class === :linz_additive ? (linear_z(t) && additive(t)) : class === :liny ? linear_y(t) :
+    class === :bilinear ? (linear_z(t) && linear_y(t)) : error("unknown tree class $class")
 
 """Notation of DocuMISBI: black leaf `.`, white leaf `o`, black subtree `[…]`, white subtree `(…)`;
 the root as `[…]` (or `.`)."""
@@ -150,21 +161,21 @@ function _zeta(m::Method{T}, i::Int, t::BTree, cache) where {T}
     return z
 end
 
-"""Residuals η_{s+1}(t) - 1/γ(t) for all trees with ≤ p vertices (additive: only additive trees),
-as a vector of (tree, residual)."""
-function residuals(m::Method{T}, p::Int; additive_only::Bool = false) where {T}
+"""Residuals η_{s+1}(t) - 1/γ(t) for all trees with ≤ p vertices of the class (`in_class`;
+additive_only = true is class = :additive), as a vector of (tree, residual)."""
+function residuals(m::Method{T}, p::Int; additive_only::Bool = false, class::Symbol = additive_only ? :additive : :general) where {T}
     cache = Dict{Tuple{Int,String},Any}()
     out = Tuple{BTree,Any}[]
     for n in 1:p, t in trees(n)
-        additive_only && !additive(t) && continue
+        in_class(t, class) || continue
         push!(out, (t, eta(m, t, cache) - one(T) / density(t)))
     end
     return out
 end
 
 """Largest p ≤ pmax with all residuals of order ≤ p below tol."""
-function order_of(m::Method, pmax::Int = 5; additive_only::Bool = false, tol = 1e-10)
-    r = residuals(m, pmax; additive_only)
+function order_of(m::Method, pmax::Int = 5; additive_only::Bool = false, class::Symbol = additive_only ? :additive : :general, tol = 1e-10)
+    r = residuals(m, pmax; class)
     p = 0
     for n in 1:pmax
         all(abs(Float64(x)) < tol for (t, x) in r if order(t) == n) || break

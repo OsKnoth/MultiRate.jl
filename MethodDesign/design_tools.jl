@@ -22,18 +22,18 @@ end
 pack(α, β, γ) = (s = size(α, 1); vcat([α[i, j] for (i, j) in lower_pairs(s)], [γ[i, j] for (i, j) in lower_pairs(s)],
                                        [β[i, j] for (i, j) in lowerdiag_pairs(s)]))
 
-"""Residuals of all bicoloured trees ≤ p (additive_only: additive trees) and the stage-time
+"""Residuals of all bicoloured trees ≤ p of the class (`in_class`) and the stage-time
 constraints d_i = Σ_j β_ij ≥ dmin."""
-function resvec(x, s, p; additive_only = false, dmin = 0.1)
+function resvec(x, s, p; additive_only = false, class = additive_only ? :additive : :general, dmin = 0.1)
     α, β, γ = unpack(x, s)
-    r = [v for (_, v) in residuals(mis_method("x", α, β, γ), p; additive_only)]
+    r = [v for (_, v) in residuals(mis_method("x", α, β, γ), p; class)]
     d = vec(sum(β; dims = 2))
     return vcat(r, [3 * max(zero(di), dmin - di) for di in d])
 end
 
 """Project x onto the order conditions (Levenberg–Marquardt, minimum-norm steps). Returns (x, max|r|)."""
-function refine(x, s, p; iters = 100, additive_only = false)
-    f(y) = resvec(y, s, p; additive_only)
+function refine(x, s, p; iters = 100, additive_only = false, class = additive_only ? :additive : :general)
+    f(y) = resvec(y, s, p; class)
     μ = 1e-6
     r = f(x)
     for _ in 1:iters
@@ -52,8 +52,8 @@ function refine(x, s, p; iters = 100, additive_only = false)
 end
 
 """Norm of the residuals of order p+1 (error constant)."""
-function error_constant(x, s, p)
+function error_constant(x, s, p; class = :general)
     α, β, γ = unpack(x, s)
-    r = residuals(mis_method("x", α, β, γ), p + 1)
+    r = residuals(mis_method("x", α, β, γ), p + 1; class)
     return sqrt(sum(abs2(v) for (t, v) in r if order(t) == p + 1))
 end

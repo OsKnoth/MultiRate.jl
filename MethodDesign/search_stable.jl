@@ -20,6 +20,7 @@
 include(joinpath(@__DIR__, "design_tools.jl"))
 include(joinpath(@__DIR__, "stability.jl"))
 using Optim, Random
+const CLASS = Symbol(get(ENV, "CLASS", "general"))   # tree class of the order conditions (BiColourMIS.in_class)
 
 s = length(ARGS) >= 1 ? parse(Int, ARGS[1]) : 4
 p = length(ARGS) >= 2 ? parse(Int, ARGS[2]) : 3
@@ -44,25 +45,25 @@ function tableau(x)
 end
 
 function objective(x)
-    xp, r = refine(x, s, p; iters = 30)
+    xp, r = refine(x, s, p; iters = 30, class = CLASS)
     r > 1e-10 && return 1e3 + r
-    return stability_penalty(tableau(xp); Cs = CS, Ca = CA, nmodes = 16) + WERR * error_constant(xp, s, p)^2
+    return stability_penalty(tableau(xp); Cs = CS, Ca = CA, nmodes = 16) + WERR * error_constant(xp, s, p; class = CLASS)^2
 end
 
 Random.seed!(2)
 best = []
 for k in 1:nstart
     xs = xfrom === nothing ? 0.5 .* randn(nvars(s)) : xfrom .+ (k == 1 ? 0.0 : 0.05) .* randn(nvars(s))
-    x0, r0 = refine(xs, s, p)
+    x0, r0 = refine(xs, s, p; class = CLASS)
     r0 > 1e-10 && continue
     f0 = objective(x0)
     @printf("start %d: penalty %.3e\n", k, f0)
     res = optimize(objective, x0, NelderMead(), Optim.Options(iterations = 3000, f_tol = 1e-12))
-    xb, _ = refine(Optim.minimizer(res), s, p)
+    xb, _ = refine(Optim.minimizer(res), s, p; class = CLASS)
     f = objective(xb)
     f > f0 && ((xb, f) = (x0, f0))
     lim = [adv_limit(tableau(xb), cs; nmodes = 24) for cs in CS]
-    @printf("   -> objective %.3e, error constant %.3e, C_adv limits %s\n", f, error_constant(xb, s, p),
+    @printf("   -> objective %.3e, error constant %.3e, C_adv limits %s\n", f, error_constant(xb, s, p; class = CLASS),
             join([@sprintf("%.2f", l) for l in lim], " "))
     push!(best, (minimum(lim), f, xb))
 end
@@ -71,6 +72,6 @@ xb = best[1][3]
 α, β, γ = unpack(xb, s)
 m = mis_method("best", α, β, γ)
 @printf("\nbest: min C_adv limit %.2f, frozen order %d, additive order %d, error constant %.3e\n", best[1][1],
-        order_of(m, p + 1; tol = 1e-9), order_of(m, p + 1; additive_only = true, tol = 1e-9), error_constant(xb, s, p))
+        order_of(m, p + 1; class = CLASS, tol = 1e-9), order_of(m, p + 1; additive_only = true, tol = 1e-9), error_constant(xb, s, p; class = CLASS))
 println("α = ", repr(α)); println("β = ", repr(β)); println("γ = ", repr(γ))
 println("d = ", vec(sum(β; dims = 2)))

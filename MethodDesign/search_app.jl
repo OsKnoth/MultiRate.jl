@@ -12,6 +12,7 @@
 include(joinpath(@__DIR__, "design_tools.jl"))
 include(joinpath(@__DIR__, "app_stability.jl"))
 using Optim, Random
+const CLASS = Symbol(get(ENV, "CLASS", "general"))   # tree class of the order conditions (BiColourMIS.in_class)
 
 app = Symbol(ARGS[1])
 s = parse(Int, ARGS[2]); p = parse(Int, ARGS[3])
@@ -25,9 +26,9 @@ Mdesign = app === :fv ? app_modes(:fv; Us = (10.0, 20.0, 40.0), nθ = 8) :
 @printf("design model %s: block %d, %d winds, %d modes\n", app, length(Mdesign.Λ[1]), length(Mdesign.Us), length(Mdesign.θs))
 
 function objective(x)
-    xp, r = refine(x, s, p; iters = 30)
+    xp, r = refine(x, s, p; iters = 30, class = CLASS)
     r > 1e-10 && return 1e3 + r
-    return app_penalty(Mdesign, unpack(xp, s); Ca = CA) + 1e-3 * error_constant(xp, s, p)^2
+    return app_penalty(Mdesign, unpack(xp, s); Ca = CA) + 1e-3 * error_constant(xp, s, p; class = CLASS)^2
 end
 
 Random.seed!(3)
@@ -35,14 +36,14 @@ xfrom = from === nothing ? nothing : pack(compact_tableau(TSA.mis_tableau(from))
 best = []
 for k in 1:nstart
     xs = xfrom === nothing ? 0.5 .* randn(nvars(s)) : xfrom .+ (k == 1 ? 0.0 : 0.05) .* randn(nvars(s))
-    x0, r0 = refine(xs, s, p)
+    x0, r0 = refine(xs, s, p; class = CLASS)
     r0 > 1e-10 && continue
     f0 = objective(x0)
     res = optimize(objective, x0, NelderMead(), Optim.Options(iterations = 800))
-    xb, _ = refine(Optim.minimizer(res), s, p)
+    xb, _ = refine(Optim.minimizer(res), s, p; class = CLASS)
     f = objective(xb)
     f > f0 && ((xb, f) = (x0, f0))
-    @printf("start %d: penalty %.3e -> %.3e, error constant %.3e\n", k, f0, f, error_constant(xb, s, p)); flush(stdout)
+    @printf("start %d: penalty %.3e -> %.3e, error constant %.3e\n", k, f0, f, error_constant(xb, s, p; class = CLASS)); flush(stdout)
     push!(best, (f, xb))
 end
 sort!(best; by = first)
@@ -51,7 +52,7 @@ xb = best[1][2]
 m = mis_method("best", α, β, γ)
 M = app_modes(app)
 @printf("\nbest: objective %.3e, frozen order %d, additive order %d, error constant %.3e\n", best[1][1],
-        order_of(m, p + 1; tol = 1e-9), order_of(m, p + 1; additive_only = true, tol = 1e-9), error_constant(xb, s, p))
+        order_of(m, p + 1; class = CLASS, tol = 1e-9), order_of(m, p + 1; additive_only = true, tol = 1e-9), error_constant(xb, s, p; class = CLASS))
 @printf("full %s model, largest stable C_adv for U = %s m/s: %s\n", app, join(Int.(M.Us), "/"),
         join([@sprintf("%.1f", l) for l in app_limits(M, (α, β, γ))], " "))
 println("α = ", repr(α)); println("β = ", repr(β)); println("γ = ", repr(γ))
