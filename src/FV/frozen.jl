@@ -29,6 +29,12 @@ frozen_ncoef(m::FVModel) = (_flat_only(m); 2 * (m.grid.nx * m.grid.nz + m.grid.n
 @inline _P1(C, g, i, k) = C[_off3(g)+i+(k-1)*g.nx]
 @inline _P2(C, g, i, k) = C[_off3(g)+g.nx*g.nz+i+(k-1)*g.nx]
 
+"""Pressure form of the fast part, chosen once per call (`FV_PRESSURE_FORM`)."""
+struct GradP end      # p(Θ_z) at the centres, differences across the faces
+struct Product end    # (dp/dΘ)_f(y) (Θ_r - Θ_l), the face derivative frozen in C
+pressure_form() = FV_PRESSURE_FORM[] === :product ? Product() : GradP()
+
+
 """C(y) and the slow part S(y) (momentum advection) of the flat FV operator."""
 function frozen_data!(C, S, m::FVModel, q)
     _flat_only(m)
@@ -36,7 +42,6 @@ function frozen_data!(C, S, m::FVModel, q)
     nx, nz, dx, dz = g.nx, g.nz, g.dx, g.dz
     c = m.cache
     u, w, θ = c.u, c.w, c.θ
-    mode = FV_PRESSURE_FORM[]
     _no_background(m)
     @inbounds for k in 1:nz, i in 1:nx
         ρ = q[iρ(g, i, k)]
@@ -52,16 +57,10 @@ function frozen_data!(C, S, m::FVModel, q)
     end
     fill!(C, 0.0)
     fill!(S, 0.0)
-    o3 = _off3(g)
     @inbounds for k in 1:nz, i in 1:nx
         U = q[iU(g, i, k)]
         C[i+(k-1)*nx] = interp3(θ[ip(g, i - 2), k], θ[ip(g, i - 1), k], θ[i, k], θ[ip(g, i + 1), k], U)
         k > 1 && (C[nx*nz+i+(k-1)*nx] = face_z(θ, i, k, nz, q[iW(g, i, k)]))
-        Θc = q[iΘ(g, i, k)]
-        if mode === :product
-            C[o3+i+(k-1)*nx] = dpdΘ_face(m.gas, q[iΘ(g, i - 1, k)], Θc)
-            k > 1 && (C[o3+nx*nz+i+(k-1)*nx] = dpdΘ_face(m.gas, q[iΘ(g, i, k - 1)], Θc))
-        end
         # momentum advection, as in rhs_nonlinear!
         Uc = 0.5 * (q[iU(g, i, k)] + q[iU(g, i + 1, k)])
         uc = interp3(u[ip(g, i - 1), k], u[i, k], u[ip(g, i + 1), k], u[ip(g, i + 2), k], Uc)
@@ -86,84 +85,139 @@ function frozen_data!(C, S, m::FVModel, q)
         k + 1 <= nz && (S[iW(g, i, k + 1)] += Wc * wc / dz)
         k >= 2 && (S[iW(g, i, k)] -= Wc * wc / dz)
     end
+    pressure_coefficients!(pressure_form(), C, m, q)
     return C, S
 end
 
-"""Parts of the fast tendency: (horizontal terms, vertical terms, rows ρ/Θ, U, W, forcing and
-sponge on ρ/Θ, U, W). :hthermo/:hmomentum/:vertical are the pieces of the HEVI loop (forcing once,
-in the horizontal parts, as in `hevi_loop!`)."""
-@inline function _frozen_part(part::Symbol)
-    part === :all && return (true, true, true, true, true, true, true, true)
-    part === :thermo && return (true, true, true, false, false, true, false, false)
-    part === :momentum && return (true, true, false, true, true, false, true, true)
-    part === :hthermo && return (true, false, true, false, false, true, false, true)
-    part === :hmomentum && return (true, false, false, true, false, false, true, false)
-    part === :vertical && return (false, true, true, false, true, false, false, false)
-    error("frozen_fast!: unknown part $part")
-end
-
-"""Pressure difference p'_{right/top} - p'_{left/bottom} across an x-face (dir = 1) or z-face
-(dir = 2) of the fast part, for the selected pressure form (pp holds p' at the centres for
-:gradp)."""
-@inline function _dp(m, C, z, pp, mode, i, k, dir)
+"""Frozen pressure coefficients: Product the face derivatives (dp/dΘ)_f(y) (P1, P2 of C); GradP none."""
+function pressure_coefficients!(::Product, C, m::FVModel, q)
     g = m.grid
-    if mode === :product
-        if dir == 1
-            il = ip(g, i - 1)
-            return _P1(C, g, i, k) * (z[iΘ(g, i, k)] - z[iΘ(g, il, k)])
-        else
-            return _P2(C, g, i, k) * (z[iΘ(g, i, k)] - z[iΘ(g, i, k - 1)])
-        end
+    nx, nz = g.nx, g.nz
+    o3 = _off3(g)
+    @inbounds for k in 1:nz, i in 1:nx
+        Θc = q[iΘ(g, i, k)]
+        C[o3+i+(k-1)*nx] = dpdΘ_face(m.gas, q[iΘ(g, i - 1, k)], Θc)
+        k > 1 && (C[o3+nx*nz+i+(k-1)*nx] = dpdΘ_face(m.gas, q[iΘ(g, i, k - 1)], Θc))
     end
-    return dir == 1 ? pp[i, k] - pp[ip(g, i - 1), k] : pp[i, k] - pp[i, k-1]
+    return C
 end
+pressure_coefficients!(::GradP, C, m::FVModel, q) = C
 
-"""Fast part F_f(C, z) + F (and the sponge) on the rows of part (see `_frozen_part`)."""
-function frozen_fast!(out, m::FVModel, C, z, part::Symbol, F)
+# ------------------------------------------------------------------ pressure form
+
+"""Prepare the pressure of the fast state z (GradP: p(Θ_z) at the centres in m.cache.pp)."""
+function prepare_pressure!(::GradP, m::FVModel, z)
     g = m.grid
-    nx, nz, dx, dz = g.nx, g.nz, g.dx, g.dz
-    grav = m.gas.g
-    hor, ver, rT, rU, rW, fT, fU, fW = _frozen_part(part)
-    mode = FV_PRESSURE_FORM[]
     pp = m.cache.pp
+    @inbounds for k in 1:g.nz, i in 1:g.nx
+        pp[i, k] = pressure(m.gas, z[iΘ(g, i, k)])
+    end
+    return nothing
+end
+prepare_pressure!(::Product, m::FVModel, z) = nothing
+
+"""Pressure difference right - left across the x-face (i - 1/2, k) and top - bottom across the
+z-face (i, k - 1/2)."""
+@inline dp_x(::GradP, m, C, z, i, k) = m.cache.pp[i, k] - m.cache.pp[ip(m.grid, i - 1), k]
+@inline dp_z(::GradP, m, C, z, i, k) = m.cache.pp[i, k] - m.cache.pp[i, k-1]
+@inline dp_x(::Product, m, C, z, i, k) = (g = m.grid; _P1(C, g, i, k) * (z[iΘ(g, i, k)] - z[iΘ(g, ip(g, i - 1), k)]))
+@inline dp_z(::Product, m, C, z, i, k) = (g = m.grid; _P2(C, g, i, k) * (z[iΘ(g, i, k)] - z[iΘ(g, i, k - 1)]))
+
+# ------------------------------------------------------------------ building blocks of the fast part
+# Each block adds its terms to `out` (rows named in the comment) and nothing else. The momentum
+# blocks need `prepare_pressure!` (once per call) before them.
+
+"""Thermodynamic part, horizontal (ρ, Θ rows): -∂x U, -∂x(θx(y) U)."""
+function thermo_h!(out, m::FVModel, C, z)
+    g = m.grid
+    @inbounds for k in 1:g.nz, i in 1:g.nx
+        Ul, Ur = z[iU(g, i, k)], z[iU(g, i + 1, k)]
+        out[iρ(g, i, k)] -= (Ur - Ul) / g.dx
+        out[iΘ(g, i, k)] -= (_θx(C, g, ip(g, i + 1), k) * Ur - _θx(C, g, i, k) * Ul) / g.dx
+    end
+    return out
+end
+
+"""Thermodynamic part, vertical (ρ, Θ rows): -∂z W, -∂z(θz(y) W)."""
+function thermo_v!(out, m::FVModel, C, z)
+    g = m.grid
+    @inbounds for k in 1:g.nz, i in 1:g.nx
+        Wb, Wt = Wface(g, z, i, k), Wface(g, z, i, k + 1)
+        out[iρ(g, i, k)] -= (Wt - Wb) / g.dz
+        out[iΘ(g, i, k)] -= (_θz(C, g, i, k + 1) * Wt - _θz(C, g, i, k) * Wb) / g.dz
+    end
+    return out
+end
+
+"""Momentum part, horizontal (U rows): -∂x p."""
+function momentum_h!(out, m::FVModel, C, z, pf)
+    g = m.grid
+    @inbounds for k in 1:g.nz, i in 1:g.nx
+        out[iU(g, i, k)] -= dp_x(pf, m, C, z, i, k) / g.dx
+    end
+    return out
+end
+
+"""Momentum part, vertical (W rows): -∂z p - g ρ (ρ the mean of the two cells)."""
+function momentum_v!(out, m::FVModel, C, z, pf)
+    g = m.grid
+    grav = m.gas.g
+    @inbounds for k in 2:g.nz, i in 1:g.nx
+        out[iW(g, i, k)] -= dp_z(pf, m, C, z, i, k) / g.dz + grav * 0.5 * (z[iρ(g, i, k - 1)] + z[iρ(g, i, k)])
+    end
+    return out
+end
+
+"""Constant forcing F of the stage (slow part and MIS coupling terms) on the ρ, Θ / U / W rows."""
+function forcing_thermo!(out, m::FVModel, F)
+    g = m.grid
+    @inbounds for k in 1:g.nz, i in 1:g.nx
+        out[iρ(g, i, k)] += F[iρ(g, i, k)]
+        out[iΘ(g, i, k)] += F[iΘ(g, i, k)]
+    end
+    return out
+end
+function forcing_U!(out, m::FVModel, F)
+    g = m.grid
+    @inbounds for k in 1:g.nz, i in 1:g.nx
+        out[iU(g, i, k)] += F[iU(g, i, k)]
+    end
+    return out
+end
+function forcing_W!(out, m::FVModel, F)
+    g = m.grid
+    @inbounds for k in 2:g.nz, i in 1:g.nx
+        out[iW(g, i, k)] += F[iW(g, i, k)]
+    end
+    return out
+end
+
+# ------------------------------------------------------------------ the fast part as compositions
+# part        blocks
+# :all        thermo (h + v), momentum (h + v), forcing on all rows, sponge
+# :thermo     thermo (h + v), forcing ρ, Θ                         (Verlet: thermodynamic step)
+# :momentum   momentum (h + v), forcing U, W, sponge               (Verlet: momentum step)
+# :hthermo    thermo h, forcing ρ, Θ and W, sponge                 (HEVI: horizontal, with all
+# :hmomentum  momentum h, forcing U                                 forcing; the vertical part
+# :vertical   thermo v, momentum v                                  has none)
+
+_fast!(::Val{:all}, out, m, C, z, F, pf) = (thermo_h!(out, m, C, z); thermo_v!(out, m, C, z);
+    prepare_pressure!(pf, m, z); momentum_h!(out, m, C, z, pf); momentum_v!(out, m, C, z, pf);
+    forcing_thermo!(out, m, F); forcing_U!(out, m, F); forcing_W!(out, m, F); sponge!(out, m, z))
+_fast!(::Val{:thermo}, out, m, C, z, F, pf) = (thermo_h!(out, m, C, z); thermo_v!(out, m, C, z); forcing_thermo!(out, m, F))
+_fast!(::Val{:momentum}, out, m, C, z, F, pf) = (prepare_pressure!(pf, m, z); momentum_h!(out, m, C, z, pf); momentum_v!(out, m, C, z, pf);
+    forcing_U!(out, m, F); forcing_W!(out, m, F); sponge!(out, m, z))
+_fast!(::Val{:hthermo}, out, m, C, z, F, pf) = (thermo_h!(out, m, C, z); forcing_thermo!(out, m, F);
+    forcing_W!(out, m, F); sponge!(out, m, z))
+_fast!(::Val{:hmomentum}, out, m, C, z, F, pf) = (prepare_pressure!(pf, m, z); momentum_h!(out, m, C, z, pf); forcing_U!(out, m, F))
+_fast!(::Val{:vertical}, out, m, C, z, F, pf) = (thermo_v!(out, m, C, z); prepare_pressure!(pf, m, z);
+    momentum_v!(out, m, C, z, pf))
+_fast!(::Val{P}, out, m, C, z, F, pf) where {P} = error("frozen_fast!: unknown part $P")
+
+"""Fast part F_f(C, z) + F (and the sponge) on the rows of `part` (table above)."""
+function frozen_fast!(out, m::FVModel, C, z, part::Symbol, F)
     fill!(out, 0.0)
-    if (rU || rW) && mode !== :product
-        @inbounds for k in 1:nz, i in 1:nx
-            Θ = z[iΘ(g, i, k)]
-            pp[i, k] = pressure(m.gas, Θ)
-        end
-    end
-    @inbounds for k in 1:nz, i in 1:nx
-        if rT
-            Ul, Ur = z[iU(g, i, k)], z[iU(g, i + 1, k)]
-            Wb, Wt = Wface(g, z, i, k), Wface(g, z, i, k + 1)
-            fρ = 0.0; fΘ = 0.0
-            if hor
-                fρ -= (Ur - Ul) / dx
-                fΘ -= (_θx(C, g, ip(g, i + 1), k) * Ur - _θx(C, g, i, k) * Ul) / dx
-            end
-            if ver
-                fρ -= (Wt - Wb) / dz
-                fΘ -= (_θz(C, g, i, k + 1) * Wt - _θz(C, g, i, k) * Wb) / dz
-            end
-            out[iρ(g, i, k)] = fρ
-            out[iΘ(g, i, k)] = fΘ
-        end
-        rU && hor && (out[iU(g, i, k)] = -_dp(m, C, z, pp, mode, i, k, 1) / dx)
-        if rW && ver && k > 1
-            ρw = 0.5 * (z[iρ(g, i, k - 1)] + z[iρ(g, i, k)])
-            out[iW(g, i, k)] = -_dp(m, C, z, pp, mode, i, k, 2) / dz - grav * ρw
-        end
-    end
-    @inbounds for k in 1:nz, i in 1:nx
-        if fT
-            out[iρ(g, i, k)] += F[iρ(g, i, k)]
-            out[iΘ(g, i, k)] += F[iΘ(g, i, k)]
-        end
-        fU && (out[iU(g, i, k)] += F[iU(g, i, k)])
-        fW && k > 1 && (out[iW(g, i, k)] += F[iW(g, i, k)])
-    end
-    fW && sponge!(out, m, z)
+    _fast!(Val(part), out, m, C, z, F, pressure_form())
     return out
 end
 
@@ -195,19 +249,29 @@ end
 function frozen_stage_begin!(m::FVModel, C, z)
     s = _frozen_column(m)
     g = m.grid
-    mode = FV_PRESSURE_FORM[]
     @inbounds for k in 1:g.nz+1, i in 1:g.nx
         s.θz[i, k] = _θz(C, g, i, k)
     end
-    @inbounds for k in 2:g.nz, i in 1:g.nx
-        if mode === :product
-            s.α[i, k] = s.β[i, k] = _P2(C, g, i, k)
-        else
-            a(kk) = (Θ = z[iΘ(g, i, kk)]; m.gas.γ * pressure(m.gas, Θ) / Θ)
-            s.α[i, k] = a(k); s.β[i, k] = a(k - 1)
-        end
-    end
+    column_coefficients!(pressure_form(), s, m, C, z)
     empty!(s.factors)
+    return s
+end
+
+"""Coefficients α_k, β_k of the face pressure difference α_k Θ_k - β_k Θ_{k-1} in the column solve:
+Product the frozen face derivative (exact), GradP γ p/Θ of the cells at the stage start."""
+function column_coefficients!(::Product, s, m::FVModel, C, z)
+    g = m.grid
+    @inbounds for k in 2:g.nz, i in 1:g.nx
+        s.α[i, k] = s.β[i, k] = _P2(C, g, i, k)
+    end
+    return s
+end
+function column_coefficients!(::GradP, s, m::FVModel, C, z)
+    g = m.grid
+    a(i, k) = (Θ = z[iΘ(g, i, k)]; m.gas.γ * pressure(m.gas, Θ) / Θ)
+    @inbounds for k in 2:g.nz, i in 1:g.nx
+        s.α[i, k] = a(i, k); s.β[i, k] = a(i, k - 1)
+    end
     return s
 end
 
