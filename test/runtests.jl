@@ -539,6 +539,84 @@ end
     @test_throws ErrorException TS.frozen_ncoef(FV.FVModel(FV.FVGrid(8, 4, 40e3, 10e3; zs = x -> 100 * exp(-(x - 2e4)^2 / 1e8)), gas, ρr, Θr))
 end
 
+@testset "FV3D: 3D C-grid, cut cells, frozen split" begin
+    F3 = MultiRate.FV3D
+    gas = CM.Gas()
+    ρr, Θr, θr = CM.stratified_reference(gas)
+    try
+        # flat 3D with ny = 1 and V = 0 is the 2D FV operator (both pressure forms)
+        for form in (:gradp, :product)
+            FV.FV_PRESSURE_FORM[] = form; F3.FV3D_PRESSURE_FORM[] = form
+            m2 = FV.FVModel(FV.FVGrid(20, 8, 100e3, 10e3), gas, ρr, Θr); g2 = m2.grid
+            q2 = CM.project2d(m2, (x, z) -> (ρ = ρr(z) * (1 + 1e-3 * sin(2π * x / 100e3)); (ρ, 20ρ, 2.0 * sin(π * z / 10e3), Θr(z))))
+            g3 = F3.Grid3D(20, 1, 8, 100e3, 5e3, 10e3); m3 = F3.Model3D(g3, gas, ρr, Θr)
+            q3 = zeros(m3.nq)
+            for k in 1:8, i in 1:20
+                q3[F3.iρ(g3, i, 1, k)] = q2[FV.iρ(g2, i, k)]; q3[F3.iΘ(g3, i, 1, k)] = q2[FV.iΘ(g2, i, k)]
+                q3[F3.iU(g3, i, 1, k)] = q2[FV.iU(g2, i, k)]; k > 1 && (q3[F3.iW(g3, i, 1, k)] = q2[FV.iW(g2, i, k)])
+            end
+            N2 = TS.rhs_nonlinear(m2, q2); N3 = TS.rhs_nonlinear(m3, q3)
+            @test maximum(abs(N3[F(g3, i, 1, k)] - N2[G(g2, i, k)]) for (F, G, ks) in
+                          ((F3.iρ, FV.iρ, 1:8), (F3.iU, FV.iU, 1:8), (F3.iW, FV.iW, 2:8), (F3.iΘ, FV.iΘ, 1:8)) for k in ks for i in 1:20) <
+                  1e-13 * maximum(abs, N2)
+        end
+        FV.FV_PRESSURE_FORM[] = :gradp
+        # cut cells (hill): parts, conservation, exact column solve, flat limit
+        F3.FV3D_PRESSURE_FORM[] = :product
+        hill(x, y) = 1500.0 * exp(-((x - 10e3)^2 + (y - 10e3)^2) / 3e3^2)
+        gc = F3.Grid3D(8, 8, 6, 20e3, 20e3, 6e3; zs = hill); mc = F3.Model3D(gc, gas, ρr, Θr)
+        @test count(0 .< gc.Vf .< 1) > 0
+        q = F3.project3d(mc, (x, y, z) -> (ρr(z) * (1 + 1e-3 * sin(x / 3e3)), 10ρr(z), 5ρr(z), 0.1ρr(z) * sin(π * z / 6e3), Θr(z)))
+        C = zeros(TS.frozen_ncoef(mc)); S = zeros(mc.nq); TS.frozen_data!(C, S, mc, q)
+        o(p) = TS.frozen_fast!(zeros(mc.nq), mc, C, q, p, S)
+        N = TS.rhs_nonlinear(mc, q)
+        @test o(:all) == N
+        @test maximum(abs, o(:thermo) + o(:momentum) - N) < 1e-14 * maximum(abs, N)
+        @test maximum(abs, o(:hthermo) + o(:hmomentum) + o(:vertical) - N) < 1e-14 * maximum(abs, N)
+        @test abs(F3.total3d(mc, N, :ρ)) < 1e-14 * F3.total3d(mc, q, :ρ)
+        @test abs(F3.total3d(mc, N, :Θ)) < 1e-14 * F3.total3d(mc, q, :Θ)
+        s = TS.frozen_stage_begin!(mc, C, q)
+        R = 1e-3 .* sin.(1:mc.nq); Y = zeros(mc.nq)
+        F3.column_solve!(Y, s, mc, 3.0, R)
+        Gv(x) = TS.frozen_fast!(zeros(mc.nq), mc, C, x, :vertical, S)
+        @test maximum(abs.(Y .- 3.0 .* (Gv(q .+ Y) .- Gv(q)) .- R)) < 1e-9 * maximum(abs, R)
+        g0 = F3.Grid3D(8, 8, 6, 20e3, 20e3, 6e3; zs = (x, y) -> -1.0); gf = F3.Grid3D(8, 8, 6, 20e3, 20e3, 6e3)
+        qf = F3.project3d(F3.Model3D(gf, gas, ρr, Θr), (x, y, z) -> (ρr(z), 10ρr(z), 5ρr(z), 0.0, Θr(z)))
+        @test TS.rhs_nonlinear(F3.Model3D(g0, gas, ρr, Θr), qf) == TS.rhs_nonlinear(F3.Model3D(gf, gas, ρr, Θr), qf)
+        # cube resolved by the grid (full and solid cells) and shifted (cut cells): balanced rest
+        # state exactly steady, short flow run stable and conservative
+        for (box, ncut) in (((8e3, 12e3, 8e3, 12e3, 2000.0), 0), ((8.6e3, 12.6e3, 8.6e3, 12.6e3, 2300.0), -1))
+            gb = F3.Grid3D(10, 10, 6, 20e3, 20e3, 6e3; box)
+            ncut == 0 ? (@test count(0 .< gb.Vf .< 1) == 0) : (@test count(0 .< gb.Vf .< 1) > 0)
+            @test count(gb.Vf .== 0) > 0
+            mb = F3.Model3D(gb, gas, ρr, Θr)
+            ρb = F3.hydrostatic_column(mb, Θr; ρbottom = ρr(gb.zc[1]))
+            st(u) = F3.project3d(mb, (x, y, z) -> (ρ = ρb[F3.level(gb, z)]; (ρ, u * ρ, 0.0, 0.0, Θr(gb.zc[F3.level(gb, z)]))))
+            @test maximum(abs, TS.rhs_nonlinear(mb, st(0.0))) < 1e-13
+            q0 = st(10.0)
+            qe = TS.run_frozen(mb, q0, 20.0, 10; tab = TS.mis_tableau(:MIS54), nsub = 5, fast = :hevi)
+            @test all(isfinite, qe) && maximum(abs, F3.vertical_velocity(mb, qe)) < 5
+            @test abs(F3.total3d(mb, qe, :ρ) / F3.total3d(mb, q0, :ρ) - 1) < 1e-12
+        end
+        # second-order convergence of the frozen MIS54 / HEVI step from a balanced state
+        g = F3.Grid3D(20, 2, 8, 100e3, 10e3, 10e3); m = F3.Model3D(g, gas, ρr, Θr)
+        ρb = F3.hydrostatic_column(m, Θr; ρbottom = ρr(g.zc[1]))
+        q0 = F3.project3d(m, (x, y, z) -> begin
+            Θ = Θr(g.zc[F3.level(g, z)]); θ = Θ / ρb[F3.level(g, z)] + 0.01 * sin(π * z / 10e3) / (1 + ((x - 50e3) / 5e3)^2)
+            (Θ / θ, 20Θ / θ, 0.0, 0.0, Θ)
+        end)
+        c = F3.sound_speed_max(m, q0)
+        nref = ceil(Int, 300 / (0.3 * g.dz / (c + 20)))
+        qref = TS.run_rk4(m, q0, 300 / nref, nref)
+        e = [norm(TS.run_frozen(m, q0, Δt, round(Int, 300 / Δt); tab = TS.mis_tableau(:MIS54), nsub = 12, fast = :hevi) .- qref)
+             for Δt in (30.0, 15.0)]
+        @test rate(e...) > 1.7
+    finally
+        F3.FV3D_PRESSURE_FORM[] = :gradp
+        FV.FV_PRESSURE_FORM[] = :gradp
+    end
+end
+
 @testset "MethodDesign: bicoloured B-series of MIS with frozen first argument" begin
     BC = Main.BiColourMIS
     @test [length(BC.trees(n)) for n in 1:4] == [1, 2, 7, 26]

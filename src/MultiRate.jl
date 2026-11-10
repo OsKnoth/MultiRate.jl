@@ -15,6 +15,7 @@ Submodules (load with e.g. `using MultiRate.Euler2D`):
     Euler2D           2D x–z DGSEM with terrain, matrix-free fast operator, HEVI column solver
   FV:
     FV2D              WRF-style finite volumes on an Arakawa C-grid (flat)
+    FV3D              3D C-grid finite volumes, flat or cut cells, frozen split (src/FV3D)
   Legacy:
     HDGRelaxEuler     v1: modal DG, linearized perturbation equations
 """
@@ -28,7 +29,8 @@ include("DGSEM/HDGRelaxTheta/HDGRelaxTheta.jl")
 include("DGSEM/SplitExplicitEuler/SplitExplicitEuler.jl")
 include("DGSEM/Euler2D/Euler2D.jl")
 include("FV/FV2D.jl")
+include("FV3D/FV3D.jl")
 
-export Common, TimeStepping, LinearAnalysis, HDGRelaxEuler, HDGRelaxTheta, SplitExplicitEuler, Euler2D, FV2D
+export Common, TimeStepping, LinearAnalysis, HDGRelaxEuler, HDGRelaxTheta, SplitExplicitEuler, Euler2D, FV2D, FV3D
 
 end # module

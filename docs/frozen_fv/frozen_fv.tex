@@ -223,6 +223,33 @@ $1.6\cdot10^{-4}$); in a long run (36000\,s at $\dt=200$\,s, $C_{\rm adv}=1.6$) 
 frozen order (the bicoloured B-series conditions, \code{MethodDesign/BiColourMIS.jl}) is 2 for MIS54 and 3
 for MISF53 and MIS\_FV53.
 
+\section{3D and cut cells}\label{sec:3d}
+The module \code{MultiRate.FV3D} (\code{src/FV3D}) extends the split to three dimensions: $\rho$, $\Theta$ at the
+centres, $U$, $V$, $W$ on the faces, periodic in $x$ and $y$. One grid type serves flat grids and Cartesian
+cut cells: $V_f$ the fluid volume fraction of a cell, $A_x$, $A_y$, $A_z$ the open fractions of its faces (from a
+terrain $z_s(x,y)$ by quadrature, or exactly for a box obstacle); $1/V_{\rm eff}=1/\max(V_f,\alpha_{\min})$ in the
+divisions. The fast part per unit fluid volume:
+\begin{align*}
+\partial_t\rho&=-\tfrac1{V_{\rm eff}}\big[\delta_x(A_xU)+\delta_y(A_yV)+\delta_z(A_zW)\big],\\
+\partial_t\Theta&=-\tfrac1{V_{\rm eff}}\big[\delta_x(A_x\tilde\theta_x(y)U)+\delta_y(A_y\tilde\theta_y(y)V)+\delta_z(A_z\tilde\theta_z(y)W)\big],\\
+\partial_tU&=-\delta_xp,\quad\partial_tV=-\delta_yp,\quad\partial_tW=-\delta_zp-g\avg\rho_z\qquad(\text{open faces}),
+\end{align*}
+with the same pressure forms as in 2D, and the column system of Section~6 generalizes with
+$s_k=c/(\Delta z\,V_{{\rm eff},k})$ and the apertures $A_k$:
+\begin{multline*}
+W_{k-1}\big[-r\beta_ks_{k-1}A_{k-1}\theta_{k-1}+\tfrac{cg}2s_{k-1}A_{k-1}\big]
++W_k\big[1+rA_k\theta_k(\alpha_ks_k+\beta_ks_{k-1})+\tfrac{cg}2A_k(s_k-s_{k-1})\big]\\
++W_{k+1}\big[-r\alpha_ks_kA_{k+1}\theta_{k+1}-\tfrac{cg}2s_kA_{k+1}\big]
+=R^W_k-r(\alpha_kR^\Theta_k-\beta_kR^\Theta_{k-1})-\tfrac{cg}2(R^\rho_{k-1}+R^\rho_k).
+\end{multline*}
+The operator is written as building blocks (thermodynamic and momentum part, horizontal and vertical,
+forcing, sponge); the parts of the fast loops are compositions of them, and $N(q)=F(q,q)$ is evaluated with
+the same blocks. For $n_y=1$ the flat 3D operator is the 2D one to rounding. No background state is
+subtracted; a discretely balanced initial column (\code{hydrostatic\_column}) is exactly at rest, also
+with obstacles, and gives second-order convergence of the frozen MIS step (from the analytic profile the
+order drops to $\approx0.8$). Flow over a hill and over a cube aligned with the grid or shifted into cut cells:
+stable, conservative to rounding, the same wave field for both cubes (FINDINGS~\S13).
+
 \section{Open points}
 \begin{itemize}
 \item The split is implemented on flat grids only; terrain (Gal-Chen metric terms in the pressure gradient) and

@@ -530,3 +530,36 @@ DG gravity wave (300 km, P = 4, 30 × 4 elements, wave error [K], RK4 reference)
 
 At 67 s frozen and linearized agree; at 130 s only the frozen MIS54 survives. The explicit Verlet
 loop needs 150–470 substeps; a frozen DG HEVI loop is the next step.
+
+## 13. 3D finite volumes with cut cells (`src/FV3D`)
+
+Module `MultiRate.FV3D`, separate from the 2D code: C-grid with ρ, Θ at the centres and U, V, W
+on the faces, periodic in x and y, walls at the bottom and the top. One grid type for flat grids
+and Cartesian cut cells: fluid volume fractions and open fractions of the x-, y- and z-faces,
+from a terrain z_s(x, y) (Gauss quadrature horizontally, exact in z) or exactly for a box
+obstacle. Small cut cells divide by max(V_f, α_min), α_min = 0.2 (mass and Θ conserved with these
+weights); solid cells are frozen.
+
+- **Operator in the frozen form, from blocks:** thermodynamic part (mass and Θ fluxes through the
+  open face areas, θ frozen at the faces), momentum part (pressure gradient `:gradp` or in product
+  form `:product`, gravity), forcing, sponge on W; the parts of the fast loops are compositions.
+  Slow part: momentum advection in flux form, fluxes weighted by the open fractions, donor cell
+  next to cut cells. N(q) = F(q, q) by construction (`rhs_nonlinear!` calls the blocks).
+  HEVI: tridiagonal column solve for W with apertures and volumes.
+- **Checks** (`test/runtests.jl`): flat 3D with ny = 1 equals the 2D FV operator (≤ 6e-16, both
+  pressure forms); the parts add up exactly; mass and Θ conserved to rounding on cut grids; exact
+  column solve; a cut grid without terrain is the flat grid.
+- **No background state; balance in the initial state only.** `hydrostatic_column` solves the
+  discrete W equation at rest level by level; the horizontally homogeneous state is then exactly
+  at rest (1.8e-15), also with cut cells and obstacles. From the analytic profile (rest residual
+  6e-3) the frozen MIS54/HEVI step converges only with order ≈ 0.8 (also in 2D); from the balanced
+  state with order 1.9–2.3 (both pressure forms).
+- **Obstacles** (`examples/fv3d_obstacles.jl`, U = 10 m/s, N = 0.01, Δx = 2 km, Δz = 500 m, 1 h,
+  MIS54, HEVI, Δt = 30 s): bell hill (h = 400 m, a = 4 km), a cube 8 × 8 × 1 km aligned with the
+  grid (only full and solid cells) and the same cube shifted by 0.3 Δx, 1.1 km high (57 cut cells).
+  All stable, mass and Θ conserved to 1e-14. The two cubes give the same wave field (max|w| above
+  2 km 0.84 / 0.86 m/s); max|w| overall 1.5 / 2.8 m/s, the larger value at a z-face of a cut cell
+  with aperture 0.3 at the cube top (open-area weighted 1.1 m/s).
+
+![FV3D obstacles](images/fv3d_obstacles.png)
+
