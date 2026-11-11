@@ -87,25 +87,36 @@ regular grid.
 |---|---|---|
 | DGSEM, split form (`src/DGSEM/Euler2D`) | terrain-following (Gal–Chen) | `hevi`, `hevi_relax`, `verlet`, `fb`, `imex` |
 | FV, Arakawa C-grid (`src/FV`) | terrain-following | `hevi`, `wrf`, `verlet`, `fb` |
-| FV, Arakawa C-grid with cut cells (`src/FV/cutcell_*`) | Cartesian cells cut by `zs(x)` | `hevi`, `rosenbrock_amf`, `verlet`, `fb` |
+| FV, Arakawa C-grid with cut cells (`src/FV/cutcell_*`) | Cartesian cells cut by `zs(x)` | `hevi_amf` (default), `rosenbrock_amf`, `hevi`, `verlet`, `fb` |
 
 - **`hevi`:** horizontal fast terms explicit, vertical column solve implicit. On cut-cell grids
-  this solver is still limited by the smallest cut cell.
-- **`rosenbrock_amf`** (cut cells only): a three-stage Rosenbrock-W fast integrator with approximate
-  matrix factors.
-  - Implicit: vertical acoustics everywhere, plus horizontal acoustics and first-order masked
-    advection in the cut-cell mask.
-  - Explicit: horizontal acoustics outside the mask.
-  - Its step limit therefore comes from the regular-grid horizontal acoustic CFL and is independent
-    of the cut-cell size.
+  (2D and 3D) the horizontal acoustics through the faces of a mask (cut cells and their neighbours)
+  join the implicit step (sparse LU per stage), so the explicit half steps only see full cells and
+  the fast step is limited by the regular Δx. The divisions use the true fluid volumes (no minimum
+  volume).
+- **Two Jacobians on cut cells (2D):** the fast operator is the acoustics plus a first-order
+  advection Jacobian in the cut-cell mask (MATLAB `JacAdvecCut` with the momentum shift); outside
+  the mask the advection stays explicit in the slow part. The implicit factor is
+  P = (I − c A_ac)(I − c A_adv): A_ac the full vertical columns plus the horizontal acoustics on the
+  masked faces (one sparse LU), A_adv the masked advection (`src/FV/cutcell_amf.jl`).
+  - **`hevi_amf`** (default for cut cells): explicit horizontal half steps through the unmasked
+    faces, Crank–Nicolson step of the implicit part in delta form q ← q + P⁻¹ Δt G(q).
+  - **`rosenbrock_amf`**: three-stage Rosenbrock-W method (MATLAB RosRK3) with W = P.
+  - Both are limited by the regular Δx only. Agnesi-type ridge, h = 400 m, 64 km, 1 h: at 128 × 80
+    (smallest fluid fraction 1e-3) `hevi` (acoustics masked, advection explicit) fails, `hevi_amf`
+    (nsub = 7) and `rosenbrock_amf` (nsub = 10) run; the old explicit-horizontal HEVI needed
+    nsub = 137 already at 64 × 40.
 - **Cut-cell masks:** the mask is a heuristic (`CutCellFVGrid(...; mask=:diag)`, as in the MATLAB
   reference; variants `:cut`, `:cut4`, `:cut8`, `:all`).
-- **Cut-cell advection:** the right-hand side uses the third-order `AdvectionCutThird` scheme by
-  default (`advection=:third`); the first-order alternative is `advection=:upwind1`.
-  Open problem: a warm layer of ≈ 0.35 K in the lowest cells downstream of the hill (a10).
-  `CUT_THETA_RECON` selects the Θ face value where the upstream neighbour is missing: `:donor`
-  (MATLAB, default), `:onesided` (keeps the downstream term, second order; changes little), or
-  `:perturbation` (reconstructs θ' = θ − θ̄(z), ≈ 0.16 K; uses a background state).
+- **Advection (all FV grids, 2D and 3D):** one scheme for flat grids, terrain following and cut
+  cells (`src/FV/shift_advection.jl`, `src/FV3D/advection.jl`): the pseudo third-order upwind
+  reconstruction of the MATLAB `AdvectionCutThird` with virtual grid sizes from volumes and face
+  areas, h = V/A (Jähn et al. 2015, GMD 8, 317, eqs. 6, 11–13; κ = 1/3 on uniform grids, linear
+  interpolation at walls and closed upstream faces), and the shift technique for the momentum
+  (eqs. 14–15; face velocities to two cell values per direction, advected as scalars, tendencies
+  back to the faces with volume weights). FV3D terrain following with ny = 1 reproduces the FV2D
+  terrain-following operator exactly. `CutCellFVGrid(...; advection=:upwind1)` keeps the first-order
+  alternative. Open problem: a warm layer in the lowest cells downstream of the hill.
 
 ## Code layout
 

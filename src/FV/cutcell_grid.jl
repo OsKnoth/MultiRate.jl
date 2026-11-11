@@ -35,7 +35,7 @@ struct CutCellFVGrid
     polygons::Matrix{Vector{NTuple{2,Float64}}}
     terrain::Bool
     zs::Any
-    advection::Symbol          # :third (MATLAB AdvectionCutThird) or :upwind1 (donor cell)
+    advection::Symbol          # :third (common FV scheme, shift_advection.jl) or :upwind1 (donor cell)
 end
 
 ncell(g::CutCellFVGrid) = g.nx * g.nz
@@ -133,7 +133,8 @@ Construct Cartesian cut-cell areas and apertures for fluid above `z = zs(x)`. Ho
 periodic in the FV equations; `zs` should therefore be periodic over `Lx` (or negligible at the
 domain endpoints). Geometry is computed once when the grid is built. `mask` selects the
 heuristic AMF implicit region (`:diag`, `:cut`, `:cut4`, `:cut8`; `:all` for diagnostics).
-`advection` selects `:third` (MATLAB `AdvectionCutThird`, default) or first-order `:upwind1`.
+`advection` selects `:third` (the common FV scheme of `shift_advection.jl`: MATLAB `AdvectionCutThird`
+with virtual grid sizes V/A and the momentum shift, default) or first-order `:upwind1`.
 """
 function CutCellFVGrid(nx::Int, nz::Int, Lx::Real, H::Real; x0::Real = 0.0, z0::Real = 0.0,
                        zs = x -> 0.0, mask::Symbol = :diag,

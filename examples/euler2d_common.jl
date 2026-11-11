@@ -13,7 +13,9 @@ const E2 = MultiRate.Euler2D
 const FV = MultiRate.FV2D
 
 """Default split-explicit settings per discretization: (MIS tableau, nsub, fast solver)."""
-default_scheme(disc) = (:MIS4, 12, :hevi)
+"""Default (table, nsub, fast) per discretization; cut cells: HEVI with the two Jacobians
+(acoustics and advection in the cut-cell mask), which keeps arbitrarily small cells stable."""
+default_scheme(disc) = (:MIS4, 12, disc == :fvc ? :hevi_amf : :hevi)
 
 """
     set_vadv!(U, Δt, Δz; threshold = 4)
@@ -152,14 +154,15 @@ function _fast_step(model::FV.FVModel, q, fast; cfl = nothing, safety = 0.85)
 end
 
 function _fast_step(model::FV.FVModel{<:FV.CutCellFVGrid}, q, fast; cfl = nothing, safety = 0.85)
-    fast in (:hevi, :verlet, :fb, :rosenbrock_amf) || error("FV cut-cell: use :hevi, :verlet, :fb or :rosenbrock_amf")
+    fast in (:hevi, :hevi_amf, :verlet, :fb, :rosenbrock_amf) || error("FV cut-cell: use :hevi, :hevi_amf, :verlet, :fb or :rosenbrock_amf")
     g = model.grid
     # Rosenbrock-W AMF: the explicit horizontal acoustics inside the W-method grow beyond
     # ≈ 0.75 of the regular-grid limit (linear analysis; a1 hill fails at 0.92, runs at 0.65).
-    cfl === nothing && (cfl = safety * (fast == :hevi ? 0.92 : fast == :rosenbrock_amf ? 0.65 : 0.70))
-    if fast == :rosenbrock_amf
-        # Vertical acoustics and masked cut-cell terms are implicit; the remaining horizontal
-        # acoustic modes are limited by the regular Cartesian spacing.
+    cfl === nothing && (cfl = safety * (fast in (:hevi, :hevi_amf) ? 0.92 : fast == :rosenbrock_amf ? 0.65 : 0.70))
+    if fast in (:rosenbrock_amf, :hevi, :hevi_amf)
+        # Vertical acoustics and the masked cut-cell faces are implicit (HEVI: cut cells and their
+        # neighbours, `cutcell_hevi_mask`); the remaining horizontal acoustic modes are limited by
+        # the regular Cartesian spacing.
         return cfl * g.dx / sound_speed_max(model, q)
     end
     hmin = minimum(2g.Vol[i,k] / (g.FU[i,k] + g.FU[i+1,k] + g.FW[i,k] + g.FW[i,k+1])

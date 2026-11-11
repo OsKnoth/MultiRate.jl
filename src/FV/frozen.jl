@@ -4,9 +4,9 @@
 #   fast (evolving z, coefficients from y):
 #     ρ_t = -∂x U - ∂z W,   Θ_t = -∂x(θx(y) U) - ∂z(θz(y) W),
 #     U_t = -∂x p(Θ),       W_t = -∂z p(Θ) - g ρ,       sponge on W (`sponge!`, sponge.jl),
-#   slow (frozen y): momentum advection ∂x(U u) + ∂z(W u), ∂x(U w) + ∂z(W w).
-# θx, θz are the upwinded face values of θ = Θ/ρ of the full operator (3rd order, upwind direction
-# from U, W of y). The pressure follows the form of N (`FV_PRESSURE_FORM`, rhs.jl):
+#   slow (frozen y): momentum advection ∂x(U u) + ∂z(W u), ∂x(U w) + ∂z(W w) (shift technique).
+# θx, θz are the upwinded face values of θ = Θ/ρ of the full operator (pseudo third order,
+# shift_advection.jl; upwind direction from U, W of y). The pressure follows the form of N (`FV_PRESSURE_FORM`, rhs.jl):
 #   :gradp    p(Θ_z), the full equation of state (nothing frozen)
 #   :product  ∇p = (dp/dΘ)_f(y) ∇Θ_z, the face derivative (mean of the cell values γ p/Θ) frozen
 # No background state is subtracted (full p and ρ; models built with FV_HYDRO_REFERENCE are
@@ -57,33 +57,12 @@ function frozen_data!(C, S, m::FVModel, q)
     end
     fill!(C, 0.0)
     fill!(S, 0.0)
+    a = shift_advection!(c.adv, g, q)          # as in rhs_nonlinear! (shift_advection.jl)
     @inbounds for k in 1:nz, i in 1:nx
-        U = q[iU(g, i, k)]
-        C[i+(k-1)*nx] = interp3(θ[ip(g, i - 2), k], θ[ip(g, i - 1), k], θ[i, k], θ[ip(g, i + 1), k], U)
-        k > 1 && (C[nx*nz+i+(k-1)*nx] = face_z(θ, i, k, nz, q[iW(g, i, k)]))
-        # momentum advection, as in rhs_nonlinear!
-        Uc = 0.5 * (q[iU(g, i, k)] + q[iU(g, i + 1, k)])
-        uc = interp3(u[ip(g, i - 1), k], u[i, k], u[ip(g, i + 1), k], u[ip(g, i + 2), k], Uc)
-        S[iU(g, i + 1, k)] += Uc * uc / dx
-        S[iU(g, i, k)] -= Uc * uc / dx
-        if k > 1
-            Wk = 0.5 * (q[iW(g, i - 1, k)] + q[iW(g, i, k)])
-            uz = face_z(u, i, k, nz, Wk)
-            S[iU(g, i, k)] += Wk * uz / dz
-            S[iU(g, i, k - 1)] -= Wk * uz / dz
-            Uk = 0.5 * (q[iU(g, i, k - 1)] + q[iU(g, i, k)])
-            wx = interp3(w[ip(g, i - 2), k], w[ip(g, i - 1), k], w[i, k], w[ip(g, i + 1), k], Uk)
-            S[iW(g, i, k)] += Uk * wx / dx
-            S[iW(g, i - 1, k)] -= Uk * wx / dx
-        end
-        Wc = 0.5 * (Wface(g, q, i, k) + Wface(g, q, i, k + 1))
-        if k >= 2 && k <= nz - 1
-            wc = interp3(w[i, k-1], w[i, k], w[i, k+1], w[i, k+2], Wc)
-        else
-            wc = interp2(w[i, k], w[i, k+1])
-        end
-        k + 1 <= nz && (S[iW(g, i, k + 1)] += Wc * wc / dz)
-        k >= 2 && (S[iW(g, i, k)] -= Wc * wc / dz)
+        C[i+(k-1)*nx] = a.θfx[i, k]
+        k > 1 && (C[nx*nz+i+(k-1)*nx] = a.θfz[i, k])
+        S[iU(g, i, k)] = a.SU[i, k]
+        k > 1 && (S[iW(g, i, k)] = a.SW[i, k])
     end
     pressure_coefficients!(pressure_form(), C, m, q)
     return C, S

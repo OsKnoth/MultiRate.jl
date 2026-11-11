@@ -15,18 +15,51 @@ mutable struct CutCellFVFast <: AbstractFastOperator
     lucache::Dict{Float64,Any}
     cmax::Float64
     colbuf::Vector{Float64}
+    maskU::BitMatrix              # x-faces of the HEVI mask (nx+1, nz): implicit horizontal acoustics
+    maskW::BitMatrix              # z-faces of the mask (nx, nz+1): with maskU the faces of the advection Jacobian
+    wexp::Matrix{Float64}         # 1 on the explicit (unmasked) x-faces, 0 on the masked ones
+    lumask::Dict{Float64,Any}     # sparse LU of I - c (A_v + A_h,mask) per c
+end
+
+"""
+HEVI mask of the cut-cell grid: the cut cells (0 < α < 1) and their fluid neighbours within one
+cell (x and z, as `mask_width = 1` in 3D); masked x- and z-faces are the open faces of masked
+cells (returned as `(maskU, maskW)`). The
+HEVI fast loop treats the horizontal acoustics through these faces implicitly, together with the
+vertical part, so the explicit horizontal half steps only see full cells: the fast step is limited
+by the regular Δx, not by the small cut cells (true fluid volumes in the divisions).
+"""
+function cutcell_hevi_mask(g::CutCellFVGrid)
+    nx, nz = g.nx, g.nz
+    cut = (0 .< g.alpha .< 1 - 64eps())
+    cell = falses(nx, nz)
+    for k in 1:nz, i in 1:nx
+        g.alpha[i,k] > 0 || continue
+        cell[i,k] = any(cut[ip(g,i+a), kk] for a in -1:1, kk in max(1,k-1):min(nz,k+1))
+    end
+    maskU = falses(nx+1, nz)
+    for k in 1:nz, f in 1:nx+1
+        maskU[f,k] = g.FU[f,k] > 0 && (cell[ip(g,f-1),k] || cell[ip(g,f),k])
+    end
+    maskW = falses(nx, nz+1)
+    for k in 2:nz, i in 1:nx
+        maskW[i,k] = g.FW[i,k] > 0 && (cell[i,k-1] || cell[i,k])
+    end
+    return maskU, maskW
 end
 
 function CutCellFVFast(m::FVModel{<:CutCellFVGrid})
     g, nq = m.grid, m.nq
+    maskU, maskW = cutcell_hevi_mask(g)
     return CutCellFVFast(g, m.gas, nq, zeros(g.nx,g.nz), zeros(g.nx,g.nz),
                          zeros(g.nx,g.nz), zeros(g.nx,g.nz+1), zeros(nq), ones(nq),
-                         [zeros(nq) for _ in 1:7], Dict{Float64,Any}(), 0.0, zeros(g.nz+1))
+                         [zeros(nq) for _ in 1:7], Dict{Float64,Any}(), 0.0, zeros(g.nz+1),
+                         maskU, maskW, Float64.(.!maskU), Dict{Float64,Any}())
 end
 
 function cutcell_fast_operator(m::FVModel{<:CutCellFVGrid}, q; pfac=m.gas.γ, fast=:hevi,
                                reuse=true, kwargs...)
-    fast == :rosenbrock_amf && return cutcell_amf_operator(m, q; pfac, reuse, kwargs...)
+    fast in (:rosenbrock_amf, :hevi_amf) && return cutcell_amf_operator(m, q; pfac, reuse, kwargs...)
     s = reuse && m.fastref[] isa CutCellFVFast ? m.fastref[]::CutCellFVFast : CutCellFVFast(m)
     refreeze_cutcell!(s, m, q, pfac)
     reuse && (m.fastref[] = s)
@@ -75,6 +108,7 @@ function refreeze_cutcell!(s::CutCellFVFast, m::FVModel{<:CutCellFVGrid}, q, pfa
     for (c,F) in s.lucache
         factor_cutcell_vertical!(F,s,c)
     end
+    empty!(s.lumask)
     return s
 end
 
@@ -82,8 +116,10 @@ end
     g.Vol[i,k] > 0 ? q[iΘ(g,i,k)]/max(q[iρ(g,i,k)],eps(Float64)) : 0.0
 
 function cutcell_fast!(out, s::CutCellFVFast, q, f, horizontal::Bool, vertical::Bool,
-                       rows::NTuple{4,Bool}, frows::NTuple{4,Bool})
+                       rows::NTuple{4,Bool}, frows::NTuple{4,Bool}, explicit_only::Bool = false)
     g=s.grid; nx=g.nx; nz=g.nz; grav=s.gas.g
+    # explicit_only: the horizontal terms through the unmasked x-faces (HEVI half steps)
+    wf(f,k) = explicit_only ? s.wexp[f,k] : 1.0
     rρ,rU,rW,rΘ=rows
     fill!(out,0.0)
     @inbounds for k in 1:nz, i in 1:nx
@@ -91,7 +127,7 @@ function cutcell_fast!(out, s::CutCellFVFast, q, f, horizontal::Bool, vertical::
         V > 0 || continue
         if horizontal
             il,ir=ip(g,i-1),i
-            Ul=q[iU(g,i,k)]; Ur=q[iU(g,i+1,k)]
+            Ul=wf(i,k)*q[iU(g,i,k)]; Ur=wf(i+1,k)*q[iU(g,i+1,k)]
             rρ && (out[iρ(g,i,k)] -= (g.FU[i+1,k]*Ur-g.FU[i,k]*Ul)/V)
             if rΘ
                 θl=cutcell_theta(g,s,q,il,k); θr=cutcell_theta(g,s,q,i,k)
@@ -100,7 +136,7 @@ function cutcell_fast!(out, s::CutCellFVFast, q, f, horizontal::Bool, vertical::
             end
             if rU && g.FU[i,k] > 0
                 pL=s.a[il,k]*q[iΘ(g,il,k)]; pR=s.a[i,k]*q[iΘ(g,i,k)]
-                out[iU(g,i,k)] -= (pR-pL)/g.dx
+                out[iU(g,i,k)] -= wf(i,k)*(pR-pL)/g.dx
             end
         end
         if vertical
@@ -133,140 +169,8 @@ end
 
 @inline cut_upwind(v, left, right) = v >= 0 ? left : right
 
-# ---------------------------------------------------------------------------------------------
-# Third-order cut-cell advection after MATLAB `AdvectionCutThird`, `ShiftFaceCellCut` and
-# `ShiftCellFaceCut`. Mixing ratios c/ρ are reconstructed upwind with the volume-weighted
-# coefficients k1, k2 (1/3 and 1/6 on a uniform grid). The MATLAB ratio form (k1 r + k2)(cC-cL)
-# with r = (cR-cC)/(cC-cL) is written as k1 (cR-cC) + k2 (cC-cL). Neighbours smaller than the
-# upwind cell are blended towards cC, and the correction is switched off when the upwind cell's
-# opposite face is closed. Walls act as ghosts equal to the upwind cell; the bottom wall
-# aperture counts as closed (MATLAB sets FW(:,1) = 0).
-# ---------------------------------------------------------------------------------------------
-
-@inline cut_k1(hL, hC, hR) = (hC / (hC + hR + eps())) * ((hL + hC) / (hL + hC + hR + eps()))
-@inline cut_k2(hL, hC, hR) = (hC / (hL + hC + eps())) * (hR / (hL + hC + hR + eps()))
-@inline cut_fw(g::CutCellFVGrid, i, k) = k == 1 ? 0.0 : g.FW[i,k]
-
-"""Face value reconstructed in upwind cell C from upstream U and downstream D (mixing ratios,
-volumes) with open fraction `open` of C's upstream face."""
-@inline function cut_face3(cU, cC, cD, VU, VC, VD, open, keepdown::Bool = false)
-    VU < VC && (cU = ((VC - VU) * cC + VU * cU) / VC)
-    VD < VC && (cD = ((VC - VD) * cC + VD * cD) / VC)
-    keepdown && return cC + cut_k1(VU, VC, VD) * (cD - cC) + open * cut_k2(VU, VC, VD) * (cC - cU)
-    return cC + open * (cut_k1(VU, VC, VD) * (cD - cC) + cut_k2(VU, VC, VD) * (cC - cU))
-end
-
-"""Advective tendency -(1/V) ∮ (ρv·n) (c/ρ) of the cell quantity `c` (nx, nz) into `fc`,
-using the face momenta in `q` and the third-order upwind face values."""
-function cut_advect3!(fc, c, q, g::CutCellFVGrid, bc = nothing, bu = nothing, bw = nothing; keepdown::Bool = false)
-    nx, nz = g.nx, g.nz
-    fill!(fc, 0.0)
-    # Optional background mixing ratio: reconstruct c/ρ - bc in the cells and add the exact
-    # background bu (x-faces) / bw (z-faces) at the face, so a background profile is not smeared.
-    r(i, k) = c[i,k] / (q[iρ(g,i,k)] + eps()) - (bc === nothing ? 0.0 : bc[i,k])
-    fbu(f, k) = bu === nothing ? 0.0 : bu[f,k]
-    fbw(i, k) = bw === nothing ? 0.0 : bw[i,k]
-    @inbounds for k in 1:nz, f in 1:nx            # x-face f between cells f-1 and f
-        A = g.FU[f,k]; A > 0 || continue
-        U = q[iU(g,f,k)]
-        il, ir = ip(g,f-1), f
-        if U >= 0       # upwind il: upstream il-1, downstream ir; upstream face of il is f-1
-            iu = ip(g,il-1)
-            cf = cut_face3(r(iu,k), r(il,k), r(ir,k), g.Vol[iu,k], g.Vol[il,k], g.Vol[ir,k],
-                           g.FU[ip(g,f-1),k] / (g.FU[ip(g,f-1),k] + eps()), keepdown)
-        else            # upwind ir: upstream ir+1, downstream il; upstream face of ir is f+1
-            iu = ip(g,ir+1)
-            cf = cut_face3(r(iu,k), r(ir,k), r(il,k), g.Vol[iu,k], g.Vol[ir,k], g.Vol[il,k],
-                           g.FU[f+1,k] / (g.FU[f+1,k] + eps()), keepdown)
-        end
-        F = A * U * (cf + fbu(f,k))
-        fc[il,k] -= F; fc[ir,k] += F
-    end
-    @inbounds for k in 2:nz, i in 1:nx            # z-face k between cells k-1 and k
-        A = g.FW[i,k]; A > 0 || continue
-        W = q[iW(g,i,k)]
-        kb, kt = k-1, k
-        if W >= 0       # upwind kb: upstream kb-1 (ghost at the bottom wall), face k-1
-            ku = max(kb-1, 1)
-            Vu = kb == 1 ? g.Vol[i,kb] : g.Vol[i,ku]
-            cf = cut_face3(r(i,ku), r(i,kb), r(i,kt), Vu, g.Vol[i,kb], g.Vol[i,kt],
-                           cut_fw(g,i,k-1) / (cut_fw(g,i,k-1) + eps()), keepdown)
-        else            # upwind kt: upstream kt+1 (ghost at the top wall), face k+1
-            ku = min(kt+1, nz)
-            Vu = kt == nz ? g.Vol[i,kt] : g.Vol[i,ku]
-            cf = cut_face3(r(i,ku), r(i,kt), r(i,kb), Vu, g.Vol[i,kt], g.Vol[i,kb],
-                           g.FW[i,k+1] / (g.FW[i,k+1] + eps()), keepdown)
-        end
-        F = A * W * (cf + fbw(i,k))
-        fc[i,kb] -= F; fc[i,kt] += F
-    end
-    @inbounds for k in 1:nz, i in 1:nx
-        fc[i,k] = g.Vol[i,k] > 0 ? fc[i,k] / g.Vol[i,k] : 0.0
-    end
-    return fc
-end
-
-@inline function cut_shiftvel(AL, AR, vL, vR)
-    AL > AR ? (vL, (AR * vR + (AL - AR) * vL) / (AL + eps())) :
-              ((AL * vL + (AR - AL) * vR) / (AR + eps()), vR)
-end
-
-"""Cell-centred left/right momentum parts from face momenta (MATLAB `ShiftFaceCellCut`)."""
-function cut_face_to_cell!(uCL, uCR, wCL, wCR, q, g::CutCellFVGrid)
-    @inbounds for k in 1:g.nz, i in 1:g.nx
-        uCL[i,k], uCR[i,k] = cut_shiftvel(g.FU[i,k], g.FU[i+1,k], q[iU(g,i,k)], q[iU(g,i+1,k)])
-        wCL[i,k], wCR[i,k] = cut_shiftvel(cut_fw(g,i,k), g.FW[i,k+1], Wface(g,q,i,k), Wface(g,q,i,k+1))
-    end
-    return nothing
-end
-
-"""Volume-weighted face tendency from the cell tendencies of the two adjacent momentum parts
-(MATLAB `ShiftCellFaceCut`): x-face f uses FuCL of cell f and FuCR of cell f-1."""
-@inline function cut_cell_to_uface(g::CutCellFVGrid, FuCL, FuCR, f, k)
-    il, ir = ip(g,f-1), f
-    A = g.FU[f,k]
-    VR = g.Vol[ir,k] * A / (A + g.FU[f+1,k] + eps())
-    VL = g.Vol[il,k] * A / (A + g.FU[ip(g,f-1),k] + eps())
-    return (VR * FuCL[ir,k] + VL * FuCR[il,k]) / (VL + VR + eps())
-end
-
-@inline function cut_cell_to_wface(g::CutCellFVGrid, FwCL, FwCR, i, k)
-    A = g.FW[i,k]
-    VR = g.Vol[i,k] * A / (A + g.FW[i,k+1] + eps())
-    VL = g.Vol[i,k-1] * A / (A + cut_fw(g,i,k-1) + eps())
-    return (VR * FwCL[i,k] + VL * FwCR[i,k-1]) / (VL + VR + eps())
-end
-
-"""
-Θ flux reconstruction at faces whose upstream neighbour is missing (bottom/top wall, closed
-upstream aperture), where MATLAB `AdvectionCutThird` falls back to donor cell:
-- `:donor`        first-order donor cell (MATLAB). For stratified θ this is off by Δz/2·∂θ/∂z at
-                  every z-face above a wall cell, ≈ 0.37 K at Δz = 244 m, N = 0.01 (warm layer).
-- `:onesided`     keep the downstream term: volume-weighted linear interpolation between the
-                  upwind and the downstream cell (second order, no background state).
-- `:perturbation` reconstruct θ' = θ - θ̄(z) and add θ̄ at the face height (donor fallback kept).
-"""
-const CUT_THETA_RECON = Ref(:donor)
-
-"""Third-order advective tendencies of Θ and the momentum parts into the cache arrays."""
-function cut_advection_third!(m, q)
-    g = m.grid; cc = m.cache.cc
-    uCL, uCR, wCL, wCR, FuCL, FuCR, FwCL, FwCR, Fθ, Θc = cc
-    @inbounds for k in 1:g.nz, i in 1:g.nx
-        Θc[i,k] = q[iΘ(g,i,k)]
-    end
-    mode = CUT_THETA_RECON[]
-    if mode === :perturbation && length(cc) >= 13
-        cut_advect3!(Fθ, Θc, q, g, cc[11], cc[12], cc[13])
-    else
-        mode in (:donor, :onesided) || throw(ArgumentError("CUT_THETA_RECON = $mode"))
-        cut_advect3!(Fθ, Θc, q, g; keepdown = mode === :onesided)
-    end
-    cut_face_to_cell!(uCL, uCR, wCL, wCR, q, g)
-    cut_advect3!(FuCL, uCL, q, g); cut_advect3!(FuCR, uCR, q, g)
-    cut_advect3!(FwCL, wCL, q, g); cut_advect3!(FwCR, wCR, q, g)
-    return nothing
-end
+# Third-order cut-cell advection (MATLAB `AdvectionCutThird`, `ShiftFaceCellCut`, `ShiftCellFaceCut`):
+# the common scheme of all FV grids, shift_advection.jl (virtual grid sizes from volumes and faces).
 
 function rhs_cutcell!(out,m::FVModel{<:CutCellFVGrid},q)
     g=m.grid; nx=g.nx; nz=g.nz
@@ -310,7 +214,7 @@ function rhs_cutcell!(out,m::FVModel{<:CutCellFVGrid},q)
     end
     fill!(out,0.0)
     third = g.advection == :third
-    third && cut_advection_third!(m,q)
+    a = third ? shift_advection!(c.adv, g, q) : c.adv     # θ face values, momentum (shift_advection.jl)
     @inbounds for k in 1:nz, i in 1:nx
         V=g.Vol[i,k]
         V>0 || continue
@@ -319,7 +223,7 @@ function rhs_cutcell!(out,m::FVModel{<:CutCellFVGrid},q)
         Fzb=fz[i,k]; Fzt=fz[i,k+1]
         out[iρ(g,i,k)]=-(Fxr-Fxl+Fzt-Fzb)/V
         if third
-            out[iΘ(g,i,k)]=c.cc[9][i,k]
+            out[iΘ(g,i,k)]=-(Fxr*a.θfx[ip(g,i+1),k]-Fxl*a.θfx[i,k]+Fzt*a.θfz[i,k+1]-Fzb*a.θfz[i,k])/V
             continue
         end
         θl=cut_upwind(q[iU(g,i,k)],θ[il,k],θ[i,k])
@@ -335,7 +239,7 @@ function rhs_cutcell!(out,m::FVModel{<:CutCellFVGrid},q)
         if g.FU[i,k]>0
             vl,vr=g.Vol[il,k],g.Vol[ir,k]
             den=vl+vr
-            adv=third ? cut_cell_to_uface(g,c.cc[5],c.cc[6],i,k) :
+            adv=third ? a.SU[i,k] :
                 den>0 ? (vl*mdx[il,k]+vr*mdx[ir,k])/den : 0.0
             force=-(p[ir,k]-p[il,k])/g.dx
             out[iU(g,i,k)]=adv+force
@@ -343,7 +247,7 @@ function rhs_cutcell!(out,m::FVModel{<:CutCellFVGrid},q)
         if 1<k<=nz && g.FW[i,k]>0
             vb,vt=g.Vol[i,k-1],g.Vol[i,k]
             den=vb+vt
-            adv=third ? cut_cell_to_wface(g,c.cc[7],c.cc[8],i,k) :
+            adv=third ? a.SW[i,k] :
                 den>0 ? (vb*mdz[i,k-1]+vt*mdz[i,k])/den : 0.0
             ρpb=q[iρ(g,i,k-1)]-m.ρbal[i,k-1]
             ρpt=q[iρ(g,i,k)]-m.ρbal[i,k]
@@ -454,17 +358,77 @@ function vertical_solve!(Y,s::CutCellFVFast,F::CutCellVerticalFactor,Ys)
     return Y
 end
 
+"""Sparse matrix A_v + A_h,mask of the implicit HEVI step (linear fast operator without the
+forcing): vertical acoustics and gravity everywhere, horizontal acoustics on the masked x-faces."""
+function cutcell_implicit_matrix(s::CutCellFVFast)
+    g = s.grid; nx, nz = g.nx, g.nz
+    I = Int[]; J = Int[]; V = Float64[]
+    add!(r, c, v) = (push!(I, r); push!(J, c); push!(V, v))
+    @inbounds for k in 1:nz, i in 1:nx
+        Vc = g.Vol[i,k]
+        Vc > 0 || continue
+        for (kf, sg) in ((k, 1.0), (k+1, -1.0))          # lower face: inflow, upper: outflow
+            2 <= kf <= nz && g.FW[i,kf] > 0 || continue
+            add!(iρ(g,i,k), iW(g,i,kf), sg * g.FW[i,kf] / Vc)
+            add!(iΘ(g,i,k), iW(g,i,kf), sg * g.FW[i,kf] * s.θz[i,kf] / Vc)
+        end
+    end
+    @inbounds for k in 2:nz, i in 1:nx
+        g.FW[i,k] > 0 || continue
+        add!(iW(g,i,k), iΘ(g,i,k), -s.a[i,k] / g.dz); add!(iW(g,i,k), iΘ(g,i,k-1), s.a[i,k-1] / g.dz)
+        add!(iW(g,i,k), iρ(g,i,k), -s.gas.g / 2);    add!(iW(g,i,k), iρ(g,i,k-1), -s.gas.g / 2)
+    end
+    @inbounds for k in 1:nz, f in 1:nx
+        s.maskU[f,k] || continue
+        il, ir = ip(g,f-1), f; A = g.FU[f,k]; θf = s.θx[f,k]
+        if g.Vol[il,k] > 0
+            add!(iρ(g,il,k), iU(g,f,k), -A / g.Vol[il,k]); add!(iΘ(g,il,k), iU(g,f,k), -A * θf / g.Vol[il,k])
+        end
+        if g.Vol[ir,k] > 0
+            add!(iρ(g,ir,k), iU(g,f,k), A / g.Vol[ir,k]);  add!(iΘ(g,ir,k), iU(g,f,k), A * θf / g.Vol[ir,k])
+        end
+        add!(iU(g,f,k), iΘ(g,il,k), s.a[il,k] / g.dx); add!(iU(g,f,k), iΘ(g,ir,k), -s.a[ir,k] / g.dx)
+    end
+    return sparse(I, J, V, s.nq, s.nq)
+end
+
+"""(A, LU of I - c A) of the implicit masked step, cached per c until the next re-freeze."""
+cutcell_mask_factor(s::CutCellFVFast, c) = get!(s.lumask, Float64(c)) do
+    A = cutcell_implicit_matrix(s)
+    (A = A, F = lu(sparse(1.0I, s.nq, s.nq) - c * A))
+end
+
+"""
+HEVI fast loop: Strang splitting of explicit horizontal half steps (Verlet-type, through the
+unmasked x-faces) and a Crank–Nicolson step of the vertical part. With a non-empty HEVI mask
+(`cutcell_hevi_mask`) the implicit step also contains the horizontal acoustics through the masked
+x-faces (sparse LU), so the small cut cells do not limit the fast step.
+"""
 function hevi_loop!(q,s::CutCellFVFast,f,dt,nsteps,Y,k1,k2,tmp,rhs)
-    F=vertical_factor(s,dt/2); halfdt=dt/2
+    halfdt=dt/2
+    masked = any(s.maskU)
+    ex = masked
+    if masked
+        M = cutcell_mask_factor(s, dt/2)
+    else
+        F = vertical_factor(s,dt/2)
+    end
     for _ in 1:nsteps
-        fast_rhs_hthermo!(k1,s,q,f); @. q += (halfdt/2)*k1
-        fast_rhs_hmomentum!(k2,s,q,f); @. q += halfdt*k2
-        fast_rhs_hthermo!(k1,s,q,f); @. q += (halfdt/2)*k1
-        vertical_apply!(tmp,s,q); @. rhs=q+(dt/2)*tmp
-        vertical_solve!(Y,s,F,rhs); q .= Y
-        fast_rhs_hthermo!(k1,s,q,f); @. q += (halfdt/2)*k1
-        fast_rhs_hmomentum!(k2,s,q,f); @. q += halfdt*k2
-        fast_rhs_hthermo!(k1,s,q,f); @. q += (halfdt/2)*k1
+        hthermo!(k1,s,q,f,ex); @. q += (halfdt/2)*k1
+        hmomentum!(k2,s,q,f,ex); @. q += halfdt*k2
+        hthermo!(k1,s,q,f,ex); @. q += (halfdt/2)*k1
+        if masked
+            mul!(tmp, M.A, q); @. rhs = q + (dt/2)*tmp
+            ldiv!(Y, M.F, rhs); q .= Y
+        else
+            vertical_apply!(tmp,s,q); @. rhs=q+(dt/2)*tmp
+            vertical_solve!(Y,s,F,rhs); q .= Y
+        end
+        hthermo!(k1,s,q,f,ex); @. q += (halfdt/2)*k1
+        hmomentum!(k2,s,q,f,ex); @. q += halfdt*k2
+        hthermo!(k1,s,q,f,ex); @. q += (halfdt/2)*k1
     end
     return q
 end
+hmomentum!(out,s::CutCellFVFast,q,f,ex)=cutcell_fast!(out,s,q,f,true,false,CUT_HMOM,CUT_HMOM,ex)
+hthermo!(out,s::CutCellFVFast,q,f,ex)=cutcell_fast!(out,s,q,f,true,false,CUT_THERMO,CUT_NOT_HMOM,ex)

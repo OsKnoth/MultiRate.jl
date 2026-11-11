@@ -1,8 +1,14 @@
-# Partially implicit Rosenbrock-W fast solver for cut-cell FV.
-# The frozen fast Jacobian is acoustic over the domain and additionally contains a
-# low-order advection Jacobian in the cut-cell mask. Its approximate factors are
-# (1) vertical acoustics everywhere plus horizontal acoustics on masked faces and
-# (2) masked-cell advection.
+# Fast solvers of cut-cell FV with two Jacobians (approximate matrix factorization, AMF).
+# The fast operator is acoustic over the domain plus a low-order advection Jacobian A_adv in the
+# HEVI mask (cut cells and their neighbours, `cutcell_hevi_mask`). The two factors are
+#   (1) acoustics: the full vertical columns plus the horizontal acoustics on the masked faces
+#       (`cutcell_implicit_matrix`, one sparse LU),
+#   (2) advection: the masked advection Jacobian,
+# P = (I - c A_ac)(I - c A_adv) ≈ I - c (A_ac + A_adv). Two integrators use them:
+#   :rosenbrock_amf  three-stage Rosenbrock-W method with W = P (MATLAB RosRK3),
+#   :hevi_amf        HEVI: explicit horizontal half steps through the unmasked faces, and the
+#                    Crank–Nicolson step of the implicit part (vertical, masked horizontal,
+#                    masked advection) in delta form q ← q + P⁻¹ Δt G(q).
 
 mutable struct CutCellFVAMF <: AbstractFastOperator
     model::Any
@@ -45,11 +51,13 @@ end
 # It only approximates the third-order right-hand side; the W-method order does not depend on it.
 
 @inline cut_cell(g::CutCellFVGrid, i, k) = ip(g,i) + (k - 1) * g.nx
+"""z-face length with the ground closed (MATLAB sets FW(:,1) = 0)."""
+@inline cut_fw(g::CutCellFVGrid, i, k) = k == 1 ? 0.0 : g.FW[i,k]
 @inline cut_ul(g::CutCellFVGrid, f, k) = ip(g,f) + (k - 1) * g.nx      # U face f = 1..nx+1
 @inline cut_wl(g::CutCellFVGrid, i, k) = i + (k - 2) * g.nx            # W face k = 2..nz
 
-"""Cell-to-cell upwind transport matrix on masked faces, frozen at state `q`."""
-function cutcell_transport_matrix(g::CutCellFVGrid, q)
+"""Cell-to-cell upwind transport matrix on the masked faces (maskU, maskW), frozen at state `q`."""
+function cutcell_transport_matrix(g::CutCellFVGrid, q, maskU, maskW)
     I = Int[]; J = Int[]; V = Float64[]
     function add!(cl, cr, flux, cup)   # flux > 0 from cl to cr; cup upwind cell index pair
         iu, ku = cup
@@ -58,12 +66,12 @@ function cutcell_transport_matrix(g::CutCellFVGrid, q)
         g.Vol[cr...] > 0 && (push!(I, cut_cell(g, cr...)); push!(J, cut_cell(g, iu, ku)); push!(V,  a / g.Vol[cr...]))
     end
     @inbounds for k in 1:g.nz, f in 1:g.nx
-        g.MaskU[f,k] && g.FU[f,k] > 0 || continue
+        maskU[f,k] && g.FU[f,k] > 0 || continue
         U = q[iU(g,f,k)]; il = ip(g,f-1)
         add!((il,k), (f,k), g.FU[f,k] * U, U >= 0 ? (il,k) : (f,k))
     end
     @inbounds for k in 2:g.nz, i in 1:g.nx
-        g.MaskW[i,k] && g.FW[i,k] > 0 || continue
+        maskW[i,k] && g.FW[i,k] > 0 || continue
         W = q[iW(g,i,k)]
         add!((i,k-1), (i,k), g.FW[i,k] * W, W >= 0 ? (i,k-1) : (i,k))
     end
@@ -106,9 +114,9 @@ function cutcell_shift_matrices(g::CutCellFVGrid)
 end
 
 """Assemble the simplified masked advection Jacobian in global unknown ordering."""
-function cutcell_advection_jacobian(g::CutCellFVGrid, q, nq)
+function cutcell_advection_jacobian(g::CutCellFVGrid, q, nq, maskU, maskW)
     nc = g.nx * g.nz
-    A = cutcell_transport_matrix(g, q)
+    A = cutcell_transport_matrix(g, q, maskU, maskW)
     A2 = blockdiag(A, A)
     Sfu, Scu, Sfw, Scw = cutcell_shift_matrices(g)
     Auu = Scu * A2 * Sfu
@@ -123,53 +131,52 @@ function cutcell_advection_jacobian(g::CutCellFVGrid, q, nq)
     return sparse(I, J, V, nq, nq)
 end
 
-function cutcell_masked_horizontal_acoustics(s::CutCellFVAMF)
-    g=s.acoustic.grid; n=s.acoustic.nq
-    I=Int[]; J=Int[]; V=Float64[]
-    for k in 1:g.nz, f in 1:g.nx
-        g.MaskU[f,k] && g.FU[f,k]>0 || continue
-        left,right=ip(g,f-1),f
-        Ul=iU(g,f,k); area=g.FU[f,k]
-        # Face f is the right face of `left` (outflow for U > 0) and the left face of `right`.
-        if g.Vol[left,k]>0
-            push!(I,iρ(g,left,k)); push!(J,Ul); push!(V,-area/g.Vol[left,k])
-            push!(I,iΘ(g,left,k)); push!(J,Ul); push!(V,-area*s.acoustic.θx[f,k]/g.Vol[left,k])
-        end
-        if g.Vol[right,k]>0
-            push!(I,iρ(g,right,k)); push!(J,Ul); push!(V, area/g.Vol[right,k])
-            push!(I,iΘ(g,right,k)); push!(J,Ul); push!(V, area*s.acoustic.θx[f,k]/g.Vol[right,k])
-        end
-        push!(I,Ul); push!(J,iΘ(g,left,k)); push!(V,s.acoustic.a[left,k]/g.dx)
-        push!(I,Ul); push!(J,iΘ(g,right,k)); push!(V,-s.acoustic.a[right,k]/g.dx)
-    end
-    return sparse(I,J,V,n,n)
-end
-
 function build_cutcell_amf!(s::CutCellFVAMF,q)
-    s.Aadv=cutcell_advection_jacobian(s.acoustic.grid,q,length(q))
+    s.Aadv=cutcell_advection_jacobian(s.acoustic.grid,q,length(q),s.acoustic.maskU,s.acoustic.maskW)
     # A constant fast forcing cancels in the MIS stage (it enters S = N - L q - f as well), so
     # the acoustic forcing is sufficient.
     s.advforcing.=s.acoustic.fb
-    s.Hmask=cutcell_masked_horizontal_acoustics(s)
+    s.Hmask=cutcell_implicit_matrix(s.acoustic)       # A_ac: vertical + masked horizontal acoustics
     return s
 end
 
+"""LU factors of the two AMF factors I - c A_ac and I - c A_adv, cached per c."""
 function cutcell_amf_factors(s::CutCellFVAMF,c::Float64)
     get!(s.factors,c) do
-        n=s.acoustic.nq
-        Isp=spdiagm(0=>ones(n))
-        (vertical=vertical_factor(s.acoustic,c),
-         horizontal=lu(Isp-c*s.Hmask),
-         advection=lu(Isp-c*s.Aadv))
+        Isp=sparse(1.0I,s.acoustic.nq,s.acoustic.nq)
+        (acoustic=lu(Isp-c*s.Hmask), advection=lu(Isp-c*s.Aadv))
     end
 end
 
+"""out = P⁻¹ F, P = (I - c A_ac)(I - c A_adv)."""
 function cutcell_amf_solve!(out,s::CutCellFVAMF,F,rhs,tmp,c)
     fac=cutcell_amf_factors(s,c)
-    vertical_solve!(tmp,s.acoustic,fac.vertical,F)
-    ldiv!(rhs,fac.horizontal,tmp)
+    ldiv!(rhs,fac.acoustic,F)
     ldiv!(out,fac.advection,rhs)
     return out
+end
+
+"""
+HEVI with the two Jacobians: per step the explicit horizontal half steps of the acoustics through
+the unmasked faces (with the forcing f), around the Crank–Nicolson step of the implicit part
+G(q) = (A_ac + A_adv) q, in delta form q ← q + P⁻¹ Δt G(q).
+"""
+function fast_hevi_amf!(qout,s::CutCellFVAMF,q0,f,dt,nsteps)
+    a=s.acoustic
+    q, _, _, k1, k2, _, rhs, tmp, tmp2=s.work
+    q.=q0; halfdt=dt/2; c=dt/2
+    for _ in 1:nsteps
+        hthermo!(k1,a,q,f,true); @. q += (halfdt/2)*k1
+        hmomentum!(k2,a,q,f,true); @. q += halfdt*k2
+        hthermo!(k1,a,q,f,true); @. q += (halfdt/2)*k1
+        mul!(tmp, s.Hmask, q); mul!(tmp, s.Aadv, q, 1.0, 1.0); tmp .*= dt
+        cutcell_amf_solve!(k1,s,tmp,rhs,tmp2,c); q .+= k1
+        hthermo!(k1,a,q,f,true); @. q += (halfdt/2)*k1
+        hmomentum!(k2,a,q,f,true); @. q += halfdt*k2
+        hthermo!(k1,a,q,f,true); @. q += (halfdt/2)*k1
+    end
+    qout.=q
+    return qout
 end
 
 """Three-stage Rosenbrock-W fast integration with vertical/masked acoustics and masked advection factors."""

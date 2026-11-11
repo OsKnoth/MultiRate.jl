@@ -1,5 +1,5 @@
 # The operator in frozen form, N(q) = F(q, q):
-#   fast (evolving z, coefficients from y), per unit fluid volume (s = invV/J, invV = 1/Veff):
+#   fast (evolving z, coefficients from y), per unit fluid volume (s = invV/J, invV = 1/Vf):
 #     ρ_t = -s [δx(Ax Jx U) + δy(Ay Jy V) + δη(Az Ω)],      Ω = W - z_x Ū - z_y V̄,
 #     Θ_t = -s [δx(Ax Jx θx(y) U) + δy(Ay Jy θy(y) V) + δη(Az θη(y) Ω)],
 #     U_t = -(1/Jx)[δx(J p) - δη(z_x p)],  V_t likewise,  W_t = -δη p / J - g ρ̄   (open faces),
@@ -7,8 +7,8 @@
 #   Cartesian grids (flat, cut cells): J = 1, z_x = z_y = 0; terrain following (Gal-Chen): Ω is the
 #   contravariant vertical mass flux, Ω = 0 at the ground and the top.
 #   slow (frozen y): momentum advection in flux form.
-# θx, θy, θz: upwind face values of θ = Θ/ρ (third-order κ = 1/3 reconstruction; donor cell next
-# to cut cells). Pressure (`FV3D_PRESSURE_FORM`): :gradp p(Θ_z) (nothing frozen) or :product
+# θx, θy, θz: upwind face values of θ = Θ/ρ, pseudo third order with virtual grid sizes from the
+# volumes and face areas (advection.jl; κ = 1/3 on uniform grids). Pressure (`FV3D_PRESSURE_FORM`): :gradp p(Θ_z) (nothing frozen) or :product
 # (dp/dΘ)_f(y) (Θ_r - Θ_l), the face mean of the analytic γ p/Θ frozen (fast part linear in z).
 # No background state is subtracted.
 
@@ -24,9 +24,10 @@ pressure_form() = FV3D_PRESSURE_FORM[] === :product ? Product() :
 @inline dpdΘ_face(gas, Θl, Θr) = 0.5 * gas.γ * (pressure(gas, Θl) / Θl + pressure(gas, Θr) / Θr)
 
 # ------------------------------------------------------------------ coefficient vector C
-# [θx (N); θy (N); θz (Nz); Px (N); Py (N); Pz (Nz)], N = nx ny nz, Nz = nx ny (nz+1)
+# [θx (N); θy (N); θz (Nz); Px (N); Py (N); Pz (Nz); a⁺x, a⁻x, a⁺y, a⁻y (N each); a⁺z, a⁻z (Nz each)],
+# N = nx ny nz, Nz = nx ny (nz+1); a± the upwind coefficients of the masked advection (implicit = :amf)
 
-_ncoef(g::Grid3D) = 4 * ncell(g) + 2 * g.nx * g.ny * (g.nz + 1)
+_ncoef(g::Grid3D) = 8 * ncell(g) + 4 * g.nx * g.ny * (g.nz + 1)
 @inline _fz(g::Grid3D, i, j, k) = ip(g, i) + (jp(g, j) - 1) * g.nx + (k - 1) * g.nx * g.ny
 @inline _Nz(g::Grid3D) = g.nx * g.ny * (g.nz + 1)
 @inline cθx(g, i, j, k) = _c(g, i, j, k)
@@ -35,26 +36,15 @@ _ncoef(g::Grid3D) = 4 * ncell(g) + 2 * g.nx * g.ny * (g.nz + 1)
 @inline cPx(g, i, j, k) = 2 * ncell(g) + _Nz(g) + _c(g, i, j, k)
 @inline cPy(g, i, j, k) = 3 * ncell(g) + _Nz(g) + _c(g, i, j, k)
 @inline cPz(g, i, j, k) = 4 * ncell(g) + _Nz(g) + _fz(g, i, j, k)
+@inline _ca0(g) = 4 * ncell(g) + 2 * _Nz(g)
+@inline caxp(g, i, j, k) = _ca0(g) + _c(g, i, j, k)
+@inline caxm(g, i, j, k) = _ca0(g) + ncell(g) + _c(g, i, j, k)
+@inline cayp(g, i, j, k) = _ca0(g) + 2 * ncell(g) + _c(g, i, j, k)
+@inline caym(g, i, j, k) = _ca0(g) + 3 * ncell(g) + _c(g, i, j, k)
+@inline cazp(g, i, j, k) = _ca0(g) + 4 * ncell(g) + _fz(g, i, j, k)
+@inline cazm(g, i, j, k) = _ca0(g) + 4 * ncell(g) + _Nz(g) + _fz(g, i, j, k)
 
 frozen_ncoef(m::Model3D) = _ncoef(m.grid)
-
-# ------------------------------------------------------------------ face values
-
-"""Upwind face value between a1 (left/below) and a0 (right/above): third-order (κ = 1/3,
-stencil a2, a1, a0, am) if `full`, donor cell otherwise."""
-@inline upwind(a2, a1, a0, am, v, full) = full ? interp3(a2, a1, a0, am, v) : (signbit(v) ? a0 : a1)
-
-@inline fullx(g, i, j, k, a, b) = all(g.full[ip(g, i + o), jp(g, j), k] for o in a:b)
-@inline fully(g, i, j, k, a, b) = all(g.full[ip(g, i), jp(g, j + o), k] for o in a:b)
-@inline fullz(g, i, j, k, a, b) = all(g.full[ip(g, i), jp(g, j), kk] for kk in max(1, k + a):min(g.nz, k + b))
-
-"""Value at the z-face k (2 … nz) of a centred column array F: third order inside, centred mean
-at the faces next to the walls (as the 2D `face_z`), donor cell next to cut cells."""
-@inline function face_z3(g, F, i, j, k, v)
-    fullz(g, i, j, k, -2, 1) || return signbit(v) ? F[i, j, k] : F[i, j, k-1]
-    (k >= 3 && k <= g.nz - 1) && return interp3(F[i, j, k-2], F[i, j, k-1], F[i, j, k], F[i, j, k+1], v)
-    return interp2(F[i, j, k-1], F[i, j, k])
-end
 
 # ------------------------------------------------------------------ contravariant vertical flux
 
@@ -93,71 +83,24 @@ function frozen_data!(C, S, m::Model3D, q)
     end
     fill!(C, 0.0)
     fill!(S, 0.0)
-    P(a) = a > 0 ? 1 : 0
+    # θ at the open faces: pseudo third-order upwind (advection.jl), by the sign of the mass flux
+    mass_fluxes!(m, q)
     @inbounds for k in 1:nz, j in 1:ny, i in 1:nx
-        im, jm = ip(g, i - 1), jp(g, j - 1)
-        # face values of θ (left x-face, left y-face, lower z-face)
-        C[cθx(g, i, j, k)] = upwind(θ[ip(g, i - 2), j, k], θ[im, j, k], θ[i, j, k], θ[ip(g, i + 1), j, k],
-                                    q[iU(g, i, j, k)], fullx(g, i, j, k, -2, 1))
-        C[cθy(g, i, j, k)] = upwind(θ[i, jp(g, j - 2), k], θ[i, jm, k], θ[i, j, k], θ[i, jp(g, j + 1), k],
-                                    q[iV(g, i, j, k)], fully(g, i, j, k, -2, 1))
-        k > 1 && (C[cθz(g, i, j, k)] = face_z3(g, θ, i, j, k, Ωface(g, q, i, j, k)))
-        # ---- momentum advection (fluxes weighted by the open fractions; flat: weights 1)
-        # U: x-flux at the centre of cell i, y-flux at the edge (i-1/2, j-1/2), z-flux at (i-1/2, k-1/2)
-        Uc = 0.5 * (q[iU(g, i, j, k)] + q[iU(g, i + 1, j, k)])
-        uc = upwind(u[im, j, k], u[i, j, k], u[ip(g, i + 1), j, k], u[ip(g, i + 2), j, k], Uc, fullx(g, i, j, k, -1, 1))
-        f = g.Jc[i, j] * g.Vf[i, j, k] * Uc * uc / dx
-        S[iU(g, i + 1, j, k)] += f; S[iU(g, i, j, k)] -= f
-        Vy = 0.5 * (q[iV(g, i - 1, j, k)] + q[iV(g, i, j, k)])
-        uy = upwind(u[i, jp(g, j - 2), k], u[i, jm, k], u[i, j, k], u[i, jp(g, j + 1), k], Vy, fully(g, i, j, k, -2, 1) && fully(g, i - 1, j, k, -2, 1))
-        f = 0.25 * (g.Jy[im, j] + g.Jy[i, j]) * (g.Ay[im, j, k] + g.Ay[i, j, k]) * Vy * uy / dy
-        S[iU(g, i, j, k)] += f; S[iU(g, i, j - 1, k)] -= f
-        # V: x-flux at the edge (i-1/2, j-1/2), y-flux at the centre of cell j, z-flux at (j-1/2, k-1/2)
-        Ux = 0.5 * (q[iU(g, i, j - 1, k)] + q[iU(g, i, j, k)])
-        vx = upwind(v[ip(g, i - 2), j, k], v[im, j, k], v[i, j, k], v[ip(g, i + 1), j, k], Ux, fullx(g, i, j, k, -2, 1) && fullx(g, i, j - 1, k, -2, 1))
-        f = 0.25 * (g.Jx[i, jm] + g.Jx[i, j]) * (g.Ax[i, jm, k] + g.Ax[i, j, k]) * Ux * vx / dx
-        S[iV(g, i, j, k)] += f; S[iV(g, i - 1, j, k)] -= f
-        Vc = 0.5 * (q[iV(g, i, j, k)] + q[iV(g, i, j + 1, k)])
-        vc = upwind(v[i, jm, k], v[i, j, k], v[i, jp(g, j + 1), k], v[i, jp(g, j + 2), k], Vc, fully(g, i, j, k, -1, 1))
-        f = g.Jc[i, j] * g.Vf[i, j, k] * Vc * vc / dy
-        S[iV(g, i, j + 1, k)] += f; S[iV(g, i, j, k)] -= f
-        if k > 1
-            Wk = 0.5 * (Ωface(g, q, i - 1, j, k) + Ωface(g, q, i, j, k))
-            uz = face_z3(g, u, i, j, k, Wk)
-            f = 0.5 * (g.Az[im, j, k] + g.Az[i, j, k]) * Wk * uz / dz
-            S[iU(g, i, j, k)] += f; S[iU(g, i, j, k - 1)] -= f
-            Wj = 0.5 * (Ωface(g, q, i, j - 1, k) + Ωface(g, q, i, j, k))
-            vz = face_z3(g, v, i, j, k, Wj)
-            f = 0.5 * (g.Az[i, jm, k] + g.Az[i, j, k]) * Wj * vz / dz
-            S[iV(g, i, j, k)] += f; S[iV(g, i, j, k - 1)] -= f
-            # W: x-flux at (i-1/2, k-1/2), y-flux at (j-1/2, k-1/2)
-            Uk = 0.5 * (q[iU(g, i, j, k - 1)] + q[iU(g, i, j, k)])
-            wx = upwind(w[ip(g, i - 2), j, k], w[im, j, k], w[i, j, k], w[ip(g, i + 1), j, k], Uk,
-                        fullx(g, i, j, k, -2, 1) && fullx(g, i, j, k - 1, -2, 1))
-            f = g.Jx[i, j] * 0.5 * (g.Ax[i, j, k-1] + g.Ax[i, j, k]) * Uk * wx / dx
-            S[iW(g, i, j, k)] += f; S[iW(g, i - 1, j, k)] -= f
-            Vk = 0.5 * (q[iV(g, i, j, k - 1)] + q[iV(g, i, j, k)])
-            wy = upwind(w[i, jp(g, j - 2), k], w[i, jm, k], w[i, j, k], w[i, jp(g, j + 1), k], Vk,
-                        fully(g, i, j, k, -2, 1) && fully(g, i, j, k - 1, -2, 1))
-            f = g.Jy[i, j] * 0.5 * (g.Ay[i, j, k-1] + g.Ay[i, j, k]) * Vk * wy / dy
-            S[iW(g, i, j, k)] += f; S[iW(g, i, j - 1, k)] -= f
-        end
-        # W: z-flux at the centre of cell k
-        Wc = 0.5 * (Ωface(g, q, i, j, k) + Ωface(g, q, i, j, k + 1))
-        wc = (k >= 2 && k <= nz - 1 && fullz(g, i, j, k, -1, 1)) ?
-             interp3(w[i, j, k-1], w[i, j, k], w[i, j, k+1], w[i, j, k+2], Wc) :
-             (fullz(g, i, j, k, 0, 0) ? interp2(w[i, j, k], w[i, j, k+1]) : (signbit(Wc) ? w[i, j, k+1] : w[i, j, k]))
-        f = g.Vf[i, j, k] * Wc * wc / dz
-        k + 1 <= nz && (S[iW(g, i, j, k + 1)] += f)
-        k >= 2 && (S[iW(g, i, j, k)] -= f)
+        ax(g, i, j, k) > 0 && (C[cθx(g, i, j, k)] = face_x(g, θ, i, j, k, c.Fx[i, j, k]))
+        ay(g, i, j, k) > 0 && (C[cθy(g, i, j, k)] = face_y(g, θ, i, j, k, c.Fy[i, j, k]))
+        k > 1 && az(g, i, j, k) > 0 && (C[cθz(g, i, j, k)] = face_z(g, θ, i, j, k, c.Fz[i, j, k]))
     end
-    # divide by the fluid fraction and J of the momentum control volumes; closed faces get no tendency
-    @inbounds for k in 1:nz, j in 1:ny, i in 1:nx
-        S[iU(g, i, j, k)] *= P(g.Ax[i, j, k]) * 2 / (1 / max(g.invV[ip(g, i - 1), j, k], 1e-300) + 1 / max(g.invV[i, j, k], 1e-300)) / g.Jx[i, j]
-        S[iV(g, i, j, k)] *= P(g.Ay[i, j, k]) * 2 / (1 / max(g.invV[i, jp(g, j - 1), k], 1e-300) + 1 / max(g.invV[i, j, k], 1e-300)) / g.Jy[i, j]
-        k > 1 && (S[iW(g, i, j, k)] *= P(g.Az[i, j, k]) * 2 / (1 / max(g.invV[i, j, k-1], 1e-300) + 1 / max(g.invV[i, j, k], 1e-300)) / g.Jc[i, j])
-    end
+    # momentum advection: shift technique (advection.jl)
+    momentum_advection!(S, m)
     pressure_coefficients!(pressure_form(), C, m, q)
+    # implicit = :amf: the masked momentum advection A1(y) z is fast (advection_jacobian.jl), the
+    # slow part keeps S(y) - A1(y) y
+    upwind_coefficients!(C, m, q)
+    if m.implicit === :amf
+        t = m.cache.tmp; fill!(t, 0.0)
+        adv_masked!(t, m, C, q)
+        S .-= t
+    end
     return C, S
 end
 
@@ -340,26 +283,30 @@ end
 # :momentum   momentum (h + v), forcing U, V, W, sponge            (Verlet: momentum step)
 # :hthermo    thermo h (explicit faces), forcing ρ, Θ and W, sponge (HEVI: explicit horizontal
 # :hmomentum  momentum h (explicit faces), forcing U, V              half steps, with all forcing)
-# :vertical   thermo v, momentum v, + thermo h, momentum h on the masked faces (implicit = :mask)
-# explicit faces: all (implicit = :column) or the unmasked ones (implicit = :mask).
+# :vertical   thermo v, momentum v, + thermo h, momentum h on the masked faces (implicit = :mask, :amf)
+#             + the masked momentum advection A1 z (implicit = :amf, also in :all and :momentum)
+# explicit faces: all (implicit = :column) or the unmasked ones (implicit = :mask, :amf).
 
-_hsel(m::Model3D) = m.implicit === :mask ? Unmasked() : AllFaces()
+_hsel(m::Model3D) = m.implicit in (:mask, :amf) ? Unmasked() : AllFaces()
+"""Masked momentum advection A1(C) z of the fast part (implicit = :amf; else nothing)."""
+_adv!(out, m, C, z) = (m.implicit === :amf && adv_masked!(out, m, C, z); out)
 
 _fast!(::Val{:all}, out, m, C, z, F, pf) = (thermo_h!(out, m, C, z); thermo_v!(out, m, C, z);
-    prepare_pressure!(pf, m, z); momentum_h!(out, m, C, z, pf); momentum_v!(out, m, C, z, pf);
+    prepare_pressure!(pf, m, z); momentum_h!(out, m, C, z, pf); momentum_v!(out, m, C, z, pf); _adv!(out, m, C, z);
     forcing_thermo!(out, m, F); forcing_UV!(out, m, F); forcing_W!(out, m, F); sponge!(out, m, z))
 _fast!(::Val{:thermo}, out, m, C, z, F, pf) = (thermo_h!(out, m, C, z); thermo_v!(out, m, C, z); forcing_thermo!(out, m, F))
 _fast!(::Val{:momentum}, out, m, C, z, F, pf) = (prepare_pressure!(pf, m, z); momentum_h!(out, m, C, z, pf);
-    momentum_v!(out, m, C, z, pf); forcing_UV!(out, m, F); forcing_W!(out, m, F); sponge!(out, m, z))
+    momentum_v!(out, m, C, z, pf); _adv!(out, m, C, z); forcing_UV!(out, m, F); forcing_W!(out, m, F); sponge!(out, m, z))
 _fast!(::Val{:hthermo}, out, m, C, z, F, pf) = (thermo_h!(out, m, C, z, _hsel(m)); forcing_thermo!(out, m, F);
     forcing_W!(out, m, F); sponge!(out, m, z))
 _fast!(::Val{:hmomentum}, out, m, C, z, F, pf) = (prepare_pressure!(pf, m, z); momentum_h!(out, m, C, z, pf, _hsel(m));
     forcing_UV!(out, m, F))
 function _fast!(::Val{:vertical}, out, m, C, z, F, pf)
     thermo_v!(out, m, C, z); prepare_pressure!(pf, m, z); momentum_v!(out, m, C, z, pf)
-    if m.implicit === :mask
+    if m.implicit in (:mask, :amf)
         thermo_h!(out, m, C, z, Masked()); momentum_h!(out, m, C, z, pf, Masked())
     end
+    _adv!(out, m, C, z)
     return out
 end
 _fast!(::Val{P}, out, m, C, z, F, pf) where {P} = error("frozen_fast!: unknown part $P")

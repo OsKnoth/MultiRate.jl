@@ -58,48 +58,26 @@ function rhs_nonlinear!(out, m::FVModel, q::AbstractVector)
         end
     end
     fill!(out, 0.0)
+    a = shift_advection!(c.adv, g, q)          # θ face values and momentum advection (shift_advection.jl)
     @inbounds for k in 1:nz, i in 1:nx
         # mass and Θ: fluxes through the left x-face (i) and the lower z-face (k) of cell (i, k)
         U = q[iU(g, i, k)]
-        θx = interp3(θ[ip(g, i - 2), k], θ[ip(g, i - 1), k], θ[i, k], θ[ip(g, i + 1), k], U)
+        θx = a.θfx[i, k]
         out[iρ(g, i, k)] += U / dx
         out[iρ(g, i - 1, k)] -= U / dx
         out[iΘ(g, i, k)] += U * θx / dx
         out[iΘ(g, i - 1, k)] -= U * θx / dx
         if k > 1
             W = q[iW(g, i, k)]
-            θz = face_z(θ, i, k, nz, W)
+            θz = a.θfz[i, k]
             out[iρ(g, i, k)] += W / dz
             out[iρ(g, i, k - 1)] -= W / dz
             out[iΘ(g, i, k)] += W * θz / dz
             out[iΘ(g, i, k - 1)] -= W * θz / dz
         end
-        # U: flux U u at the centre of cell i (between x-faces i and i+1)
-        Uc = 0.5 * (q[iU(g, i, k)] + q[iU(g, i + 1, k)])
-        uc = interp3(u[ip(g, i - 1), k], u[i, k], u[ip(g, i + 1), k], u[ip(g, i + 2), k], Uc)
-        out[iU(g, i + 1, k)] += Uc * uc / dx
-        out[iU(g, i, k)] -= Uc * uc / dx
-        # U: vertical flux W u at the corner (x-face i, z-face k), k = 2 .. nz
-        if k > 1
-            Wk = 0.5 * (q[iW(g, i - 1, k)] + q[iW(g, i, k)])
-            uz = face_z(u, i, k, nz, Wk)
-            out[iU(g, i, k)] += Wk * uz / dz
-            out[iU(g, i, k - 1)] -= Wk * uz / dz
-            # W: horizontal flux U w at the same corner (between columns i-1 and i, z-face k)
-            Uk = 0.5 * (q[iU(g, i, k - 1)] + q[iU(g, i, k)])
-            wx = interp3(w[ip(g, i - 2), k], w[ip(g, i - 1), k], w[i, k], w[ip(g, i + 1), k], Uk)
-            out[iW(g, i, k)] += Uk * wx / dx
-            out[iW(g, i - 1, k)] -= Uk * wx / dx
-        end
-        # W: vertical flux W w at the centre of cell (i, k), between z-faces k and k+1
-        Wc = 0.5 * (Wface(g, q, i, k) + Wface(g, q, i, k + 1))
-        if k >= 2 && k <= nz - 1
-            wc = interp3(w[i, k-1], w[i, k], w[i, k+1], w[i, k+2], Wc)
-        else
-            wc = interp2(w[i, k], w[i, k+1])
-        end
-        k + 1 <= nz && (out[iW(g, i, k + 1)] += Wc * wc / dz)
-        k >= 2 && (out[iW(g, i, k)] -= Wc * wc / dz)
+        # momentum advection
+        out[iU(g, i, k)] += a.SU[i, k]
+        k > 1 && (out[iW(g, i, k)] += a.SW[i, k])
         # pressure gradient (:gradp or :product) and gravity (deviations from the reference)
         il = ip(g, i - 1)
         if product
@@ -214,6 +192,8 @@ function rhs_terrain!(out, m::FVModel, q)
         c.w[i, nz+1] = 0.0
     end
     fill!(out, 0.0)
+    a = shift_advection!(c.adv, g, q)          # θ face values (:flux) and momentum advection
+    newθ = form === :flux
     @inbounds for k in 1:nz, i in 1:nx
         ir = ip(g, i+1)
         J = g.Jc[i]
@@ -225,12 +205,12 @@ function rhs_terrain!(out, m::FVModel, q)
             Vσ = mz - g.zx_f[i, kf] * Uc
             out[iρ(g, i, k)] -= sg * Vσ / (J * dη)
             θσ = kf == 1 ? θr[i, 1] : kf == nz+1 ? θr[i, nz] :
-                  interp2(θr[i, kf-1], θr[i, kf])
+                  newθ ? a.θfz[i, kf] : interp2(θr[i, kf-1], θr[i, kf])
             out[iΘ(g, i, k)] -= sg * θσ * Vσ / (J * dη)
         end
         out[iρ(g, i, k)] -= (Fx1 - Fx0) / (J * dx)
-        θx0 = interp3(θr[ip(g, i-2), k], θr[ip(g, i-1), k], θr[i, k], θr[ip(g, i+1), k], U0)
-        θx1 = interp3(θr[ip(g, i-1), k], θr[i, k], θr[ir, k], θr[ip(g, i+2), k], U1)
+        θx0 = newθ ? a.θfx[i, k] : interp3(θr[ip(g, i-2), k], θr[ip(g, i-1), k], θr[i, k], θr[ip(g, i+1), k], U0)
+        θx1 = newθ ? a.θfx[ir, k] : interp3(θr[ip(g, i-1), k], θr[i, k], θr[ir, k], θr[ip(g, i+2), k], U1)
         out[iΘ(g, i, k)] -= (g.Jx[ir] * θx1 * U1 - g.Jx[i] * θx0 * U0) / (J * dx)
         if adv    # advective form: Θ_t = θ ρ_t - [ρu ∂_ξθ + ρω̃ ∂_ηθ], same cell velocities
             θb = k == 1 ? 1.5 * c.θ[i, 1] - 0.5 * c.θ[i, 2] : interp2(c.θ[i, k-1], c.θ[i, k])
@@ -245,32 +225,23 @@ function rhs_terrain!(out, m::FVModel, q)
             out[iΘ(g, i, k)] += θbc[i, k] * out[iρ(g, i, k)] - ρw * θz
         end
 
-        # x-momentum control volume centred on x-face i, including the terrain pressure metric.
+        # x-momentum control volume centred on x-face i: terrain pressure metric (the advection
+        # is a.SU, shift technique)
         im = ip(g, i-1)
-        mxm, mxp = fv_u_center(g, q, im, k), fv_u_center(g, q, i, k)
-        um = 0.5 * (c.u[im, k] + c.u[i, k])
-        up = 0.5 * (c.u[i, k] + c.u[ir, k])
         pleft = pert ? 0.0 : c.pp[im, k]
         pright = pert ? 0.0 : c.pp[i, k]
-        FxL = g.Jc[im] * (mxm * um + pleft)
-        FxR = g.Jc[i] * (mxp * up + pright)
+        FxL = g.Jc[im] * pleft
+        FxR = g.Jc[i] * pright
         FσL, FσR = 0.0, 0.0
         for (kf, dest) in ((k, 1), (k+1, 2))
             zxs = g.zx_xf[i, kf]
             # p at the corner; ground and top extrapolated (the full hydrostatic
             # p differs from the cell value by ρgΔz/2, an O(1) error in -∂_η(z_x p) otherwise)
             pface = 0.5 * (fv_p_sigma(c.pp, im, kf, nz) + fv_p_sigma(c.pp, i, kf, nz))
-            # σ mass flux at the corner (x-face i, σ-face kf), zero at the ground and the top,
-            # times the upwind u at the σ-face: one flux per face, shared by the cells k-1 and k
             Fσ = pert ? 0.0 : -zxs * pface
-            if 1 < kf <= nz
-                Uf = 0.5 * (q[iU(g, i, kf-1)] + q[iU(g, i, kf)])
-                Mσ = 0.5 * (q[iW(g, im, kf)] + q[iW(g, i, kf)]) - zxs * Uf
-                Fσ += Mσ * face_z(c.u, i, kf, nz, Mσ)
-            end
             dest == 1 ? (FσL = Fσ) : (FσR = Fσ)
         end
-        out[iU(g, i, k)] = -((FxR - FxL) / dx + (FσR - FσL) / dη) / g.Jx[i]
+        out[iU(g, i, k)] = -((FxR - FxL) / dx + (FσR - FσL) / dη) / g.Jx[i] + a.SU[i, k]
         if pert   # -∂p'/∂x|_z in the θ̄-weighted chain-rule form
             θp(ii, kk) = θbc[ii, kk] * c.pp[ii, kk]
             mσ = 0.0
@@ -287,26 +258,11 @@ function rhs_terrain!(out, m::FVModel, q)
                                 (0.5 * (θbc[im, k] + θbc[i, k]))
         end
 
-        # Vertical-momentum control volume centred at sigma-face k.
+        # Vertical-momentum control volume centred at sigma-face k: pressure and gravity (the
+        # advection is a.SW, shift technique)
         if k > 1
-            W = q[iW(g, i, k)]
-            # horizontal fluxes at x-faces, with u interpolated to the sigma-face
-            uL = 0.5 * (c.u[i, k-1] + c.u[i, k])
-            uR = 0.5 * (c.u[ir, k-1] + c.u[ir, k])
-            mzL = 0.5 * (q[iW(g, i, k)] + q[iW(g, im, k)])
-            mzR = 0.5 * (q[iW(g, i, k)] + q[iW(g, ir, k)])
-            divx = (g.Jx[ir] * mzR * uR - g.Jx[i] * mzL * uL) / dx
-            Fsbot, Fstop = 0.0, 0.0
-            for (kc, dest) in ((k-1, 1), (k, 2))
-                mb = 0.5 * (fv_mz_face(g, q, i, kc) + fv_mz_face(g, q, i, kc+1))
-                wb = 0.5 * (c.w[i, kc] + c.w[i, kc+1])
-                ub = 0.5 * (c.u[i, kc] + c.u[ir, kc])
-                p = c.pp[i, kc]
-                Fs = mb * (wb - g.zx_c[i, kc] * ub) + p
-                dest == 1 ? (Fsbot = Fs) : (Fstop = Fs)
-            end
             ρpert = 0.5 * (q[iρ(g, i, k-1)] - m.ρbal[i, k-1] + q[iρ(g, i, k)] - m.ρbal[i, k])
-            out[iW(g, i, k)] = -(divx + (Fstop - Fsbot) / dη) / J - m.gas.g * ρpert
+            out[iW(g, i, k)] = -(c.pp[i, k] - c.pp[i, k-1]) / (J * dη) - m.gas.g * ρpert + a.SW[i, k]
         end
     end
     sponge!(out, m, q)

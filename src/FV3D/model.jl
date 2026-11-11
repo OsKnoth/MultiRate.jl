@@ -9,6 +9,11 @@ struct Cache3D
     C::Vector{Float64}            # frozen coefficients and slow part of N (rhs_nonlinear! = F(q, q))
     S::Vector{Float64}
     column::Base.RefValue{Any}    # column solver of the HEVI step
+    Fx::Array{Float64,3}          # mass fluxes A J U, A J V, A Ω (advection.jl)
+    Fy::Array{Float64,3}
+    Fz::Array{Float64,3}          # (nx, ny, nz+1)
+    sh::NTuple{12,Array{Float64,3}}   # shifted velocities u, v, w (L, R) and their tendencies
+    tmp::Vector{Float64}              # work vector (nq)
 end
 
 struct Model3D
@@ -20,25 +25,30 @@ struct Model3D
     damp::Vector{Float64}         # sponge rates (W entries only)
     qtarget::Vector{Float64}
     cache::Cache3D
-    implicit::Symbol              # HEVI implicit step: :column (vertical) or :mask (vertical + masked horizontal)
+    implicit::Symbol              # HEVI implicit step: :column (vertical), :mask (+ masked horizontal), :amf (+ masked advection)
 end
 
 """
-    Model3D(grid, gas, ρref, Θref; implicit = :column)
+    Model3D(grid, gas, ρref, Θref; implicit = grid.cut ? :amf : :column)
 
 Reference functions ρref(z), Θref(z) are used for output (primed fields) only; the equations use
 the full p and ρ, no background state is subtracted. `implicit` selects the implicit step of the
 HEVI fast loop: `:column` (vertical part, tridiagonal per column) or `:mask` (vertical part plus
 the horizontal fast terms through the faces of the masked cells, sparse LU per stage; the
-explicit horizontal half steps then use the unmasked faces only).
+explicit horizontal half steps then use the unmasked faces only) or `:amf` (as `:mask`, and the
+momentum advection of the masked faces in the fast part, simple upwind, implicit by approximate
+matrix factorization (I - c J_ac)(I - c J_adv), advection_jacobian.jl). With cut cells `:amf` is
+the default: the divisions use the true fluid volumes, so the small cells must be implicit for
+the fast step to be limited by the regular Δx.
 """
-function Model3D(g::Grid3D, gas::Gas, ρref, Θref; implicit::Symbol = :column)
-    implicit in (:column, :mask) || error("implicit: :column or :mask")
+function Model3D(g::Grid3D, gas::Gas, ρref, Θref; implicit::Symbol = g.cut ? :amf : :column)
+    implicit in (:column, :mask, :amf) || error("implicit: :column, :mask or :amf")
     Z = g.Zc                                  # physical heights of the centres
     nq = nunknowns(g)
     sz = (g.nx, g.ny, g.nz)
     cache = Cache3D(zeros(sz), zeros(sz), zeros(g.nx, g.ny, g.nz + 1), zeros(sz), zeros(sz),
-                    zeros(_ncoef(g)), zeros(nq), Ref{Any}(nothing))
+                    zeros(_ncoef(g)), zeros(nq), Ref{Any}(nothing), zeros(sz), zeros(sz), zeros(g.nx, g.ny, g.nz + 1),
+                    ntuple(_ -> zeros(sz), 12), zeros(nq))
     return Model3D(g, gas, nq, ρref.(Z), Θref.(Z), zeros(nq), zeros(nq), cache, implicit)
 end
 
@@ -113,7 +123,7 @@ end
 """Cell level k of the height z."""
 level(g::Grid3D, z) = clamp(floor(Int, z / g.dz) + 1, 1, g.nz)
 
-"""Discrete integral Σ Veff J ΔV q_c of a cell variable (:ρ or :Θ) over the fluid cells."""
+"""Discrete integral Σ Vf J ΔV q_c of a cell variable (:ρ or :Θ) over the fluid cells."""
 function total3d(m::Model3D, q, var::Symbol)
     g = m.grid
     idx = var === :ρ ? iρ : iΘ

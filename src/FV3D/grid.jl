@@ -4,16 +4,17 @@
 # the trivial metric (J = 1, z_x = z_y = 0); the operator always uses fractions and metric.
 
 """
-    Grid3D(nx, ny, nz, Lx, Ly, H; zs = nothing, terrain = :cut, box = nothing, αmin = 0.2, mask_width = 1)
+    Grid3D(nx, ny, nz, Lx, Ly, H; zs = nothing, terrain = :cut, box = nothing, mask_width = 1)
 
 Uniform C-grid with nx × ny × nz cells on [0, Lx] × [0, Ly] × [0, H]. With a terrain function
 `zs(x, y)` the cells are cut (Cartesian cut cells): `Vf[i,j,k]` is the fluid volume fraction of a
 cell, `Ax[i,j,k]`, `Ay[i,j,k]` the open fractions of its left x- and y-face, `Az[i,j,k]` of its
 lower z-face (k = 1 … nz+1, walls at k = 1 and nz+1 closed). The fractions are computed with
 nq-point Gauss quadrature in the horizontal directions and exactly in z (the fluid part of a
-column of a cell is `clamp(z_top - max(zs, z_bot), 0, Δz)`). Small cut cells use the effective
-volume `Veff = max(Vf, αmin)` in the divisions (mass and Θ are conserved with these weights);
-fully solid cells (Vf = 0) are frozen. `box = (x0, x1, y0, y1, h)`: a rectangular obstacle
+column of a cell is `clamp(z_top - max(zs, z_bot), 0, Δz)`). The divisions use the true fluid
+volume Vf (no minimum volume): small cut cells are handled by the implicit masked step of the
+fast loop (model, `implicit = :mask`, the default with cut cells); fully solid cells (Vf = 0) are
+frozen. `box = (x0, x1, y0, y1, h)`: a rectangular obstacle
 [x0, x1] × [y0, y1] × [0, h] on the ground, with exact fractions (aligned with the grid faces:
 only full and solid cells; shifted: cut cells). `mask`: the cut cells and their neighbours within
 `mask_width` cells (x, y, z), the region treated implicitly by `implicit = :mask` (model); `Mx`,
@@ -44,7 +45,7 @@ struct Grid3D
     yf::Vector{Float64}           # y of the left y-faces (ny)
     zf::Vector{Float64}           # z of the z-faces (nz+1)
     Vf::Array{Float64,3}          # fluid volume fractions (nx, ny, nz)
-    invV::Array{Float64,3}        # 1/Veff, 0 in solid cells
+    invV::Array{Float64,3}        # 1/Vf, 0 in solid cells
     Ax::Array{Float64,3}          # open fraction of the left x-face (nx, ny, nz)
     Ay::Array{Float64,3}          # open fraction of the left y-face (nx, ny, nz)
     Az::Array{Float64,3}          # open fraction of the lower z-face (nx, ny, nz+1)
@@ -64,7 +65,6 @@ struct Grid3D
     Zc::Array{Float64,3}          # physical heights of the centres (nx, ny, nz)
     Zf::Array{Float64,3}          # physical heights of the η-faces (nx, ny, nz+1)
     zs::Any
-    αmin::Float64
 end
 
 ncell(g::Grid3D) = g.nx * g.ny * g.nz
@@ -89,8 +89,7 @@ const _GW = (0.3478548451374538, 0.6521451548625462, 0.6521451548625462, 0.34785
 """Length of the overlap of the intervals [a0, a1] and [b0, b1]."""
 @inline _ov(a0, a1, b0, b1) = max(0.0, min(a1, b1) - max(a0, b0))
 
-function Grid3D(nx, ny, nz, Lx, Ly, H; zs = nothing, terrain::Symbol = :cut, box = nothing, αmin = 0.2,
-                mask_width = 1)
+function Grid3D(nx, ny, nz, Lx, Ly, H; zs = nothing, terrain::Symbol = :cut, box = nothing, mask_width = 1)
     zs !== nothing && box !== nothing && error("Grid3D: give zs or box, not both")
     terrain in (:cut, :follow) || error("terrain: :cut or :follow")
     follow = zs !== nothing && terrain === :follow
@@ -140,7 +139,7 @@ function Grid3D(nx, ny, nz, Lx, Ly, H; zs = nothing, terrain::Symbol = :cut, box
         end
     end
     Az[:, :, 1] .= 0.0; Az[:, :, nz+1] .= 0.0                   # walls
-    invV = [v > 0 ? 1 / max(v, αmin) : 0.0 for v in Vf]
+    invV = [v > 0 ? 1 / v : 0.0 for v in Vf]
     cutc = 0 .< Vf .< 1
     mask = falses(nx, ny, nz)
     w = mask_width
@@ -170,5 +169,5 @@ function Grid3D(nx, ny, nz, Lx, Ly, H; zs = nothing, terrain::Symbol = :cut, box
     Zf = [zsc[i, j] + zf[k] * Jc[i, j] for i in 1:nx, j in 1:ny, k in 1:nz+1]
     return Grid3D(nx, ny, nz, Lx, Ly, H, dx, dy, dz, xc, yc, zc, xf, yf, zf, Vf, invV, Ax, Ay, Az,
                   Vf .== 1, mask, Mx, My, zs !== nothing || box !== nothing, follow, Jc, Jx, Jy, zxf, zyf, zxx, zyy, Zc, Zf,
-                  follow ? zs_ : (zs === nothing ? box : zs), Float64(αmin))
+                  follow ? zs_ : (zs === nothing ? box : zs))
 end

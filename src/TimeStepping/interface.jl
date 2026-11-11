@@ -30,6 +30,7 @@ rhs_nonlinear(model, q::AbstractVector) = rhs_nonlinear!(zeros(length(q)), model
 function fast_operator end
 function fast_apply! end
 function fast_rosenbrock_amf! end
+function fast_hevi_amf! end
 function fast_rhs_thermo! end
 function fast_rhs_momentum! end
 function fast_rhs_horizontal! end

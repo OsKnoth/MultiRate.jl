@@ -35,7 +35,7 @@ eps_if = parse(Float64, get(ENV, "EPS_IF", "0"))
 if disc == :dg
     FAST in (:hevi, :hevi_verlet, :hevi_relax, :fb, :verlet) || error("DG hill fast method must be hevi, hevi_verlet, hevi_relax, fb or verlet")
 elseif disc == :fvc
-    FAST in (:hevi, :fb, :verlet, :rosenbrock_amf) || error("cut-cell FV hill fast method must be hevi, fb, verlet or rosenbrock_amf")
+    FAST in (:hevi, :hevi_amf, :fb, :verlet, :rosenbrock_amf) || error("cut-cell FV hill fast method must be hevi, hevi_amf, fb, verlet or rosenbrock_amf")
 else
     FAST in (:hevi, :wrf, :fb, :verlet) || error("FV hill fast method must be hevi, wrf, fb or verlet")
 end

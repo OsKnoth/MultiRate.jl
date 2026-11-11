@@ -18,12 +18,14 @@ struct FVCache
     mdz::Matrix{Float64}
     cc::Vector{Matrix{Float64}}   # cut-cell third-order advection work arrays, (nx, nz) each
     frozen::Base.RefValue{Any}    # column solver of the frozen split (src/FV/frozen.jl)
+    adv::AdvCache                 # advection (shift_advection.jl)
 end
 FVCache(g) = FVCache(zeros(g.nx,g.nz),zeros(g.nx,g.nz+1),zeros(g.nx,g.nz),zeros(g.nx,g.nz),
                      zeros(g.nx,g.nz),zeros(g.nx,g.nz),zeros(g.nx+1,g.nz),zeros(g.nx,g.nz+1),
                      zeros(g.nx+1,g.nz),zeros(g.nx+1,g.nz),zeros(g.nx,g.nz+1),zeros(g.nx,g.nz+1),
                      zeros(g.nx,g.nz),zeros(g.nx,g.nz),
-                     g isa CutCellFVGrid ? [zeros(g.nx,g.nz) for _ in 1:10] : Matrix{Float64}[], Ref{Any}(nothing))
+                     g isa CutCellFVGrid ? [zeros(g.nx,g.nz) for _ in 1:10] : Matrix{Float64}[], Ref{Any}(nothing),
+                     AdvCache(g))
 
 struct FVModel{G}
     grid::G
@@ -86,7 +88,7 @@ function FVModel(grid::CutCellFVGrid, gas::Gas, ρref, Θref)
     T = Θref.(Zref)
     nq = nunknowns(grid)
     cache = FVCache(grid)
-    # background θ̄ (only for CUT_THETA_RECON = :perturbation): cells (as the reference state), open x-face midpoints, z-faces
+    # background θ̄ at cells, open x-face midpoints and z-faces (kept for diagnostics)
     θbar(z) = Θref(z) / ρref(z)
     g = grid
     push!(cache.cc, T ./ R,

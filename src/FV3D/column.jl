@@ -19,12 +19,15 @@ mutable struct Column3D
     θz::Array{Float64,3}
     factors::Dict{Float64,NTuple{3,Array{Float64,3}}}
     W::Vector{Float64}
-    J::SparseMatrixCSC{Float64,Int}                 # implicit = :mask: matrix of the implicit part
-    lu::Dict{Float64,Any}                           # its LU factors of I - c J per c
+    J::SparseMatrixCSC{Float64,Int}                 # implicit = :mask, :amf: matrix of the implicit acoustics
+    Jadv::SparseMatrixCSC{Float64,Int}              # implicit = :amf: masked advection (simple upwind)
+    lu::Dict{Float64,Any}                           # LU factors of the restricted systems per c
+    idx::Vector{Int}                                # unknowns of the columns at masked faces (+ masked U, V)
+    ridx::Vector{Int}                               # rows of Jadv (masked faces)
 end
 Column3D(g::Grid3D) = Column3D(zeros(g.nx, g.ny, g.nz + 1), zeros(g.nx, g.ny, g.nz + 1), zeros(g.nx, g.ny, g.nz + 1),
                                Dict{Float64,NTuple{3,Array{Float64,3}}}(), zeros(g.nz + 1),
-                               spzeros(0, 0), Dict{Float64,Any}())
+                               spzeros(0, 0), spzeros(0, 0), Dict{Float64,Any}(), Int[], Int[])
 
 function _column(m::Model3D)
     s = m.cache.column[]
@@ -53,8 +56,13 @@ function frozen_stage_begin!(m::Model3D, C, z)
     end
     column_coefficients!(pressure_form(), s, m, C, z)
     empty!(s.factors)
-    if m.implicit === :mask
+    if m.implicit in (:mask, :amf)
         s.J = implicit_matrix(m, s, C, z)
+        isempty(s.idx) && (s.idx = masked_unknowns(m))
+        if m.implicit === :amf
+            s.Jadv = adv_matrix(m, C)
+            s.ridx = unique(s.Jadv.rowval)
+        end
         empty!(s.lu)
     end
     return s
@@ -111,6 +119,34 @@ function implicit_matrix(m::Model3D, s::Column3D, C, z)
         end
     end
     return sparse(I, Jc, V, m.nq, m.nq)
+end
+
+"""
+Unknowns coupled by the horizontal part of the implicit matrix: ρ, Θ, W of every column with a
+cell next to a masked x- or y-face, and the masked U, V. The remaining columns are independent
+tridiagonal systems (`column_solve!`); only this block needs the sparse LU.
+"""
+function masked_unknowns(m::Model3D)
+    g = m.grid
+    col = falses(g.nx, g.ny)
+    uv = Int[]
+    for k in 1:g.nz, j in 1:g.ny, i in 1:g.nx
+        if g.Mx[i, j, k] > 0 && g.Ax[i, j, k] > 0
+            col[i, j] = col[ip(g, i - 1), j] = true; push!(uv, iU(g, i, j, k))
+        end
+        if g.My[i, j, k] > 0 && g.Ay[i, j, k] > 0
+            col[i, j] = col[i, jp(g, j - 1)] = true; push!(uv, iV(g, i, j, k))
+        end
+    end
+    idx = Int[]
+    for j in 1:g.ny, i in 1:g.nx
+        col[i, j] || continue
+        for k in 1:g.nz
+            push!(idx, iρ(g, i, j, k), iΘ(g, i, j, k))
+            k > 1 && push!(idx, iW(g, i, j, k))
+        end
+    end
+    return sort!(vcat(idx, uv))
 end
 
 """LU factors (Thomas) of the column systems for c, cached per stage."""
@@ -170,15 +206,30 @@ function column_solve!(Y, s::Column3D, m::Model3D, c, R)
     return Y
 end
 
-"""Linearly implicit Crank–Nicolson step of the implicit part: z ← z + (I - dt/2 J)⁻¹ dt G(z),
-G = `frozen_fast!(…, :vertical, …)`; J the column systems (:column) or the sparse matrix (:mask)."""
+"""Linearly implicit Crank–Nicolson step of the implicit part: z ← z + P⁻¹ dt G(z),
+G = `frozen_fast!(…, :vertical, …)`; P = I - dt/2 J with J the column systems (:column) or the
+sparse matrix (:mask), P = (I - dt/2 J)(I - dt/2 J_adv) (:amf, approximate matrix factorization)."""
 function frozen_vertical_step!(z, m::Model3D, C, dt, k, y)
     s = _column(m)
     frozen_fast!(k, m, C, z, :vertical, k)
     @. k *= dt
-    if m.implicit === :mask
-        F = get!(() -> lu(I - (dt / 2) * s.J), s.lu, Float64(dt / 2))
-        ldiv!(y, F, k)
+    if m.implicit in (:mask, :amf)
+        c = dt / 2
+        F = get!(s.lu, Float64(c)) do
+            Fac = isempty(s.idx) ? nothing : lu(I - c * s.J[s.idx, s.idx])
+            amf = m.implicit === :amf && !isempty(s.ridx)
+            Arow = amf ? s.Jadv[s.ridx, :] : nothing; Arr = amf ? s.Jadv[s.ridx, s.ridx] : nothing
+            (Fac, amf ? lu(I - c * Arr) : nothing, Arow, Arr)
+        end
+        # acoustic factor: independent columns tridiagonal, the masked block sparse
+        column_solve!(y, s, m, c, k)
+        isempty(s.idx) || (y[s.idx] = F[1] \ k[s.idx])
+        # advection factor (rows r = masked faces): x_r = (I - c A_rr)⁻¹ (y_r + c A_ru y_u), x_u = y_u
+        if F[2] !== nothing
+            yr = y[s.ridx]
+            b = yr .+ c .* (F[3] * y .- F[4] * yr)
+            y[s.ridx] = F[2] \ b
+        end
     else
         column_solve!(y, s, m, dt / 2, k)
     end

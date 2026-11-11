@@ -28,6 +28,7 @@ q0 (qout may alias q0). Methods:
            vertically implicit, off-centred Crank–Nicolson (β = WRF_BETA), divergence damping
            by the pressure extrapolation of WRF (γd = WRF_SMDIV)
   :rosenbrock_amf model-specific Rosenbrock-W fast integration with approximate matrix factors
+  :hevi_amf model-specific HEVI with approximate matrix factors in the implicit step
   :<base>_y4, :<base>_s4, :<base>_y6  symmetric compositions of order 4/4/6 of a symmetric
            second-order loop (:verlet, FV :hevi, :hevi_verlet), see `composition`
 The standard explicit and HEVI loops are allocation-free for operators with a cached
@@ -47,6 +48,10 @@ function fast_solve!(qout, s::AbstractFastOperator, q0, F_slow, dt, nsteps; meth
     if base == :rosenbrock_amf
         length(ws) == 1 || error("no composition of :rosenbrock_amf")
         fast_rosenbrock_amf!(qout, s, q0, f, dt, nsteps)
+        return qout
+    elseif base == :hevi_amf
+        length(ws) == 1 || error("no composition of :hevi_amf")
+        fast_hevi_amf!(qout, s, q0, f, dt, nsteps)
         return qout
     end
     q .= q0
@@ -74,7 +79,7 @@ function fast_solve_poly!(qout, s::AbstractFastOperator, q0, G, T, nsteps; metho
     fb = fast_forcing(s)
     M = fast_mass(s)
     base, ws = composition(method)
-    base == :rosenbrock_amf && error("fast_solve_poly!: :rosenbrock_amf has no time-dependent forcing")
+    base in (:rosenbrock_amf, :hevi_amf) && error("fast_solve_poly!: :$base has no time-dependent forcing")
     K = length(G)
     q .= q0
     dt = T / nsteps
@@ -141,7 +146,7 @@ function _fast_loop!(method, q, s, f, dt, nsteps, Y, k1, k2, tmp, rhs)
     elseif method == :wrf
         wrf_loop!(q, s, f, dt, nsteps, Y, k1, k2, tmp, rhs)
     else
-        error("unknown fast method $method (available: :imex, :hevi, :hevi_verlet, :hevi_relax, :verlet, :fb, :wrf, :rosenbrock_amf, and _y4/_s4/_y6 compositions of the symmetric ones)")
+        error("unknown fast method $method (available: :imex, :hevi, :hevi_verlet, :hevi_relax, :verlet, :fb, :wrf, :rosenbrock_amf, :hevi_amf, and _y4/_s4/_y6 compositions of the symmetric ones)")
     end
     return q
 end

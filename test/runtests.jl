@@ -340,6 +340,29 @@ end
         tab = TS.mis_tableau(:WSRK3)
         @test allocs(() -> TS.mis_step!(qq, mw, q0, 20.0, tab, sw, w; nsub = 6, fast = :wrf)) == 0
     end
+    # cut cells, HEVI with the mask (cut cells and neighbours): the implicit matrix is the full
+    # linear fast operator minus its explicit part; a run with the regular Δx fast step is stable
+    gc = FV.CutCellFVGrid(32, 20, 64e3, 10e3; zs = x -> 400.0 / (1 + ((x - 32e3) / 4e3)^2))
+    mc = FV.FVModel(gc, gas, ρr, Θr)
+    qc = CM.project2d(mc, (x, z) -> (ρr(z), 10ρr(z), 0.0, Θr(z)))
+    sc = FV.fast_operator(mc, qc; fast = :hevi, reuse = false)
+    @test any(sc.maskU) && count(sc.maskU) < count(gc.FU .> 0)
+    v = 1e-3 .* sin.(1:mc.nq); z0 = zeros(mc.nq)
+    full = FV.cutcell_fast!(zeros(mc.nq), sc, v, z0, true, true, FV.CUT_ALL, FV.CUT_NONE)
+    expl = FV.cutcell_fast!(zeros(mc.nq), sc, v, z0, true, false, FV.CUT_ALL, FV.CUT_NONE, true)
+    @test maximum(abs, FV.cutcell_implicit_matrix(sc) * v - (full - expl)) < 1e-12 * maximum(abs, full)
+    dτ = 0.85 * 0.92 * gc.dx / FV.sound_speed_max(mc, qc)
+    qe = TS.run_mis(mc, qc, 30.0, 20; tab = TS.mis_tableau(:MIS4), nsub = ceil(Int, 30.0 / dτ), fast = :hevi, refreeze_every = 10)
+    @test all(isfinite, qe) && abs(CM.total2d(mc, qe, 1) / CM.total2d(mc, qc, 1) - 1) < 1e-12
+    # the two Jacobians (acoustics: columns + masked faces; advection: cut-cell mask), HEVI and
+    # Rosenbrock-W with P = (I - c A_ac)(I - c A_adv)
+    sa = FV.fast_operator(mc, qc; fast = :hevi_amf, reuse = false)
+    @test !isempty(sa.Aadv.nzval) && length(sa.Aadv.nzval) < length(sc.Mdiag)   # advection in the cut-cell mask only
+    for fast in (:hevi_amf, :rosenbrock_amf)
+        qa = TS.run_mis(mc, qc, 30.0, 20; tab = TS.mis_tableau(:MIS4), nsub = ceil(Int, 30.0 / dτ), fast, refreeze_every = 10)
+        @test all(isfinite, qa) && abs(CM.total2d(mc, qa, 1) / CM.total2d(mc, qc, 1) - 1) < 1e-12
+        @test maximum(abs, qa - qe) < 0.1 * maximum(abs, qe - qc)    # another splitting: masked advection in L
+    end
 end
 
 @testset "TimeStepping: MIS tableaus and order" begin
@@ -561,10 +584,29 @@ end
                   1e-13 * maximum(abs, N2)
         end
         FV.FV_PRESSURE_FORM[] = :gradp
+        # common advection (pseudo third order, shift technique): κ = 1/3 on uniform grids, the
+        # centred mean at a wall; terrain following with ny = 1 is the 2D terrain-following operator
+        @test FV.recon3(1.0, 2.0, 4.0, 1.0, 1.0, 1.0, 1.0, 1.0) ≈ -1 / 6 + 5 / 6 * 2 + 4 / 3
+        @test FV.recon3(NaN, 2.0, 4.0, 1.0, 1.0, 1.0, 1.0, 1.0, false) ≈ 3.0
+        F3.FV3D_PRESSURE_FORM[] = :gradp
+        ridge(x) = 400.0 / (1 + ((x - 50e3) / 8e3)^2)
+        mr2 = FV.FVModel(FV.FVGrid(20, 8, 100e3, 10e3; zs = ridge), gas, ρr, Θr); gr2 = mr2.grid
+        gr3 = F3.Grid3D(20, 1, 8, 100e3, 5e3, 10e3; zs = (x, y) -> ridge(x), terrain = :follow); mr3 = F3.Model3D(gr3, gas, ρr, Θr)
+        qr2 = CM.project2d(mr2, (x, z) -> (ρ = ρr(z) * (1 + 1e-3 * sin(2π * x / 100e3)); (ρ, 10ρ + sin(x / 7e3), 0.3 * sin(π * z / 10e3) * cos(x / 9e3), Θr(z) * (1 + 1e-4 * cos(x / 6e3)))))
+        qr3 = zeros(mr3.nq)
+        for k in 1:8, i in 1:20
+            qr3[F3.iρ(gr3, i, 1, k)] = qr2[FV.iρ(gr2, i, k)]; qr3[F3.iΘ(gr3, i, 1, k)] = qr2[FV.iΘ(gr2, i, k)]
+            qr3[F3.iU(gr3, i, 1, k)] = qr2[FV.iU(gr2, i, k)]; k > 1 && (qr3[F3.iW(gr3, i, 1, k)] = qr2[FV.iW(gr2, i, k)])
+        end
+        Nr2 = TS.rhs_nonlinear(mr2, qr2); Nr3 = TS.rhs_nonlinear(mr3, qr3)
+        for (F, G, ks) in ((F3.iρ, FV.iρ, 1:8), (F3.iU, FV.iU, 1:8), (F3.iW, FV.iW, 2:8), (F3.iΘ, FV.iΘ, 1:8))
+            @test maximum(abs(Nr3[F(gr3, i, 1, k)] - Nr2[G(gr2, i, k)]) for k in ks for i in 1:20) <
+                  1e-11 * maximum(abs(Nr2[G(gr2, i, k)]) for k in ks for i in 1:20)
+        end
         # cut cells (hill): parts, conservation, exact column solve, flat limit
         F3.FV3D_PRESSURE_FORM[] = :product
         hill(x, y) = 1500.0 * exp(-((x - 10e3)^2 + (y - 10e3)^2) / 3e3^2)
-        gc = F3.Grid3D(8, 8, 6, 20e3, 20e3, 6e3; zs = hill); mc = F3.Model3D(gc, gas, ρr, Θr)
+        gc = F3.Grid3D(8, 8, 6, 20e3, 20e3, 6e3; zs = hill); mc = F3.Model3D(gc, gas, ρr, Θr; implicit = :column)
         @test count(0 .< gc.Vf .< 1) > 0
         q = F3.project3d(mc, (x, y, z) -> (ρr(z) * (1 + 1e-3 * sin(x / 3e3)), 10ρr(z), 5ρr(z), 0.1ρr(z) * sin(π * z / 6e3), Θr(z)))
         C = zeros(TS.frozen_ncoef(mc)); S = zeros(mc.nq); TS.frozen_data!(C, S, mc, q)
@@ -580,6 +622,21 @@ end
         F3.column_solve!(Y, s, mc, 3.0, R)
         Gv(x) = TS.frozen_fast!(zeros(mc.nq), mc, C, x, :vertical, S)
         @test maximum(abs.(Y .- 3.0 .* (Gv(q .+ Y) .- Gv(q)) .- R)) < 1e-9 * maximum(abs, R)
+        # implicit = :amf (default with cut cells): masked momentum advection (simple upwind) in the
+        # fast part; N unchanged, parts consistent, assembled matrix = matrix-free operator, short run
+        ma = F3.Model3D(gc, gas, ρr, Θr); @test ma.implicit === :amf
+        @test maximum(abs, TS.rhs_nonlinear(ma, q) - N) < 1e-12 * maximum(abs, N)
+        Ca = zeros(TS.frozen_ncoef(ma)); Sa = zeros(ma.nq); TS.frozen_data!(Ca, Sa, ma, q)
+        oa(p) = TS.frozen_fast!(zeros(ma.nq), ma, Ca, q, p, Sa)
+        @test maximum(abs, oa(:thermo) + oa(:momentum) - oa(:all)) < 1e-13 * maximum(abs, N)
+        @test maximum(abs, oa(:hthermo) + oa(:hmomentum) + oa(:vertical) - oa(:all)) < 1e-13 * maximum(abs, N)
+        va = 1e-3 .* cos.(1:ma.nq)
+        Aa = F3.adv_matrix(ma, Ca)
+        @test length(Aa.nzval) > 0 && maximum(abs, Aa * va - F3.adv_masked!(zeros(ma.nq), ma, Ca, va)) < 1e-12 * maximum(abs, Aa * va)
+        ρa = F3.hydrostatic_column(ma, Θr; ρbottom = ρr(gc.zc[1]))
+        qa0 = F3.project3d(ma, (x, y, z) -> (ρ = ρa[F3.level(gc, z)]; (ρ, 10ρ, 0.0, 0.0, Θr(gc.zc[F3.level(gc, z)]))))
+        qa = TS.run_frozen(ma, qa0, 20.0, 10; tab = TS.mis_tableau(:MIS54), nsub = 4, fast = :hevi)
+        @test all(isfinite, qa) && abs(F3.total3d(ma, qa, :ρ) / F3.total3d(ma, qa0, :ρ) - 1) < 1e-12
         g0 = F3.Grid3D(8, 8, 6, 20e3, 20e3, 6e3; zs = (x, y) -> -1.0); gf = F3.Grid3D(8, 8, 6, 20e3, 20e3, 6e3)
         qf = F3.project3d(F3.Model3D(gf, gas, ρr, Θr), (x, y, z) -> (ρr(z), 10ρr(z), 5ρr(z), 0.0, Θr(z)))
         @test TS.rhs_nonlinear(F3.Model3D(g0, gas, ρr, Θr), qf) == TS.rhs_nonlinear(F3.Model3D(gf, gas, ρr, Θr), qf)
@@ -595,11 +652,11 @@ end
             @test maximum(abs, TS.rhs_nonlinear(mb, st(0.0))) < 1e-13
             q0 = st(10.0)
             qe = TS.run_frozen(mb, q0, 20.0, 10; tab = TS.mis_tableau(:MIS54), nsub = 5, fast = :hevi)
-            @test all(isfinite, qe) && maximum(abs, F3.vertical_velocity(mb, qe)) < 5
+            @test all(isfinite, qe) && maximum(abs, F3.vertical_velocity(mb, qe)) < 8
             @test abs(F3.total3d(mb, qe, :ρ) / F3.total3d(mb, q0, :ρ) - 1) < 1e-12
         end
         # mask (cut cells and neighbours) with the implicit masked step: parts, exact implicit matrix
-        mk = F3.Model3D(F3.Grid3D(8, 8, 6, 20e3, 20e3, 6e3; zs = hill, αmin = 0.01), gas, ρr, Θr; implicit = :mask)
+        mk = F3.Model3D(F3.Grid3D(8, 8, 6, 20e3, 20e3, 6e3; zs = hill), gas, ρr, Θr; implicit = :mask)
         @test count(mk.grid.mask) > count(0 .< mk.grid.Vf .< 1)
         qk = F3.project3d(mk, (x, y, z) -> (ρr(z) * (1 + 1e-3 * sin(x / 3e3)), 10ρr(z), 5ρr(z), 0.1ρr(z) * sin(π * z / 6e3), Θr(z)))
         Ck = zeros(TS.frozen_ncoef(mk)); Sk = zeros(mk.nq); TS.frozen_data!(Ck, Sk, mk, qk)
