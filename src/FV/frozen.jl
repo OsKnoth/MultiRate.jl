@@ -32,7 +32,8 @@ frozen_ncoef(m::FVModel) = (_flat_only(m); 2 * (m.grid.nx * m.grid.nz + m.grid.n
 """Pressure form of the fast part, chosen once per call (`FV_PRESSURE_FORM`)."""
 struct GradP end      # p(Θ_z) at the centres, differences across the faces
 struct Product end    # (dp/dΘ)_f(y) (Θ_r - Θ_l), the face derivative frozen in C
-pressure_form() = FV_PRESSURE_FORM[] === :product ? Product() : GradP()
+pressure_form() = FV_PRESSURE_FORM[] === :product ? Product() :
+                  FV_PRESSURE_FORM[] === :exner ? error("frozen split with :exner: use ExnerModel (exner.jl)") : GradP()
 
 
 """C(y) and the slow part S(y) (momentum advection) of the flat FV operator."""

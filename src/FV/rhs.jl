@@ -14,6 +14,9 @@ Pressure form of the flat FV operator N (read in every call):
 - `:gradp` (default): -(p_r - p_l)/Δ at the faces, p = P(Θ) in the cells;
 - `:product`: -(dp/dΘ)_f (Θ_r - Θ_l)/Δ, with (dp/dΘ)_f the mean of the cell values γ p/Θ;
   full p and ρ, no background state subtracted.
+- `:exner`: -cp Θ_f (π_r - π_l)/Δ, π = (R Θ/p00)^(γ-1) the Exner pressure, Θ_f the face mean;
+  no background state (the analytic isentropic atmosphere is exactly balanced). Its frozen split
+  is the `ExnerModel` (exner.jl) with π as an additional prognostic variable.
 The frozen split (`frozen.jl`) follows: `:gradp` keeps P(Θ_z) in the fast part, `:product` freezes
 (dp/dΘ)_f, so its fast part is linear in z. Flat grids only.
 """
@@ -42,8 +45,11 @@ function rhs_nonlinear!(out, m::FVModel, q::AbstractVector)
     θ = c.θ
     pp = c.pp
     product = FV_PRESSURE_FORM[] === :product
-    product || FV_PRESSURE_FORM[] === :gradp || error("FV_PRESSURE_FORM: :gradp or :product")
-    product && _no_background(m)
+    exnerf = FV_PRESSURE_FORM[] === :exner
+    product || exnerf || FV_PRESSURE_FORM[] === :gradp || error("FV_PRESSURE_FORM: :gradp, :product or :exner")
+    (product || exnerf) && _no_background(m)
+    cpg = m.gas.R * m.gas.γ / (m.gas.γ - 1); κπ = m.gas.γ - 1
+    πe(Θ) = (m.gas.R * Θ / m.gas.p00)^κπ
     @inbounds for k in 1:nz, i in 1:nx
         ρ = q[iρ(g, i, k)]
         θ[i, k] = q[iΘ(g, i, k)] / ρ
@@ -84,6 +90,10 @@ function rhs_nonlinear!(out, m::FVModel, q::AbstractVector)
             Θc = q[iΘ(g, i, k)]
             Θl = q[iΘ(g, il, k)]
             out[iU(g, i, k)] -= dpdΘ_face(m.gas, Θl, Θc) * (Θc - Θl) / dx
+        elseif exnerf
+            Θc = q[iΘ(g, i, k)]
+            Θl = q[iΘ(g, il, k)]
+            out[iU(g, i, k)] -= cpg * 0.5 * (Θl + Θc) * (πe(Θc) - πe(Θl)) / dx
         else
             out[iU(g, i, k)] -= (pp[i, k] - pp[il, k]) / dx
         end
@@ -93,6 +103,10 @@ function rhs_nonlinear!(out, m::FVModel, q::AbstractVector)
                 Θc = q[iΘ(g, i, k)]
                 Θb = q[iΘ(g, i, k - 1)]
                 dpz = dpdΘ_face(m.gas, Θb, Θc) * (Θc - Θb)
+            elseif exnerf
+                Θc = q[iΘ(g, i, k)]
+                Θb = q[iΘ(g, i, k - 1)]
+                dpz = cpg * 0.5 * (Θb + Θc) * (πe(Θc) - πe(Θb))
             else
                 dpz = pp[i, k] - pp[i, k-1]
             end

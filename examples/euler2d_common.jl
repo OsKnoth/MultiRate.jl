@@ -12,9 +12,9 @@ const TS = MultiRate.TimeStepping
 const E2 = MultiRate.Euler2D
 const FV = MultiRate.FV2D
 
-"""Default split-explicit settings per discretization: (MIS tableau, nsub, fast solver)."""
-"""Default (table, nsub, fast) per discretization; cut cells: HEVI with the two Jacobians
-(acoustics and advection in the cut-cell mask), which keeps arbitrarily small cells stable."""
+"""Default split-explicit settings per discretization: (MIS tableau, nsub, fast solver); cut cells:
+HEVI with the two Jacobians (acoustics and advection in the cut-cell mask), which keeps arbitrarily
+small cells stable."""
 default_scheme(disc) = (:MIS4, 12, disc == :fvc ? :hevi_amf : :hevi)
 
 """

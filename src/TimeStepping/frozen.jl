@@ -24,6 +24,9 @@ function frozen_data! end
 function frozen_fast! end
 frozen_stage_begin!(model, C, z) = nothing
 function frozen_vertical_step! end
+#   frozen_step_end!(model, q)                   optional: after every MIS step (e.g. recompute a
+#                                                redundant variable from the others)
+frozen_step_end!(model, q) = nothing
 
 """Work arrays of the frozen MIS step: per stage C(Y_j), S(Y_j), ΔY_j = Y_{j+1} - qⁿ; combined
 coefficients and forcing of the current stage; stage and fast-loop vectors."""
@@ -143,6 +146,7 @@ function run_frozen(model, q0, Δt, nsteps; tab::MISTableau = mis_tableau(:MIS4a
     tmp = composition(fast)[1] in (:rk4, :hevi) ? (zeros(length(q)), zeros(length(q)), zeros(length(q))) : nothing
     for n in 1:nsteps
         frozen_mis_step!(q, model, q, Δt, tab, w; nsub, fast, tmp)
+        frozen_step_end!(model, q)
         monitor !== nothing && n % every == 0 && monitor(n, q)
     end
     return q

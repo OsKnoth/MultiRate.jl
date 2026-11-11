@@ -562,6 +562,58 @@ end
     @test_throws ErrorException TS.frozen_ncoef(FV.FVModel(FV.FVGrid(8, 4, 40e3, 10e3; zs = x -> 100 * exp(-(x - 2e4)^2 / 1e8)), gas, ρr, Θr))
 end
 
+@testset "FV2D: Exner pressure as an additional equation (frozen split)" begin
+    gas = CM.Gas()
+    try
+        FV.FV_PRESSURE_FORM[] = :exner
+        ρr, Θr, θr = CM.stratified_reference(gas; θ0 = 300.0, N = 0.01)
+        g = FV.FVGrid(12, 8, 12e3, 8e3); b = FV.FVModel(g, gas, ρr, Θr); m = FV.ExnerModel(b)
+        q = CM.project2d(b, (x, z) -> (ρ = ρr(z) * (1 + 1e-3 * sin(2π * x / 12e3)); (ρ, 10ρ + sin(x / 2e3), 0.5 * sin(π * z / 8e3) * cos(x / 3e3), Θr(z) * (1 + 1e-3 * cos(x / 2e3)))))
+        qe = FV.exner_state(m, q)
+        @test FV.base_state(m, qe) == q
+        # on π = π(Θ): the base rows are the base operator with the :exner pressure gradient, the π
+        # rows are (dπ/dΘ) times the Θ rows
+        N = TS.rhs_nonlinear(b, q); Ne = TS.rhs_nonlinear(m, qe)
+        @test maximum(abs, Ne[1:b.nq] - N) < 1e-12 * maximum(abs, N)
+        @test maximum(abs(Ne[FV.iπ(m, i, k)] - (gas.γ - 1) * qe[FV.iπ(m, i, k)] / q[FV.iΘ(g, i, k)] * N[FV.iΘ(g, i, k)]) for i in 1:12, k in 1:8) <
+              1e-12 * maximum(abs, Ne[b.nq+1:end])
+        # parts; the fast part is linear in z; exact column solve
+        C = zeros(TS.frozen_ncoef(m)); S = zeros(m.nq); TS.frozen_data!(C, S, m, qe)
+        o(p, z = qe) = TS.frozen_fast!(zeros(m.nq), m, C, z, p, S)
+        @test o(:all) == Ne
+        @test maximum(abs, o(:thermo) + o(:momentum) - Ne) < 1e-13 * maximum(abs, Ne)
+        @test maximum(abs, o(:hthermo) + o(:hmomentum) + o(:vertical) - Ne) < 1e-13 * maximum(abs, Ne)
+        v = 1e-2 .* sin.(1:m.nq)
+        @test maximum(abs, o(:all, qe .+ v) + o(:all, qe .- v) - 2Ne) < 1e-11 * maximum(abs, Ne)
+        TS.frozen_stage_begin!(m, C, qe)
+        R = 1e-3 .* cos.(1:m.nq); Y = zeros(m.nq); FV.exner_column_solve!(Y, m, 3.0, R)
+        G(z) = TS.frozen_fast!(zeros(m.nq), m, C, z, :vertical, S)
+        @test maximum(abs.(Y .- 3.0 .* (G(qe .+ Y) .- G(qe)) .- R)) < 1e-10 * maximum(abs, R)
+        # isentropic atmosphere: the analytic state is exactly balanced (no background state)
+        ρi, Θi, θi = CM.stratified_reference(gas; θ0 = 300.0, N = 0.0)
+        bi = FV.FVModel(g, gas, ρi, Θi); mi = FV.ExnerModel(bi)
+        qi = FV.exner_state(mi, CM.project2d(bi, (x, z) -> (ρi(z), 0.0, 0.0, Θi(z))))
+        @test maximum(abs, TS.rhs_nonlinear(mi, qi)) < 1e-11
+        # frozen MIS (π recomputed after every step): converges to RK4 of the base model,
+        # mass and Θ conserved, π = π(Θ) at the end
+        q0 = CM.project2d(bi, (x, z) -> (θ = θi(z) + 0.5 * exp(-((x - 6e3)^2 + (z - 3e3)^2) / 1.5e3^2); (Θi(z) / θ, 0.0, 0.0, Θi(z))))
+        c = FV.sound_speed_max(bi, q0); T = 60.0
+        qr = TS.run_rk4(bi, q0, T / 600, 600)
+        errs = map((6, 12)) do n
+            Δt = T / n
+            qn = TS.run_frozen(mi, FV.exner_state(mi, q0), Δt, n; tab = TS.mis_tableau(:MIS54), nsub = ceil(Int, Δt / (0.7 * g.dx / c)), fast = :hevi)
+            @test maximum(abs(qn[FV.iπ(mi, i, k)] - FV.exner(gas, qn[FV.iΘ(g, i, k)])) for i in 1:12, k in 1:8) == 0
+            @test abs(CM.total2d(bi, qn, 1) / CM.total2d(bi, q0, 1) - 1) < 1e-13
+            @test abs(sum(qn[FV.iΘ(g, i, k)] for i in 1:12, k in 1:8) / sum(q0[FV.iΘ(g, i, k)] for i in 1:12, k in 1:8) - 1) < 1e-13
+            norm(FV.base_state(mi, qn) - qr) / norm(qr - q0)
+        end
+        @test errs[2] < 0.03 && errs[2] < 0.7 * errs[1]
+        @test_throws ErrorException TS.frozen_data!(zeros(TS.frozen_ncoef(bi)), zeros(bi.nq), bi, q0)   # the base frozen split has no :exner form
+    finally
+        FV.FV_PRESSURE_FORM[] = :gradp
+    end
+end
+
 @testset "FV3D: 3D C-grid, cut cells, frozen split" begin
     F3 = MultiRate.FV3D
     gas = CM.Gas()
