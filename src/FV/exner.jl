@@ -19,6 +19,11 @@
 # state: for an isentropic atmosphere π is linear in z and the analytic state is exactly balanced,
 # cp Θz δz π + g ρ̄ = 0.
 # The base model's N has the same pressure gradient with `FV_PRESSURE_FORM[] = :exner` (π(Θ)).
+#
+# pvar = :p: the pressure itself as the additional variable (the standard pressure equation in the
+# form that follows from the conservative Θ, p_t = P'(Θ) Θ_t = -P'(Θ) ∇·(θ M), which equals
+# -ρ c² ∇·v - v·∇p), the frozen coefficients P'(Θ_cell) θ_f = (γ p/Θ)_cell θ_f, and the plain
+# pressure difference -δp in the momentum rows (base N: `FV_PRESSURE_FORM[] = :gradp`).
 
 """cp of the gas."""
 cp_gas(gas::Gas) = gas.R * gas.γ / (gas.γ - 1)
@@ -43,25 +48,29 @@ Flat FV model with the Exner pressure as an additional prognostic variable: stat
 """
 struct ExnerModel{M<:FVModel}
     base::M
+    pvar::Symbol                  # :pi (Exner pressure) or :p (pressure)
     nq::Int
     C::Vector{Float64}
     S::Vector{Float64}
     column::ExnerColumn
 end
-function ExnerModel(base::FVModel)
+function ExnerModel(base::FVModel; pvar::Symbol = :pi)
+    pvar in (:pi, :p) || error("pvar: :pi or :p")
     _flat_only(base); _no_background(base)
     g = base.grid
     nq = base.nq + g.nx * g.nz
     z1() = zeros(g.nx, g.nz + 1)
-    m = ExnerModel(base, nq, zeros(4 * (g.nx * g.nz + g.nx * (g.nz + 1))), zeros(nq),
+    m = ExnerModel(base, pvar, nq, zeros(4 * (g.nx * g.nz + g.nx * (g.nz + 1))), zeros(nq),
                    ExnerColumn(z1(), z1(), z1(), z1(), Dict{Float64,NTuple{3,Matrix{Float64}}}(), zeros(g.nz + 1)))
     return m
 end
 
 @inline iπ(m::ExnerModel, i, k) = m.base.nq + ip(m.base.grid, i) + (k - 1) * m.base.grid.nx
-"""Extended state [q; π(Θ)] of a base state q."""
+"""The additional variable of Θ: π(Θ) (pvar = :pi) or p(Θ) (pvar = :p)."""
+pvar_of(m::ExnerModel, Θ) = m.pvar === :p ? pressure(m.base.gas, Θ) : exner(m.base.gas, Θ)
+"""Extended state [q; π(Θ)] (or [q; p(Θ)]) of a base state q."""
 exner_state(m::ExnerModel, q) = (g = m.base.grid;
-    vcat(q[1:m.base.nq], [exner(m.base.gas, q[iΘ(g, i, k)]) for k in 1:g.nz for i in 1:g.nx]))
+    vcat(q[1:m.base.nq], [pvar_of(m, q[iΘ(g, i, k)]) for k in 1:g.nz for i in 1:g.nx]))
 """Base state [ρ; U; W; Θ] of an extended state."""
 base_state(m::ExnerModel, q) = q[1:m.base.nq]
 
@@ -90,21 +99,23 @@ function frozen_data!(C, S, m::ExnerModel, q)
     nx, nz = g.nx, g.nz
     N, Nz = _eN(g), _eNz(g)
     a = shift_advection!(b.cache.adv, g, q)
-    κ = b.gas.γ - 1
+    # dπ/dΘ = (γ-1) π/Θ or dp/dΘ = γ p/Θ of the prognostic value; momentum coefficient cp Θ_f or 1
+    κ = m.pvar === :p ? b.gas.γ : b.gas.γ - 1
     c(i, k) = κ * q[iπ(m, i, k)] / q[iΘ(g, i, k)]
+    cpg = m.pvar === :p ? 0.0 : cp_gas(b.gas)
     fill!(C, 0.0); fill!(S, 0.0)
     @inbounds for k in 1:nz, i in 1:nx
         e = _e(g, i, k)
         θx = a.θfx[i, k]
         C[e] = θx
-        C[N+Nz+e] = 0.5 * (q[iΘ(g, i - 1, k)] + q[iΘ(g, i, k)])
+        C[N+Nz+e] = m.pvar === :p ? 1.0 : cpg * 0.5 * (q[iΘ(g, i - 1, k)] + q[iΘ(g, i, k)])
         C[2N+2Nz+e] = c(i - 1, k) * θx
         C[3N+2Nz+e] = c(i, k) * θx
         S[iU(g, i, k)] = a.SU[i, k]
         if k > 1
             θz = a.θfz[i, k]
             C[N+e] = θz
-            C[2N+Nz+e] = 0.5 * (q[iΘ(g, i, k - 1)] + q[iΘ(g, i, k)])
+            C[2N+Nz+e] = m.pvar === :p ? 1.0 : cpg * 0.5 * (q[iΘ(g, i, k - 1)] + q[iΘ(g, i, k)])
             C[4N+2Nz+e] = c(i, k - 1) * θz
             C[4N+3Nz+e] = c(i, k) * θz
             S[iW(g, i, k)] = a.SW[i, k]
@@ -139,20 +150,20 @@ function ethermo_v!(out, m::ExnerModel, C, z)
     return out
 end
 
-"""Momentum part, horizontal (U rows): -cp Θx ∂x π."""
+"""Momentum part, horizontal (U rows): -P_x δx π, P_x = cp Θx (or -δx p)."""
 function emomentum_h!(out, m::ExnerModel, C, z)
-    g = m.base.grid; cp = cp_gas(m.base.gas)
+    g = m.base.grid
     @inbounds for k in 1:g.nz, i in 1:g.nx
-        out[iU(g, i, k)] -= cp * eΘx(C, g, i, k) * (z[iπ(m, i, k)] - z[iπ(m, i - 1, k)]) / g.dx
+        out[iU(g, i, k)] -= eΘx(C, g, i, k) * (z[iπ(m, i, k)] - z[iπ(m, i - 1, k)]) / g.dx
     end
     return out
 end
 
-"""Momentum part, vertical (W rows): -cp Θz ∂z π - g ρ̄."""
+"""Momentum part, vertical (W rows): -P_z δz π - g ρ̄ (or -δz p - g ρ̄)."""
 function emomentum_v!(out, m::ExnerModel, C, z)
-    g = m.base.grid; cp = cp_gas(m.base.gas); grav = m.base.gas.g
+    g = m.base.grid; grav = m.base.gas.g
     @inbounds for k in 2:g.nz, i in 1:g.nx
-        out[iW(g, i, k)] -= cp * eΘz(C, g, i, k) * (z[iπ(m, i, k)] - z[iπ(m, i, k - 1)]) / g.dz +
+        out[iW(g, i, k)] -= eΘz(C, g, i, k) * (z[iπ(m, i, k)] - z[iπ(m, i, k - 1)]) / g.dz +
                             grav * 0.5 * (z[iρ(g, i, k - 1)] + z[iρ(g, i, k)])
     end
     return out
@@ -194,11 +205,11 @@ function rhs_nonlinear!(out, m::ExnerModel, q::AbstractVector)
     return frozen_fast!(out, m, m.C, q, :all, m.S)
 end
 
-"""π ← π(Θ) after a MIS step."""
+"""π ← π(Θ) (or p ← p(Θ)) after a MIS step."""
 function frozen_step_end!(m::ExnerModel, q)
     g = m.base.grid
     @inbounds for k in 1:g.nz, i in 1:g.nx
-        q[iπ(m, i, k)] = exner(m.base.gas, q[iΘ(g, i, k)])
+        q[iπ(m, i, k)] = pvar_of(m, q[iΘ(g, i, k)])
     end
     return q
 end
@@ -210,16 +221,16 @@ end
 # then ρ, Θ, π from the fluxes. The vertical part is linear in z: the step is Crank–Nicolson.
 
 function frozen_stage_begin!(m::ExnerModel, C, z)
-    s = m.column; g = m.base.grid; cp = cp_gas(m.base.gas)
+    s = m.column; g = m.base.grid
     @inbounds for k in 1:g.nz+1, i in 1:g.nx
-        s.P[i, k] = cp * eΘz(C, g, i, k); s.cB[i, k] = eczB(C, g, i, k); s.cT[i, k] = eczT(C, g, i, k)
+        s.P[i, k] = eΘz(C, g, i, k); s.cB[i, k] = eczB(C, g, i, k); s.cT[i, k] = eczT(C, g, i, k)
         s.θz[i, k] = eθz(C, g, i, k)
     end
     empty!(s.factors)
     return s
 end
 
-function _exner_factor(s::ExnerColumn, m::ExnerModel, c)
+function _exner_factor(s::ExnerColumn, m, c)
     get!(s.factors, Float64(c)) do
         g = m.base.grid
         nz, dz = g.nz, g.dz

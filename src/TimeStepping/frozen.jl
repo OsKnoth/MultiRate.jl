@@ -54,28 +54,49 @@ Integrate Z' = F_f(C, Z) + F over nsteps steps dt (C, F constant). :verlet Stör
 :hevi Strang: horizontal Verlet half step, linearly implicit vertical Crank–Nicolson step
 (`frozen_vertical_step!`), horizontal half step;
 compositions `:verlet_s4`, `_y4`, `_y6` (see `composition`).
+
+`smdiv = β > 0`: divergence damping by forward extrapolation of the thermodynamic variables in the
+momentum part (as WRF, `WRF_SMDIV`): the momentum rows are evaluated at Z̃ = Z + β (Z - Z_prev),
+Z_prev the state of the previous momentum evaluation of this fast loop (Z_prev = Z at the start of
+the stage). The momentum rows depend only on the thermodynamic rows (pressure variable, ρ for
+gravity; and W for the sponge in `:momentum`), so this extrapolates p, Θ, π. :hevi: the explicit
+horizontal momentum steps; :verlet, :fb: the momentum step. Needs `tmp` (3 work vectors).
 """
-function frozen_fast_solve!(Z, model, C, F, dt, nsteps, k; method::Symbol = :verlet, tmp = nothing)
+function frozen_fast_solve!(Z, model, C, F, dt, nsteps, k; method::Symbol = :verlet, tmp = nothing, smdiv::Float64 = 0.0)
     base, ws = composition(method)
+    damp = smdiv > 0
+    damp && tmp === nothing && error("smdiv > 0 needs work vectors (tmp)")
+    zl, zt = damp ? (tmp[2], tmp[3]) : (Z, Z)
+    damp && (zl .= Z)
+    """Momentum part at the extrapolated state (smdiv) or at Z."""
+    function momentum!(part)
+        if damp
+            @. zt = Z + smdiv * (Z - zl); zl .= Z
+            frozen_fast!(k, model, C, zt, part, F)
+        else
+            frozen_fast!(k, model, C, Z, part, F)
+        end
+    end
     for _ in 1:nsteps, wt in ws
         h = wt * dt
         if base == :verlet
             frozen_fast!(k, model, C, Z, :thermo, F); @. Z += (h / 2) * k
-            frozen_fast!(k, model, C, Z, :momentum, F); @. Z += h * k
+            momentum!(:momentum); @. Z += h * k
             frozen_fast!(k, model, C, Z, :thermo, F); @. Z += (h / 2) * k
         elseif base == :fb
-            frozen_fast!(k, model, C, Z, :momentum, F); @. Z += h * k
+            momentum!(:momentum); @. Z += h * k
             frozen_fast!(k, model, C, Z, :thermo, F); @. Z += h * k
         elseif base == :hevi
             y = tmp === nothing ? error(":hevi needs a work vector") : tmp[1]
             for half in 1:2
                 frozen_fast!(k, model, C, Z, :hthermo, F); @. Z += (h / 4) * k
-                frozen_fast!(k, model, C, Z, :hmomentum, F); @. Z += (h / 2) * k
+                momentum!(:hmomentum); @. Z += (h / 2) * k
                 frozen_fast!(k, model, C, Z, :hthermo, F); @. Z += (h / 4) * k
                 half == 1 && frozen_vertical_step!(Z, model, C, h, k, y)
             end
         elseif base == :rk4
             tmp === nothing && error(":rk4 needs work vectors")
+            damp && error(":rk4 has no divergence damping (smdiv)")
             y0, y, acc = tmp
             y0 .= Z
             frozen_fast!(k, model, C, Z, :all, F); @. acc = k; @. y = y0 + (h / 2) * k
@@ -99,7 +120,7 @@ over d_i Δt in max(1, round(d_i nsub)) steps from qⁿ + Σ_j α_ij (Y_{j+1} - 
 F(y, z) = S(y) + G(z) this is the MIS step of `mis_step!` with the fast part G.
 """
 function frozen_mis_step!(qnew, model, q, Δt, tab::MISTableau, w::FrozenWork; nsub::Int = 12,
-                          fast::Symbol = :verlet, tmp = nothing)
+                          fast::Symbol = :verlet, tmp = nothing, smdiv::Float64 = 0.0)
     for i in 1:nstages(tab)
         if i == 1
             w.Y .= q
@@ -126,7 +147,7 @@ function frozen_mis_step!(qnew, model, q, Δt, tab::MISTableau, w::FrozenWork; n
         end
         n = max(1, round(Int, d * nsub))
         frozen_stage_begin!(model, w.c, w.Z)
-        frozen_fast_solve!(w.Z, model, w.c, w.F, d * Δt / n, n, w.k; method = fast, tmp)
+        frozen_fast_solve!(w.Z, model, w.c, w.F, d * Δt / n, n, w.k; method = fast, tmp, smdiv)
         @. w.ΔY[i] = w.Z - q
     end
     qnew .= w.Z
@@ -135,17 +156,19 @@ end
 
 """
     run_frozen(model, q0, Δt, nsteps; tab = mis_tableau(:MIS4a), nsub = 12, fast = :verlet,
-               monitor = nothing, every = 1)
+               smdiv = 0.0, monitor = nothing, every = 1)
 
-Split-explicit MIS integration with a frozen part of the right-hand side (`frozen_mis_step!`).
+Split-explicit MIS integration with a frozen part of the right-hand side (`frozen_mis_step!`);
+`smdiv`: divergence damping by extrapolation of the thermodynamic variables in the fast loop
+(`frozen_fast_solve!`).
 """
 function run_frozen(model, q0, Δt, nsteps; tab::MISTableau = mis_tableau(:MIS4a), nsub::Int = 12,
-                    fast::Symbol = :verlet, monitor = nothing, every::Int = 1)
+                    fast::Symbol = :verlet, smdiv::Real = 0.0, monitor = nothing, every::Int = 1)
     q = Vector{Float64}(q0)
     w = FrozenWork(model, length(q), tab)
-    tmp = composition(fast)[1] in (:rk4, :hevi) ? (zeros(length(q)), zeros(length(q)), zeros(length(q))) : nothing
+    tmp = (composition(fast)[1] in (:rk4, :hevi) || smdiv > 0) ? (zeros(length(q)), zeros(length(q)), zeros(length(q))) : nothing
     for n in 1:nsteps
-        frozen_mis_step!(q, model, q, Δt, tab, w; nsub, fast, tmp)
+        frozen_mis_step!(q, model, q, Δt, tab, w; nsub, fast, tmp, smdiv = Float64(smdiv))
         frozen_step_end!(model, q)
         monitor !== nothing && n % every == 0 && monitor(n, q)
     end

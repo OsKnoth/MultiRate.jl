@@ -1,6 +1,7 @@
 # Dry warm bubble, flat FV grid: frozen MIS with the Exner pressure as an additional prognostic
-# variable (`FV.ExnerModel`, pressure gradient cp Θ ∇π, π recomputed from Θ after every MIS step)
-# against the frozen split with the product form (dp/dΘ) ∇Θ.
+# variable (`FV.ExnerModel`, pressure gradient cp Θ ∇π, π recomputed from Θ after every MIS step),
+# with the pressure itself as the additional variable (pvar = :p, plain ∇p) and the frozen split
+# with the product form (dp/dΘ) ∇Θ.
 #
 #     julia --project=examples examples/frozen_exner_bubble.jl [T] [nx]
 #
@@ -35,7 +36,7 @@ function run_exner(m, q0, Δt, n; tab, nsub)
     g = m.base.grid; drift = 0.0
     for _ in 1:n
         TS.frozen_mis_step!(q, m, q, Δt, tab, w; nsub, fast = :hevi, tmp)
-        drift = max(drift, maximum(abs(q[FV.iπ(m, i, k)] - FV.exner(gas, q[FV.iΘ(g, i, k)])) for i in 1:nx, k in 1:nz))
+        drift = max(drift, maximum(abs(q[FV.iπ(m, i, k)] / FV.pvar_of(m, q[FV.iΘ(g, i, k)]) - 1) for i in 1:nx, k in 1:nz))
         TS.frozen_step_end!(m, q)
     end
     return FV.base_state(m, q), drift
@@ -43,8 +44,8 @@ end
 
 results = Dict{Symbol,Any}()
 tab = TS.mis_tableau(:MIS54)
-for form in (:product, :exner)
-    FV.FV_PRESSURE_FORM[] = form
+for form in (:product, :exner, :p)
+    FV.FV_PRESSURE_FORM[] = form === :p ? :gradp : form
     b = FV.FVModel(grid, gas, ρr, Θr)
     q0 = initial(b)
     c = sound_speed_max(b, q0)
@@ -59,8 +60,8 @@ for form in (:product, :exner)
         n = round(Int, T / Δt); nsub = ceil(Int, Δt / dτ)
         local q, drift = nothing, NaN
         t = @elapsed try
-            if form === :exner
-                q, drift = run_exner(FV.ExnerModel(b), q0, Δt, n; tab, nsub)
+            if form in (:exner, :p)
+                q, drift = run_exner(FV.ExnerModel(b; pvar = form === :p ? :p : :pi), q0, Δt, n; tab, nsub)
             else
                 q = TS.run_frozen(b, q0, Δt, n; tab, nsub, fast = :hevi)
             end
@@ -74,17 +75,17 @@ for form in (:product, :exner)
         @printf("  Δt = %4.1f s nsub %2d: θ′ max %.3f K, max|w| %.2f, error θ′ max %.2e K (rel. state %.2e), Δmass %.1e, ΔΘ %.1e%s, %.0f s\n",
                 Δt, nsub, maximum(F["theta_prime"]), maximum(abs, F["w"]), maximum(abs, F["theta_prime"] - Fr["theta_prime"]),
                 norm(q - qr) / norm(qr - q0), total2d(b, q, 1) / total2d(b, q0, 1) - 1, Θsum(b, q) / Θsum(b, q0) - 1,
-                form === :exner ? @sprintf(", max|π - π(Θ)| before recompute %.1e", drift) : "", t)
+                form in (:exner, :p) ? @sprintf(", max rel. |π - π(Θ)| (or p) before recompute %.1e", drift) : "", t)
         Δt == 5.0 && (results[form] = (F["theta_prime"], Fr["theta_prime"]))
         flush(stdout)
     end
 end
 FV.FV_PRESSURE_FORM[] = :gradp
 
-if length(results) == 2
-    fig = Figure(size = (1500, 820))
+if length(results) == 3
+    fig = Figure(size = (1500, 1200))
     x, z = grid.xc ./ 1e3, grid.zc ./ 1e3
-    for (r, form) in enumerate((:product, :exner))
+    for (r, form) in enumerate((:product, :exner, :p))
         θ, θref = results[form]
         for (col, (name, fld, cr, cm)) in enumerate((("$form frozen MIS54, Δt = 5 s: θ′", θ, (-0.2, 2.0), :thermal),
                                                      ("$form RK4 reference: θ′", θref, (-0.2, 2.0), :thermal),

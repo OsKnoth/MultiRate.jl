@@ -1,0 +1,362 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=2.4cm]{geometry}
+\usepackage{amsmath,amssymb,booktabs,hyperref}
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\dt}{\Delta t}
+\title{The Exner pressure as an additional prognostic variable\\in the frozen split (dry and moist)}
+\author{MultiRate notes}
+\date{\today}
+\begin{document}
+\sloppy
+\maketitle
+
+\begin{abstract}
+Following the pressure-update idea of J\"ahn and Knoth (poster ``Compressible modeling of a cloudy
+atmosphere using a general pressure evolution equation''), the Exner pressure $\pi$ is carried as an
+additional prognostic variable next to the conservative thermodynamic variable. The pressure gradient
+is written as the product $c_p\hat\Theta\,\nabla\pi$, the frozen split of the MIS method integrates
+$\pi$ with its own evolution equation in the fast substeps, and $\pi$ is recomputed from the equation of
+state after every MIS step (not at the internal stages). The dry formulation (\code{FV.ExnerModel},
+\code{src/FV/exner.jl}) and the moist formulation with reversible thermodynamics
+(\code{FV.MoistExnerModel}, \code{src/FV/moist.jl}) are described for the flat C-grid finite volumes,
+together with the variant that carries the pressure $p$ itself (option \code{pvar = :p}, the standard
+pressure equation in the form that follows from the conservative variables) and tests: dry warm
+bubble, gravity-wave channel, moist bubble of Bryan and Fritsch (2002). A moist Exner pressure (moist
+exponent) is discussed and not recommended.
+\end{abstract}
+
+\section{Idea}
+The thermodynamic variable $\Theta$ (dry: $\rho\theta$; moist: $\rho\theta_\rho$) is transported
+conservatively. The pressure is a function of the state, $p=P(\rho,\Theta,\dots)$; instead of evaluating
+$P$ in every fast substep, the Exner pressure obeys
+\[
+\partial_t\pi=\frac{\partial\pi}{\partial\rho}\,\partial_t\rho+\frac{\partial\pi}{\partial\Theta}\,\partial_t\Theta+\dots,
+\]
+which keeps $\pi=\pi(\rho,\Theta,\dots)$ exactly in continuous time. The time discretization does not,
+so $\pi$ is reset to the equation of state at the end of every MIS step (hook
+\code{frozen\_step\_end!} of \code{run\_frozen}). Within the step all substeps and stages use the
+prognostic $\pi$; the drift $|\pi-\pi(\text{state})|$ before the reset is measured in the tests below.
+
+\section{Dry air}
+With $\Theta=\rho\theta$, $p=p_0(R\Theta/p_0)^{\gamma}$ and the Exner pressure
+\[
+\pi=\Big(\frac{p}{p_0}\Big)^{R/c_p}=\Big(\frac{R\Theta}{p_0}\Big)^{\gamma-1},\qquad
+\nabla p=c_p\,\Theta\,\nabla\pi\quad\text{(exact)},\qquad
+\partial_t\pi=c\,\partial_t\Theta,\quad c=\frac{\mathrm d\pi}{\mathrm d\Theta}=(\gamma-1)\frac{\pi}{\Theta}.
+\]
+The extended system for $(\rho,U,W,\Theta,\pi)$, $M=(U,W)$:
+\begin{align*}
+\partial_t\rho+\nabla\cdot M&=0, &
+\partial_t\Theta+\nabla\cdot(\theta M)&=0, &
+\partial_t\pi+c\,\nabla\cdot(\theta M)&=0,\\
+\partial_t U+\nabla\cdot(Mu)+c_p\Theta\,\partial_x\pi&=0, &
+\partial_t W+\nabla\cdot(Mw)+c_p\Theta\,\partial_z\pi+\rho g&=0.
+\end{align*}
+
+\paragraph{Frozen form.} $N(q)=F(q,q)$ with the fast part linear in the evolving $z$ and the
+coefficients frozen at the stage value $y$:
+\begin{align*}
+\rho_t&=-\delta_x U-\delta_z W, &
+\Theta_t&=-\delta_x(\theta_x U)-\delta_z(\theta_z W), &
+\pi_t&=-\delta_x(\kappa_x U)-\delta_z(\kappa_z W),\\
+U_t&=-c_p\Theta_x\,\delta_x\pi, &
+W_t&=-c_p\Theta_z\,\delta_z\pi-g\bar\rho, &&
+\end{align*}
+slow: the momentum advection (shift technique). $\theta_x,\theta_z$ are the upwind face values of
+$\theta$, $\Theta_x,\Theta_z$ the face means of $\Theta$, and $\kappa$ the product $c\,\theta_f$ of a cell
+with its face (two coefficients per face, one for each neighbour). Products of frozen quantities are
+stored as coefficients of their own, because the MIS stage combination $\sum_j w_jC(Y_j)$ must be
+linear in $C$. In $N$ the base operator uses the same pressure gradient,
+\code{FV\_PRESSURE\_FORM = :exner}: $c_p\Theta_f\,\delta\pi(\Theta)$.
+
+\paragraph{HEVI.} The vertical part is linear in $z$; eliminating $\rho,\Theta,\pi$ gives per column the
+tridiagonal system ($r=(c_{\rm CN}/\Delta z)^2$, $g_g=c_{\rm CN}^2g/(2\Delta z)$, $P_k=c_p\Theta_{z,k}$)
+\begin{multline*}
+W_{k-1}\big[-rP_k\kappa^{T}_{k-1}+g_g\big]+W_k\big[1+rP_k(\kappa^{T}_k+\kappa^{B}_k)\big]+W_{k+1}\big[-rP_k\kappa^{B}_{k+1}-g_g\big]\\
+=R^W_k-\tfrac{c_{\rm CN}}{\Delta z}P_k(R^\pi_k-R^\pi_{k-1})-\tfrac{c_{\rm CN}g}{2}(R^\rho_{k-1}+R^\rho_k),
+\end{multline*}
+$\kappa^B,\kappa^T$ the coefficients of the cell below/above the face; the step is Crank--Nicolson.
+
+\paragraph{Balance.} For an isentropic atmosphere $\pi$ is linear in $z$ and the analytic state satisfies
+the discrete balance $c_p\Theta_f\,\delta_z\pi+g\bar\rho=0$ to round-off, without a background state
+(residual $6\cdot10^{-13}$ against $8\cdot10^{-5}$ for the product form $(\mathrm dp/\mathrm d\Theta)\nabla\Theta$).
+For a stratified atmosphere the initial column is balanced discretely in the pressure form of the
+model ($\rho_k$ from the $W$ equation at rest).
+
+\section{Moist air}
+Formulation (I) of the poster, reversible thermodynamics as in Bryan and Fritsch (2002):
+prognostic $\rho$, $M$, $\Theta=\rho\theta_\rho$, $V=\rho_v=\rho q_v$ and $C=\rho_c=\rho q_c$ (poster
+eqs.~3--5; $q_t=q_v+q_c$ diagnostic),
+\[
+\partial_t\Theta+\nabla\cdot(\theta_\rho M)=Q_\theta,\qquad\partial_tV+\nabla\cdot(q_vM)=-S_c,\qquad
+\partial_tC+\nabla\cdot(q_cM)=S_c,
+\]
+with the density potential temperature
+$\theta_\rho$ (moist exponent) and the diagnostic pressure
+\[
+p=p_0\Big(\frac{R_d\,\Theta}{p_0}\Big)^{1/(1-\kappa_M)},\qquad \kappa_M=\frac{R_m}{c_{pm}},
+\]
+\[
+R_m=R_d\rho_d+R_v\rho_v,\qquad c_{pm}=c_{pd}\rho_d+c_{pv}\rho_v+c_{pl}\rho_c,
+\]
+$\rho_d=\rho-\rho_v-\rho_c$; the pressure is an explicit function of $(\rho,\Theta,V,C)$, without a saturation
+adjustment. Constants and $e_s(T)$ as in CGDycore.
+
+\subsection{Phase change: Fischer--Burmeister relaxation}
+Phase equilibrium is the complementarity condition $\rho_c\ge0$, $\rho_{vs}(T)-\rho_v\ge0$,
+$\rho_c\,(\rho_{vs}-\rho_v)=0$, i.e.\ $\varphi_{FB}(\rho_{vs}-\rho_v,\rho_c)=0$ with the
+Fischer--Burmeister function $\varphi_{FB}(a,b)=\tfrac12(a+b-\sqrt{a^2+b^2})$ (CGDycore
+\code{FischerBurmeisterRhoTh}): $\varphi_{FB}<0$ supersaturated, $\varphi_{FB}>0$ subsaturated with
+condensate, and then $\varphi_{FB}\le\rho_c$. Instead of an adjustment the condensation rate is an explicit
+relaxation towards $\varphi_{FB}=0$,
+\[
+S_c=-\frac{\varphi_{FB}(\rho_{vs}(T)-\rho_v,\;\rho_c)}{\tau},\qquad \tau=\frac{\min(\Delta x,\Delta z)}{w_\tau},
+\]
+with the relaxation time from the grid spacing (a parcel at speed $w_\tau$ crosses a cell in $\tau$).
+Evaporation never removes more than the condensate if $\Delta t\le\tau$. The latent heating is the
+reversible one, at fixed $\rho$, $Q$ and $\theta_e$:
+\[
+Q_\theta=\Big(\frac{\partial\Theta}{\partial\rho_c}\Big)_{\rho,\,\rho_v+\rho_c,\,\theta_e}S_c,
+\]
+from $\mathrm d\ln\theta_e=0$ ($\mathrm dT/\mathrm dr_v$ analytic, then $\Theta(\rho,T,\rho_v,\rho_c)$ by central
+differences; $\theta_e$ is conserved to second order in the condensed amount, test). Two options:
+\code{micro = :slow}, $S_c$ from the stage value $y$ in the slow part $S(y)$ (needs $\tau\gtrsim\Delta t$);
+\code{micro = :fast}, $S_c$ from the current fast state in every small step (explicit, needs
+$\tau\gtrsim\Delta\tau$). The phase change is also a source in the pressure equation (next
+subsection).
+
+\subsection{The simplest product form of the pressure gradient}
+Use the Exner function with the \emph{dry} exponent,
+\[
+\pi=\Big(\frac{p}{p_0}\Big)^{\kappa_d},\quad \kappa_d=\frac{R_d}{c_{pd}}
+\qquad\Longrightarrow\qquad
+p=p_0\,\pi^{c_{pd}/R_d},
+\]
+\[
+\nabla p=c_{pd}\,\hat\Theta\,\nabla\pi,\qquad \hat\Theta=\frac{p}{R_d\,\pi}=\frac{p_0^{\kappa_d}\,p^{1-\kappa_d}}{R_d}.
+\]
+This is exact, and the coefficient $\hat\Theta$ is a function of the pressure alone: no moisture
+variable enters. $\hat\Theta=\rho\,\theta_\rho^{(d)}$ is $\rho$ times the density potential temperature
+with the dry exponent ($\theta_\rho^{(d)}=T_\rho/\pi$, $T_\rho=p/(\rho R_d)$), i.e.\ the momentum equation
+of Bryan and Fritsch, $\nabla p/\rho=c_{pd}\theta_\rho\nabla\pi$. In terms of the prognostic $\Theta$
+(moist exponent) $\hat\Theta=\Theta\,(p/p_0)^{\kappa_M-\kappa_d}$. With the moist exponent,
+$\pi_M=(p/p_0)^{\kappa_M}$, the gradient contains $\ln(p/p_0)\,\nabla\kappa_M$ and is not a product.
+In the frozen form $\hat\Theta_f(y)$ is the face mean of $p/(R_d\pi)$ evaluated with the prognostic
+$\pi$ of $y$.
+
+\subsection{Pressure equation}
+\[
+\partial_t\pi=a\,\partial_t\rho+b\,\partial_t\Theta+c\,\partial_tV+d\,\partial_tC,\qquad
+(a,b,c,d)=\frac{\partial\pi}{\partial(\rho,\Theta,V,C)},
+\]
+so the transport part and the phase change both enter. The source of the pressure equation (the $Q_p$
+of the poster) is
+\[
+\partial_t\pi\big|_{\rm phase}=\kappa_S\,S_c,\qquad
+\kappa_S=b\Big(\frac{\partial\Theta}{\partial\rho_c}\Big)_{\theta_e}+d-c
+\]
+(latent heating plus the change of $R_m$ and $\kappa_M$ from vapour to liquid), frozen per cell, with
+$S_c$ from $y$ (\code{:slow}) or from the fast state (\code{:fast}). For $p$ at $T=284$\,K, $p=814$\,hPa,
+$\rho_v=1.1\cdot10^{-2}$, $\rho_c=9\cdot10^{-3}$\,kg/m$^3$: $\kappa_S=9.3\cdot10^5$\,Pa\,m$^3$/kg, of which
+$9.1\cdot10^5$ is the heating; it agrees with the isochoric estimate $L R_m/c_{vm}=9.5\cdot10^5$ to
+1.5\,\%. A condensation rate of $10^{-5}$\,kg\,m$^{-3}$\,s$^{-1}$ raises $p$ by 9\,Pa/s. Without this
+term $p$ (or $\pi$) would drift from the equation of state during the step and be corrected only by the
+reset.
+frozen from $y$ (central differences of the explicit equation of state). With the flux divergences of
+$\rho$, $\Theta$, $V$, $C$ the transport part of the $\pi$ row is $-\delta(\kappa_f F)$ with one coefficient
+per face and neighbour, $\kappa_f=a+b\,\theta_f+c\,q_{v,f}+d\,q_{c,f}$ (upwind face values); the HEVI column
+is the dry one with these $\kappa$, and $V$, $C$ follow from its fluxes. With $Q=0$ the moist
+model reproduces the dry one (test). After every MIS step $\pi$ is recomputed from $(\rho,\Theta,V,C)$ by
+the equation of state (no adjustment).
+
+\subsection{Initial state of the moist bubble}
+Saturated, neutral atmosphere $\theta_e=320$\,K, $r_t=0.02$ ($\theta_e$ of the poster, eq.~17). The
+column is in \emph{discrete} hydrostatic balance with the pressure form of the model:
+$p_1$ from $\mathrm dp/\mathrm dz=-g\rho$ up to the first level, then
+$c_{pd}\hat\Theta_f(\pi_k-\pi_{k-1})+g\Delta z\,\bar\rho=0$ upwards (secant in $p_k$), each level
+saturated with $\theta_e=320$\,K, $r_t=0.02$, split into $V$ and $C$ of phase equilibrium ($\varphi_{FB}=0$ to
+round-off). The perturbation of $\theta_\rho$ by
+$2\,\mathrm K\cos^2(\pi r/2r_c)$, $r_c=2$\,km, at fixed pressure and $r_t$, saturated, as in CGDycore
+\code{PerturbMoistProfile}.
+
+\section{The pressure itself as the additional variable (\code{pvar = :p})}
+\paragraph{Dry.} With $p=P(\Theta)$ the pressure equation follows from the conservative $\Theta$ equation,
+\[
+\partial_t p=P'(\Theta)\,\partial_t\Theta=-P'(\Theta)\,\nabla\cdot(\theta M),\qquad P'(\Theta)=\frac{\gamma p}{\Theta}=\frac{c^2}{\theta},
+\]
+and in the continuum this \emph{is} the standard pressure equation:
+\[
+-P'(\Theta)\nabla\cdot(\theta M)=-c^2\nabla\cdot M-\frac{\gamma p}{\theta}\,v\cdot\nabla\theta
+=-\rho c^2\,\nabla\cdot v-v\cdot\nabla p,
+\]
+since $\nabla p=c^2\nabla\rho+(\gamma p/\theta)\nabla\theta$. It is frozen exactly as the $\pi$ equation:
+the $p$ row is $-\delta(\kappa_fF)$ with $\kappa_f=(\gamma p/\Theta)_{\rm cell}(y)\,\theta_f(y)$ (one
+coefficient per face and neighbour), the momentum rows have the plain difference $-\delta p$ (no product
+form needed), the fast part is linear in $z$, the HEVI column is the tridiagonal system above with
+$P_k=1$, and $p$ is reset to $P(\Theta)$ after every MIS step. The frozen coefficient is the derivative
+$\gamma p/\Theta$ (as in the product form); freezing the secant $p/\Theta$ instead was unstable
+(\code{docs/FINDINGS.md} \S11). The full operator $N$ is the base operator with $\delta p(\Theta)$
+(\code{FV\_PRESSURE\_FORM = :gradp}).
+
+\paragraph{Moist.} $\partial_t p=a\,\partial_t\rho+b\,\partial_t\Theta+c\,\partial_tV+d\,\partial_tC$ with
+$(a,b,c,d)=\partial p/\partial(\rho,\Theta,V,C)$ plus the phase source $\kappa_SS_c$:
+this is the source term $Q_p$ of the poster (frozen sound speed of the non-equilibrium mixture). The code is the moist
+model with $p$ in place of $\pi$ and $-\delta p$ in the momentum rows; the balanced initial column uses
+$p_k-p_{k-1}+g\Delta z\,\bar\rho=0$.
+
+\paragraph{The advective form} $\partial_tp+v\cdot\nabla p=-\rho c^2\nabla\cdot v$ can also be frozen
+(fast $-(\rho c^2)(y)\nabla\cdot(M_z/\rho_y)$, slow $-v_y\cdot\nabla p_y$, $F(q,q)=N(q)$), but it is not
+conservative and the pressure advection is in the slow part: $p$ then departs from $P(\Theta)$ by the
+error of the slow step, and the reset after the step is a real correction, not a cosmetic one. The
+conservative form above keeps the drift at round-off level times $\dt$ (tables below).
+
+\section{Is a moist Exner pressure useful?}
+A moist Exner function $\pi_M=(p/p_0)^{\kappa_M}$ is not recommended as the prognostic variable:
+\begin{itemize}
+\item The product form is lost: $\nabla\pi_M=\pi_M\,[\kappa_M\nabla\ln p+\ln(p/p_0)\nabla\kappa_M]$, so the
+  pressure gradient needs the correction $-p\,\kappa_M^{-1}\ln(p/p_0)\,\nabla\kappa_M$, which must be
+  discretized consistently with the $\nabla\pi_M$ part or the balance is lost.
+\item $\pi_M$ jumps at cloud edges, $p$ does not: $\kappa_M$ depends on the water content
+  ($\kappa_M=0.2759$ at the Bryan--Fritsch surface, $\kappa_d=0.2859$ for dry air). At about 5\,km the
+  jump of $\pi_M$ across a cloud edge from $\Delta\kappa\approx0.01$ alone is about $5\cdot10^{-3}$, while
+  the hydrostatic change of $\pi$ over one layer of 250\,m is $7.6\cdot10^{-3}$: a spurious signal of the
+  size of the hydrostatic force in $\delta\pi_M$.
+\item The $\pi_M$ equation gets a source whenever only $\kappa_M$ changes (phase changes,
+  without motion), and the frozen coefficient would contain $\nabla\kappa_M$ of the frozen
+  moisture field.
+\end{itemize}
+The moist $\kappa_M$ belongs in the thermodynamic variable ($\theta_\rho$, which makes
+$p=p_0(R_d\rho\theta_\rho/p_0)^{1/(1-\kappa_M)}$ exact; it changes only through the latent heating $Q_\theta$), the
+pressure variable keeps the dry exponent ($\pi$) or is $p$ itself; they are linked by
+$\hat\Theta=\Theta(p/p_0)^{\kappa_M-\kappa_d}=p/(R_d\pi)$.
+
+\section{Results (flat grid, MIS54 with the HEVI fast loop)}
+\paragraph{Dry warm bubble} (\code{examples/frozen\_exner\_bubble.jl}): isentropic, 20\,km$\times$10\,km,
+$160\times80$ cells, $\Delta\theta=2$\,K, $T=1000$\,s, errors of $\theta'$ against RK4 of the same operator.
+\begin{center}\begin{tabular}{lcccc}\toprule
+$\dt$ (nsub) & 2\,s (8) & 5\,s (18) & 10\,s (36) & 15\,s (54)\\\midrule
+product form & $1.67\cdot10^{-2}$ & $1.90\cdot10^{-2}$ & $1.92\cdot10^{-2}$ & $2.04\cdot10^{-1}$\\
+Exner $\pi$ & $1.72\cdot10^{-2}$ & $1.93\cdot10^{-2}$ & $1.98\cdot10^{-2}$ & $1.99\cdot10^{-1}$\\
+pressure $p$ & $1.64\cdot10^{-2}$ & $1.89\cdot10^{-2}$ & $1.91\cdot10^{-2}$ & $2.08\cdot10^{-1}$\\\midrule
+drift $\pi$ (rel.) & $5\cdot10^{-10}$ & $6\cdot10^{-9}$ & $5\cdot10^{-8}$ & $1.2\cdot10^{-7}$\\
+drift $p$ (rel.) & $1\cdot10^{-9}$ & $1.2\cdot10^{-8}$ & $5\cdot10^{-8}$ & $1.1\cdot10^{-7}$\\\bottomrule
+\end{tabular}\end{center}
+Same solution for all three ($\theta'_{\max}=1.971$\,K, $w_{\max}=17.35$\,m/s), same accuracy and
+stability (the step to $\dt=15$\,s is limited by the advective Courant number $\approx2$ of the slow
+part), mass and $\Theta$ conserved to round-off. Relative drift of the additional variable before the
+reset at most $10^{-7}$. Rest state of the analytic isentropic atmosphere: residual $6\cdot10^{-13}$ ($\pi$),
+$6\cdot10^{-5}$ ($p$), $8\cdot10^{-5}$ (product form); only $\pi$ is linear in $z$.
+
+\paragraph{Gravity-wave channel} (\code{examples/frozen\_exner\_channel.jl}): Skamarock--Klemp, $N=0.01$,
+$U=20$\,m/s, $120\times16$ cells, discretely balanced columns. Wave error of $\theta'$ at $z=5$\,km
+against RK4 (amplitude $2.3\cdot10^{-3}$\,K):
+\begin{center}\begin{tabular}{lcccccccc}\toprule
+$\dt$ [s] & 2 & 5 & 10 & 20 & 50 & 100 & 150 & 200\\\midrule
+product form & 0.3\,\% & 2.2\,\% & 3.0\,\% & 4.6\,\% & 7.0\,\% & 4.6\,\% & 7.8\,\% & 12\,\%\\
+Exner $\pi$ & 0.3\,\% & 2.2\,\% & 3.2\,\% & 4.9\,\% & 6.8\,\% & 7.9\,\% & 16\,\% & 24\,\%\\
+pressure $p$ & 0.3\,\% & 2.2\,\% & 3.1\,\% & 4.6\,\% & 6.8\,\% & 4.4\,\% & 7.0\,\% & 8.5\,\%\\\bottomrule
+\end{tabular}\end{center}
+Equal up to $\dt=50$\,s; at large steps the pressure variable has the smallest error (8.5\,\% at
+$\dt=200$\,s against 12\,\% for the product form and 24\,\% for $\pi$). Rest-state residual of the
+balanced columns $\le2\cdot10^{-15}$ for all three. Long run (36000\,s, $\dt=200$\,s): MIS54, MISF53,
+MIS\_FV42 unstable with all three forms, MIS\_FV53 stable with all three ($\max|w|=1.3$, $1.5$,
+$1.4\cdot10^{-3}$\,m/s for product, $\pi$, $p$).
+
+\paragraph{Long runs and the step limit of MIS54.} MIS54 in the long channel (36000\,s) with all three
+forms (pressure reset after every MIS step): stable at $\dt=50$\,s ($\max|w|=1.41$, $1.34$,
+$1.43\cdot10^{-3}$\,m/s for product, $\pi$, $p$), unstable at $\dt=100$ and 200\,s. The product form has
+no additional variable and fails in the same way, so the limit is that of the MIS method in this channel
+(vertical Courant number of the slow advection $U\dt/\Delta z=3.2$ at $\dt=100$\,s), not the pressure
+variable.
+
+\paragraph{Divergence damping by extrapolation} (\code{run\_frozen(\dots; smdiv = $\beta$)}). As in WRF,
+the momentum part of the fast loop is evaluated at the extrapolated state
+$\tilde z=z+\beta(z-z_{\rm prev})$, $z_{\rm prev}$ the state of the previous momentum evaluation
+($z_{\rm prev}=z$ at the start of the stage); the momentum rows depend only on the thermodynamic rows,
+so this extrapolates $\Theta$, $\pi$ or $p$ (HEVI: the explicit horizontal momentum steps; Verlet: the
+momentum step, with gravity and sponge). It acts like a divergence damping $\sim\beta c^2\Delta\tau$.
+Long channel, $\max|w|$ [m/s] after 36000\,s (``growing'': far above the stable level
+$1.5\cdot10^{-3}$):
+\begin{center}\begin{tabular}{llcccc}\toprule
+form & method, $\dt$ & $\beta=0$ & $0.05$ & $0.1$ & $0.2$\\\midrule
+product & MIS54, 100\,s & unstable & 1.2 (growing) & $5.7\cdot10^{-3}$ & $2.2\cdot10^{-3}$\\
+product & MIS54, 200\,s & unstable & $1.8\cdot10^{-3}$ & $1.8\cdot10^{-3}$ & $1.9\cdot10^{-3}$\\
+product & MISF53, 200\,s & unstable & $1.6\cdot10^{-3}$ & $1.6\cdot10^{-3}$ & $1.6\cdot10^{-3}$\\
+$\pi$ & MIS54, 100\,s & unstable & unstable & 0.21 (growing) & $2.9\cdot10^{-3}$\\
+$\pi$ & MIS54, 200\,s & unstable & $5.2\cdot10^{-3}$ & $4.9\cdot10^{-3}$ & $4.5\cdot10^{-3}$\\
+$\pi$ & MISF53, 200\,s & unstable & $2.1\cdot10^{-3}$ & $2.0\cdot10^{-3}$ & $2.0\cdot10^{-3}$\\
+$p$ & MIS54, 100\,s & unstable & 0.17 (growing) & $2.2\cdot10^{-3}$ & $2.0\cdot10^{-3}$\\
+$p$ & MIS54, 200\,s & unstable & $1.5\cdot10^{-3}$ & $1.5\cdot10^{-3}$ & $1.6\cdot10^{-3}$\\
+$p$ & MISF53, 200\,s & unstable & $1.5\cdot10^{-3}$ & $1.5\cdot10^{-3}$ & $1.5\cdot10^{-3}$\\
+all & MIS\_FV42, 200\,s & unstable & unstable & unstable & unstable\\\bottomrule
+\end{tabular}\end{center}
+Wave error at $T=3000$\,s, $\dt=100$\,s, MIS54, $\beta=0/0.05/0.1/0.2$: product 4.6/4.8/5.4/6.8\,\%,
+$\pi$ 7.9/7.6/7.3/7.0\,\%, $p$ 4.4/4.6/5.3/6.9\,\%. The extrapolation stabilizes MIS54 and MISF53 at
+$\dt=200$\,s for $\beta\ge0.05$ (amplitude as with the undamped MIS\_FV53, $1.3$--$1.5\cdot10^{-3}$\,m/s) and
+at $\dt=100$\,s for $\beta\ge0.1$ (product, $p$) or $0.2$ ($\pi$); it does not stabilize MIS\_FV42. The
+accuracy cost of $\beta=0.1$ (the WRF value) is about one percentage point for the product form and $p$;
+for $\pi$ the error even decreases. For this channel: $p$ with $\beta=0.1$ and MIS54 or MISF53.
+
+\paragraph{Moist bubble} (\code{examples/frozen\_moist\_bubble.jl}): see Section~\ref{sec:moistres}.
+
+\section{Moist bubble results}\label{sec:moistres}
+Bryan--Fritsch moist bubble, $80\times40$ cells ($\Delta x=\Delta z=250$\,m), $T=1000$\,s, MIS54 with HEVI,
+Fischer--Burmeister relaxation with $w_\tau=50$\,m/s ($\tau=5$\,s); reference RK4 of the same operator
+(3574 steps). Rest-state residual of the balanced saturated column $7\cdot10^{-13}$ ($\pi$),
+$7\cdot10^{-13}$ ($p$). Reference: $\theta_e'\in[-0.69,6.10]$\,K, $\max|w|=21.0$\,m/s. Maximum error of
+$\theta_e'$ [K]:
+\begin{center}\begin{tabular}{lccc}\toprule
+$\dt$ (nsub) & 2\,s (4) & 5\,s (10) & 10\,s (19)\\\midrule
+$\pi$, \code{micro = :slow} & 0.133 & 0.099 & 0.132\\
+$\pi$, \code{micro = :fast} & 0.267 & 0.229 & 0.266\\
+$p$, \code{micro = :slow} & 0.113 & 0.107 & 0.120\\
+$p$, \code{micro = :fast} & 0.229 & 0.213 & 0.240\\\bottomrule
+\end{tabular}\end{center}
+$\max|w|$ 21.0 (\code{:slow}) and 21.4\,m/s (\code{:fast}); mass and total water $V+C$ conserved to round-off, total
+$\Theta$ grows by $2.4\cdot10^{-4}$ (latent heating); relative drift of $\pi$ or $p$ before the reset
+$\le4\cdot10^{-8}$; remaining non-equilibrium $\max|\varphi_{FB}|/\rho=1.1\cdot10^{-4}$ (the lag of the
+relaxation). $\pi$ and $p$ give the same solution. \code{:slow} is stable also at $\dt=10\,\mathrm s=2\tau$
+and is about twice as accurate as \code{:fast} here, and cheaper (13--14\,s against 22\,s at $\dt=10$\,s).
+The errors hardly depend on $\dt$: they come from the fast loop (fixed $\Delta\tau$), as in the dry bubble.
+
+\paragraph{Dependence on the relaxation time} ($40\times20$ cells, $\Delta x=500$\,m, $\pi$, $\dt=5$\,s,
+$\max|w|$ at 1000\,s): $\tau=50$\,s ($w_\tau=10$\,m/s) 9.3\,m/s, $\tau=10$\,s 19.7, $\tau=2$\,s 23.5,
+$\tau=0.5$\,s (\code{:fast}) 25.2\,m/s; \code{:slow} and \code{:fast} agree to 1\,\%. \code{:slow} fails for
+$\tau=2\,\mathrm s<\dt/2$, \code{:fast} for $\tau=0.1\,\mathrm s<\Delta\tau$. With $\tau=50$\,s the lag
+leaves a supersaturation of $6\cdot10^{-4}$, which also biases the diagnosed $\theta_e$ (+1.7\,K). Without
+latent heating ($Q_\theta=0$, $\rho\theta_\rho$ conserved, the first version) the bubble stalls: $\Theta/\rho$
+increases by 24\,K over 10\,km in the saturated neutral background, $\max|w|$ peaks at 3\,m/s after 200\,s
+and decays.
+
+\paragraph{Relaxation on the fast scale (default).} \code{micro = :fast} with
+$\tau=\tau_{\rm fac}\,\Delta\tau_{\rm ac}$, $\Delta\tau_{\rm ac}=0.85\cdot0.92\min(\Delta x,\Delta z)/c_s$
+($c_s=350$\,m/s, the acoustic step of the fast loop). The explicit source is stable down to
+$\tau\approx\Delta\tau/4$ and fails at $\Delta\tau/8$ ($80\times40$, $\dt=5$ and 10\,s); the default
+$\tau_{\rm fac}=0.5$ keeps a factor two. Stable is not accurate: with $\tau<\Delta\tau$ the relaxation is
+not resolved by the small step. $80\times40$, $\pi$ (the $p$ form is the same within 10\,\%), maximum
+error of $\theta_e'$ against RK4 with the same $\tau$ (RK4 step $\le\tau/2$):
+\begin{center}\begin{tabular}{lccccc}\toprule
+$\tau_{\rm fac}$ ($\tau$) & RK4 $\max|w|$ & MIS $\max|w|$ ($\dt=5$\,s) & $\dt=2$\,s & 5\,s & 10\,s\\\midrule
+0.5 (0.28\,s) & 22.2 & 25.7 & 2.2 & 1.8 & 2.2\\
+1 (0.55\,s) & 22.1 & 24.2 & 1.0 & 0.86 & 0.97\\
+2 (1.1\,s) & 22.0 & 23.1 & 0.52 & 0.41 & 0.50\\
+4 (2.2\,s) & 21.7 & 22.3 & 0.31 & 0.27 & 0.32\\\bottomrule
+\end{tabular}\end{center}
+The physical solution (RK4) hardly depends on $\tau$ in this range (21.7--22.2\,m/s; 21.0 at
+$\tau=5$\,s), the MIS error is the unresolved relaxation and does not decrease with $\dt$. Refining only
+the small step at $\tau_{\rm fac}=0.5$ ($\dt=5$\,s, nsub $10,20,40,80$) gives $\max|w|=25.7$, 23.5, 22.5,
+22.3\,m/s: convergence to RK4. Recommended: $\tau\gtrsim2\Delta\tau$ ($\tau_{\rm fac}=2$--4), i.e.\ the
+shortest relaxation the fast step still resolves.
+
+\section{Open points}
+\begin{itemize}
+\item Relaxation time: the solution depends on $\tau$ (Section~\ref{sec:moistres}); $\tau\to0$ is the
+  equilibrium limit, limited by the explicit source ($\tau\gtrsim\Delta t$ for \code{:slow},
+  $\tau\gtrsim\Delta\tau$ for \code{:fast}). A linearly implicit source in the vertical column would remove
+  the limit.
+\item Larger errors of the dry Exner form in the channel at $\dt\ge100$\,s, while the pressure
+  variable is the most accurate: in the $\pi$ form the frozen face mean $\Theta_f$ multiplies the evolving
+  $\delta\pi$, in the $p$ form nothing is frozen in the momentum rows.
+\item Energy formulation (II) and the combined system (III) of the poster; terrain and cut cells; 3D.
+\end{itemize}
+\end{document}

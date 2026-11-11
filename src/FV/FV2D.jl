@@ -45,7 +45,7 @@ import ..TimeStepping: rhs_nonlinear!, fast_operator, fast_apply!, fast_rhs_ther
                        fast_rhs_hmomentum!, fast_rhs_hthermo!, hevi_loop!, fast_forcing, fast_mass,
                        fast_workspace, fast_rosenbrock_amf!, fast_hevi_amf!, frozen_ncoef, frozen_data!, frozen_fast!, frozen_stage_begin!, frozen_vertical_step!, frozen_step_end!
 
-export ExnerModel, exner_state, base_state, exner, FV_HYDRO_REFERENCE, FV_PRESSURE_FORM, FVGrid, CutCellFVGrid, FVModel, FVFast, CutCellFVAMF, with_sponge, project2d, total2d, output_fields, sound_speed_max,
+export ExnerModel, exner_state, base_state, exner, MoistGas, MoistExnerModel, moist_exner_state, moist_state, moist_exner, theta_e, fischer_burmeister, FV_HYDRO_REFERENCE, FV_PRESSURE_FORM, FVGrid, CutCellFVGrid, FVModel, FVFast, CutCellFVAMF, with_sponge, project2d, total2d, output_fields, sound_speed_max,
        rhs_nonlinear, rhs_nonlinear!, fast_operator, fast_matrix, stratified_reference,
        iρ, iU, iW, iΘ, field_section, open_vtkhdf, write_vtkhdf!, plot_fields
 
@@ -62,5 +62,6 @@ include("cutcell_solver.jl")
 include("cutcell_amf.jl")
 include("frozen.jl")
 include("exner.jl")
+include("moist.jl")
 
 end # module

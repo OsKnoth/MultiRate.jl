@@ -608,7 +608,124 @@ end
             norm(FV.base_state(mi, qn) - qr) / norm(qr - q0)
         end
         @test errs[2] < 0.03 && errs[2] < 0.7 * errs[1]
+        # divergence damping by extrapolation (smdiv): β = 0 is the undamped loop; with β = 0.1 still
+        # convergent to the same solution, mass conserved
+        let n = 12, Δt = T / 12, nsub = ceil(Int, Δt / (0.7 * g.dx / c)), x0 = FV.exner_state(mi, q0)
+            q00 = TS.run_frozen(mi, x0, Δt, n; tab = TS.mis_tableau(:MIS54), nsub, fast = :hevi)
+            q0s = TS.run_frozen(mi, x0, Δt, n; tab = TS.mis_tableau(:MIS54), nsub, fast = :hevi, smdiv = 0.0)
+            @test q0s == q00
+            for fast in (:hevi, :verlet)
+                qd = TS.run_frozen(mi, x0, Δt, n; tab = TS.mis_tableau(:MIS54), nsub = fast === :verlet ? 4nsub : nsub, fast, smdiv = 0.1)
+                @test abs(CM.total2d(bi, qd, 1) / CM.total2d(bi, q0, 1) - 1) < 1e-13
+                @test norm(FV.base_state(mi, qd) - qr) / norm(qr - q0) < 0.05
+            end
+        end
         @test_throws ErrorException TS.frozen_data!(zeros(TS.frozen_ncoef(bi)), zeros(bi.nq), bi, q0)   # the base frozen split has no :exner form
+    finally
+        FV.FV_PRESSURE_FORM[] = :gradp
+    end
+end
+
+@testset "FV2D: pressure as the additional variable (pvar = :p), dry and moist" begin
+    gas = CM.Gas()
+    ρr, Θr, θr = CM.stratified_reference(gas; θ0 = 300.0, N = 0.01)
+    g = FV.FVGrid(12, 8, 12e3, 8e3)
+    b = FV.FVModel(g, gas, ρr, Θr)                                   # FV_PRESSURE_FORM = :gradp (δp)
+    m = FV.ExnerModel(b; pvar = :p)
+    q = CM.project2d(b, (x, z) -> (ρ = ρr(z) * (1 + 1e-3 * sin(2π * x / 12e3)); (ρ, 10ρ + sin(x / 2e3), 0.5 * sin(π * z / 8e3) * cos(x / 3e3), Θr(z) * (1 + 1e-3 * cos(x / 2e3)))))
+    qe = FV.exner_state(m, q)
+    @test qe[FV.iπ(m, 2, 3)] ≈ CM.pressure(gas, q[FV.iΘ(g, 2, 3)])
+    N = TS.rhs_nonlinear(b, q); Ne = TS.rhs_nonlinear(m, qe)
+    @test maximum(abs, Ne[1:b.nq] - N) < 1e-12 * maximum(abs, N)      # the base operator with δp(Θ)
+    @test maximum(abs(Ne[FV.iπ(m, i, k)] - gas.γ * qe[FV.iπ(m, i, k)] / q[FV.iΘ(g, i, k)] * N[FV.iΘ(g, i, k)]) for i in 1:12, k in 1:8) <
+          1e-12 * maximum(abs, Ne[b.nq+1:end])                          # p_t = (γ p/Θ) Θ_t
+    C = zeros(TS.frozen_ncoef(m)); S = zeros(m.nq); TS.frozen_data!(C, S, m, qe)
+    o(p, z = qe) = TS.frozen_fast!(zeros(m.nq), m, C, z, p, S)
+    @test maximum(abs, o(:hthermo) + o(:hmomentum) + o(:vertical) - Ne) < 1e-13 * maximum(abs, Ne)
+    v = 1e-2 .* sin.(1:m.nq)
+    @test maximum(abs, o(:all, qe .+ v) + o(:all, qe .- v) - 2Ne) < 1e-11 * maximum(abs, Ne)
+    TS.frozen_stage_begin!(m, C, qe)
+    R = 1e-3 .* cos.(1:m.nq); Y = zeros(m.nq); FV.exner_column_solve!(Y, m, 3.0, R)
+    G(z) = TS.frozen_fast!(zeros(m.nq), m, C, z, :vertical, S)
+    @test maximum(abs.(Y .- 3.0 .* (G(qe .+ Y) .- G(qe)) .- R)) < 1e-10 * maximum(abs, R)
+    # moist with q_t = 0 and pvar = :p is the dry pvar = :p model (gas with Rd, cpd)
+    mg = FV.MoistGas()
+    gm = CM.Gas(R = mg.Rd, γ = mg.Cpd / (mg.Cpd - mg.Rd), p00 = mg.p0)
+    bm = FV.FVModel(g, gm, ρr, Θr); md = FV.ExnerModel(bm; pvar = :p); mm = FV.MoistExnerModel(bm; mgas = mg, pvar = :p, micro = :slow)
+    Nd = TS.rhs_nonlinear(md, FV.exner_state(md, q)); Nm = TS.rhs_nonlinear(mm, FV.moist_exner_state(mm, q, zeros(12, 8)))
+    @test maximum(abs, Nm[1:bm.nq] - Nd[1:bm.nq]) < 1e-9 * maximum(abs, Nd)
+    @test maximum(abs(Nm[FV.iπ(mm, i, k)] - Nd[FV.iπ(md, i, k)]) for i in 1:12, k in 1:8) < 1e-6 * maximum(abs, Nd[bm.nq+1:end])
+    # moist state: parts, exact column solve, p = p_eos after the step end
+    x = FV.moist_exner_state(mm, q, [0.015 * q[FV.iρ(g, i, k)] for i in 1:12, k in 1:8])
+    Cm = zeros(TS.frozen_ncoef(mm)); Sm = zeros(mm.nq); TS.frozen_data!(Cm, Sm, mm, x)
+    om(p) = TS.frozen_fast!(zeros(mm.nq), mm, Cm, x, p, Sm)
+    Nx = TS.rhs_nonlinear(mm, x)
+    @test maximum(abs, om(:hthermo) + om(:hmomentum) + om(:vertical) - Nx) < 1e-13 * maximum(abs, Nx)
+    TS.frozen_stage_begin!(mm, Cm, x)
+    Rm = 1e-3 .* cos.(1:mm.nq); Ym = zeros(mm.nq); FV.moist_column_solve!(Ym, mm, 3.0, Rm)
+    Gm(z) = TS.frozen_fast!(zeros(mm.nq), mm, Cm, z, :vertical, Sm)
+    @test maximum(abs.(Ym .- 3.0 .* (Gm(x .+ Ym) .- Gm(x)) .- Rm)) < 1e-10 * maximum(abs, Rm)
+    xs = copy(x); xs[FV.iπ(mm, 3, 3)] += 1.0; TS.frozen_step_end!(mm, xs)
+    @test xs == x
+end
+
+@testset "FV2D: moist air, Exner pressure (rho theta_rho, rho q_v, rho q_c, Fischer-Burmeister relaxation)" begin
+    mg = FV.MoistGas()
+    # equation of state: saturated parcels exactly at saturation, unsaturated ones without condensate
+    ρ = 1.1; Θ = 300.0 * ρ
+    T, ρv, ρc, p = FV.moist_state(mg, ρ, Θ, 0.02ρ)
+    @test ρc > 0 && abs(ρv * mg.Rv * T / FV.psat(mg, T) - 1) < 1e-12
+    @test FV.moist_state(mg, ρ, Θ, 0.002ρ)[3] == 0
+    # p = p0 (Rd Θ/p0)^(1/(1-κ_M))
+    ρd = ρ - 0.02ρ; κ = (mg.Rd * ρd + mg.Rv * ρv) / (mg.Cpd * ρd + mg.Cpv * ρv + mg.Cpl * ρc)
+    @test p ≈ mg.p0 * (mg.Rd * Θ / mg.p0)^(1 / (1 - κ)) rtol = 1e-12
+    # dry limit: the moist model with q_t = 0 is the dry ExnerModel (gas with Rd, cpd)
+    gas = CM.Gas(R = mg.Rd, γ = mg.Cpd / (mg.Cpd - mg.Rd), p00 = mg.p0)
+    ρr, Θr, θr = CM.stratified_reference(gas; θ0 = 300.0, N = 0.01)
+    g = FV.FVGrid(12, 8, 12e3, 8e3)
+    try
+        FV.FV_PRESSURE_FORM[] = :exner
+        b = FV.FVModel(g, gas, ρr, Θr); md = FV.ExnerModel(b); mm = FV.MoistExnerModel(b; mgas = mg, micro = :slow)
+        q = CM.project2d(b, (x, z) -> (ρ = ρr(z) * (1 + 1e-3 * sin(2π * x / 12e3)); (ρ, 10ρ + sin(x / 2e3), 0.5 * sin(π * z / 8e3) * cos(x / 3e3), Θr(z) * (1 + 1e-3 * cos(x / 2e3)))))
+        qd = FV.exner_state(md, q); qm = FV.moist_exner_state(mm, q, zeros(12, 8))
+        Nd = TS.rhs_nonlinear(md, qd); Nm = TS.rhs_nonlinear(mm, qm)
+        @test maximum(abs, Nm[1:b.nq] - Nd[1:b.nq]) < 1e-9 * maximum(abs, Nd)
+        @test maximum(abs(Nm[FV.iπ(mm, i, k)] - Nd[FV.iπ(md, i, k)]) for i in 1:12, k in 1:8) < 1e-6 * maximum(abs, Nd[b.nq+1:end])
+        # moist state: parts, linear fast part, exact column solve, π = π_eos after the step end
+        Q = [0.015 * q[FV.iρ(g, i, k)] for i in 1:12, k in 1:8]
+        x = FV.moist_exner_state(mm, q, Q)
+        C = zeros(TS.frozen_ncoef(mm)); S = zeros(mm.nq); TS.frozen_data!(C, S, mm, x)
+        o(p, z = x) = TS.frozen_fast!(zeros(mm.nq), mm, C, z, p, S)
+        N = TS.rhs_nonlinear(mm, x)
+        @test o(:all) == N
+        @test maximum(abs, o(:hthermo) + o(:hmomentum) + o(:vertical) - N) < 1e-13 * maximum(abs, N)
+        @test maximum(abs, o(:thermo) + o(:momentum) - N) < 1e-13 * maximum(abs, N)
+        v = 1e-3 .* sin.(1:mm.nq)
+        @test maximum(abs, o(:all, x .+ v) + o(:all, x .- v) - 2N) < 1e-11 * maximum(abs, N)
+        TS.frozen_stage_begin!(mm, C, x)
+        R = 1e-3 .* cos.(1:mm.nq); Y = zeros(mm.nq); FV.moist_column_solve!(Y, mm, 3.0, R)
+        G(z) = TS.frozen_fast!(zeros(mm.nq), mm, C, z, :vertical, S)
+        @test maximum(abs.(Y .- 3.0 .* (G(x .+ Y) .- G(x)) .- R)) < 1e-10 * maximum(abs, R)
+        xs = copy(x); xs[FV.iπ(mm, 3, 3)] += 1e-3; TS.frozen_step_end!(mm, xs)
+        @test xs == x
+        # Fischer–Burmeister phase change: zero in equilibrium, latent heating at fixed θ_e,
+        # the same tendency for micro = :slow and :fast
+        @test maximum(abs(FV.fischer_burmeister(mg, x[FV.iρ(g, i, k)], x[FV.iΘ(g, i, k)], x[FV.iV(mm, i, k)], x[FV.iC(mm, i, k)])[1]) for i in 1:12, k in 1:8) <
+              1e-15 * maximum(x[FV.iρ(g, i, k)] for i in 1:12, k in 1:8)
+        ρ1, Θ1, Q1, c1 = x[FV.iρ(g, 2, 3)], x[FV.iΘ(g, 2, 3)], x[FV.iV(mm, 2, 3)], x[FV.iC(mm, 2, 3)]
+        T1, ρv1, _, _ = FV.moist_state(mg, ρ1, Θ1, Q1, c1)
+        θS = FV.theta_phase_factor(mg, ρ1, T1, ρv1, c1)
+        @test θS > 0
+        h = 1e-5 * ρ1
+        @test abs(FV.theta_e(mg, ρ1, Θ1 + θS * h, Q1 - h, c1 + h) / FV.theta_e(mg, ρ1, Θ1, Q1, c1) - 1) < 1e-7
+        xsup = copy(x); xsup[FV.iV(mm, 2, 3)] += 0.5c1; xsup[FV.iC(mm, 2, 3)] -= 0.5c1   # supersaturated cell
+        mf = FV.MoistExnerModel(b; mgas = mg, micro = :fast)
+        Ns, Nf = TS.rhs_nonlinear(mm, xsup), TS.rhs_nonlinear(mf, xsup)
+        @test maximum(abs, Ns - Nf) < 1e-12 * maximum(abs, Ns)
+        @test mf.τ ≈ 0.5 * 0.85 * 0.92 * min(g.dx, g.dz) / 350                 # default: half the acoustic step
+        Nn = TS.rhs_nonlinear(FV.MoistExnerModel(b; mgas = mg, micro = :none), xsup)
+        Sc = Ns[FV.iC(mm, 2, 3)] - Nn[FV.iC(mm, 2, 3)]
+        @test Sc > 0 && abs(Ns[FV.iV(mm, 2, 3)] - Nn[FV.iV(mm, 2, 3)] + Sc) < 1e-12 * Sc           # condensation, vapour sink
     finally
         FV.FV_PRESSURE_FORM[] = :gradp
     end
