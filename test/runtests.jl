@@ -622,6 +622,33 @@ end
         F3.column_solve!(Y, s, mc, 3.0, R)
         Gv(x) = TS.frozen_fast!(zeros(mc.nq), mc, C, x, :vertical, S)
         @test maximum(abs.(Y .- 3.0 .* (Gv(q .+ Y) .- Gv(q)) .- R)) < 1e-9 * maximum(abs, R)
+        # recon = :lsq: least-squares quadratic near cut cells, exact for quadratics in z (means over
+        # the true fluid parts of cells and faces)
+        gq = F3.Grid3D(8, 8, 6, 20e3, 20e3, 6e3; zs = hill, recon = :lsq)
+        @test length(gq.lsq) == count(gq.mask .& (gq.Vf .> 0))
+        φq = [(m = F3._cell_moments(gq, hill, nothing, i, j, k); gq.zc[k]^2 + 2gq.zc[k] * gq.dz * m[4] + gq.dz^2 * m[7])
+              for i in 1:8, j in 1:8, k in 1:6]
+        eq = maximum(begin
+                fm = F3._face_moments(gq, hill, nothing, i, j, k, (f + 1) ÷ 2, isodd(f) ? -1 : 1)
+                all(iszero, fm) ? 0.0 : abs(F3.lsq_face(gq, φq, i, j, k, f) - (gq.zc[k]^2 + 2gq.zc[k] * gq.dz * fm[3] + gq.dz^2 * fm[6]))
+             end for i in 1:8, j in 1:8, k in 1:6, f in 1:6 if gq.lsqid[i, j, k] > 0)
+        @test eq < 1e-12 * maximum(φq)
+        mq = F3.Model3D(gq, gas, ρr, Θr)
+        # recon = :lin: linear centroid correction of the pseudo third-order values, exact for z
+        gl = F3.Grid3D(8, 8, 6, 20e3, 20e3, 6e3; zs = hill, recon = :lin)
+        φl = [(m = F3._cell_moments(gl, hill, nothing, i, j, k); m[1] > 0 ? gl.zc[k] + gl.dz * m[4] : 0.0) for i in 1:8, j in 1:8, k in 1:6]
+        el = maximum(begin
+                d, s = (f + 1) ÷ 2, isodd(f) ? -1 : 1
+                fm = F3._face_moments(gl, hill, nothing, i, j, k, d, s)
+                v = d == 1 ? F3.face_x(gl, φl, s > 0 ? mod1(i + 1, 8) : i, j, k, Float64(s)) :
+                    d == 2 ? F3.face_y(gl, φl, i, s > 0 ? mod1(j + 1, 8) : j, k, Float64(s)) :
+                             (s > 0 ? F3.face_z(gl, φl, i, j, k + 1, 1.0) : F3.face_z(gl, φl, i, j, k, -1.0))
+                abs(v - (gl.zc[k] + gl.dz * fm[3]))
+             end for i in 1:8, j in 1:8, k in 2:5, f in 1:6
+             if gl.lsqid[i, j, k] > 0 && !all(iszero, F3._face_moments(gl, hill, nothing, i, j, k, (f + 1) ÷ 2, isodd(f) ? -1 : 1)))
+        @test el < 1e-9 * 6e3
+        @test maximum(abs, TS.frozen_fast!(zeros(mq.nq), mq, (Cq = zeros(TS.frozen_ncoef(mq)); Sq = zeros(mq.nq);
+              TS.frozen_data!(Cq, Sq, mq, q); Cq), q, :all, Sq) - TS.rhs_nonlinear(mq, q)) < 1e-12 * maximum(abs, N)
         # implicit = :amf (default with cut cells): masked momentum advection (simple upwind) in the
         # fast part; N unchanged, parts consistent, assembled matrix = matrix-free operator, short run
         ma = F3.Model3D(gc, gas, ρr, Θr); @test ma.implicit === :amf

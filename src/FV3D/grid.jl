@@ -3,6 +3,12 @@
 # z = z_s + η (H - z_s)/H). The flat grid is the special case with all fractions equal to 1 and
 # the trivial metric (J = 1, z_x = z_y = 0); the operator always uses fractions and metric.
 
+"""LSQ reconstruction data of one cell (lsq.jl): neighbours (i, j, k) and the weights of its six faces."""
+struct LSQCell
+    nb::Vector{NTuple{3,Int}}
+    w::NTuple{6,Vector{Float64}}     # faces (x lower, x upper, y lower, y upper, z lower, z upper)
+end
+
 """
     Grid3D(nx, ny, nz, Lx, Ly, H; zs = nothing, terrain = :cut, box = nothing, mask_width = 1)
 
@@ -65,6 +71,9 @@ struct Grid3D
     Zc::Array{Float64,3}          # physical heights of the centres (nx, ny, nz)
     Zf::Array{Float64,3}          # physical heights of the η-faces (nx, ny, nz+1)
     zs::Any
+    recon::Symbol                 # face reconstruction near cut cells: :ash (pseudo third order), :lin (+ linear centroid correction) or :lsq
+    lsqid::Array{Int,3}           # recon = :lsq: index into lsq of the mask cells, 0 elsewhere
+    lsq::Vector{LSQCell}
 end
 
 ncell(g::Grid3D) = g.nx * g.ny * g.nz
@@ -89,7 +98,9 @@ const _GW = (0.3478548451374538, 0.6521451548625462, 0.6521451548625462, 0.34785
 """Length of the overlap of the intervals [a0, a1] and [b0, b1]."""
 @inline _ov(a0, a1, b0, b1) = max(0.0, min(a1, b1) - max(a0, b0))
 
-function Grid3D(nx, ny, nz, Lx, Ly, H; zs = nothing, terrain::Symbol = :cut, box = nothing, mask_width = 1)
+function Grid3D(nx, ny, nz, Lx, Ly, H; zs = nothing, terrain::Symbol = :cut, box = nothing, mask_width = 1,
+                recon::Symbol = :ash)
+    recon in (:ash, :lin, :lsq) || error("recon: :ash, :lin or :lsq")
     zs !== nothing && box !== nothing && error("Grid3D: give zs or box, not both")
     terrain in (:cut, :follow) || error("terrain: :cut or :follow")
     follow = zs !== nothing && terrain === :follow
@@ -167,7 +178,12 @@ function Grid3D(nx, ny, nz, Lx, Ly, H; zs = nothing, terrain::Symbol = :cut, box
     zyy = [syy[i, j] * fac[k] for i in 1:nx, j in 1:ny, k in 1:nz+1]
     Zc = [zsc[i, j] + zc[k] * Jc[i, j] for i in 1:nx, j in 1:ny, k in 1:nz]
     Zf = [zsc[i, j] + zf[k] * Jc[i, j] for i in 1:nx, j in 1:ny, k in 1:nz+1]
-    return Grid3D(nx, ny, nz, Lx, Ly, H, dx, dy, dz, xc, yc, zc, xf, yf, zf, Vf, invV, Ax, Ay, Az,
-                  Vf .== 1, mask, Mx, My, zs !== nothing || box !== nothing, follow, Jc, Jx, Jy, zxf, zyf, zxx, zyy, Zc, Zf,
-                  follow ? zs_ : (zs === nothing ? box : zs))
+    g = Grid3D(nx, ny, nz, Lx, Ly, H, dx, dy, dz, xc, yc, zc, xf, yf, zf, Vf, invV, Ax, Ay, Az,
+               Vf .== 1, mask, Mx, My, zs !== nothing || box !== nothing, follow, Jc, Jx, Jy, zxf, zyf, zxx, zyy, Zc, Zf,
+               follow ? zs_ : (zs === nothing ? box : zs), recon, zeros(Int, nx, ny, nz), LSQCell[])
+    if !follow && (zs !== nothing || box !== nothing)
+        recon === :lsq && lsq_reconstruction!(g, zs, box)
+        recon === :lin && lin_reconstruction!(g, zs, box)
+    end
+    return g
 end

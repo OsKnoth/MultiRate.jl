@@ -40,31 +40,37 @@ ground 1 on flat and terrain-following grids, 0 below a cut cell)."""
 """Face value at the x-face i (between i-1 and i) of the cell field φ, upwind by the sign of F."""
 @inline function face_x(g, φ, i, j, k, F)
     if !signbit(F)
-        return recon3(φ[ip(g, i - 2), j, k], φ[ip(g, i - 1), j, k], φ[ip(g, i), j, k],
+        c = g.lsqid[ip(g, i - 1), j, k]; c > 0 && g.recon === :lsq && return lsq_face(g, φ, ip(g, i - 1), j, k, 2)
+        return (c > 0 ? lsq_corr(g, φ, ip(g, i - 1), j, k, 2) : 0.0) + recon3(φ[ip(g, i - 2), j, k], φ[ip(g, i - 1), j, k], φ[ip(g, i), j, k],
                       vol(g, i - 2, j, k), vol(g, i - 1, j, k), vol(g, i, j, k), ax(g, i - 1, j, k), ax(g, i, j, k))
     else
-        return recon3(φ[ip(g, i + 1), j, k], φ[ip(g, i), j, k], φ[ip(g, i - 1), j, k],
+        c = g.lsqid[ip(g, i), j, k]; c > 0 && g.recon === :lsq && return lsq_face(g, φ, ip(g, i), j, k, 1)
+        return (c > 0 ? lsq_corr(g, φ, ip(g, i), j, k, 1) : 0.0) + recon3(φ[ip(g, i + 1), j, k], φ[ip(g, i), j, k], φ[ip(g, i - 1), j, k],
                       vol(g, i + 1, j, k), vol(g, i, j, k), vol(g, i - 1, j, k), ax(g, i + 1, j, k), ax(g, i, j, k))
     end
 end
 @inline function face_y(g, φ, i, j, k, F)
     if !signbit(F)
-        return recon3(φ[i, jp(g, j - 2), k], φ[i, jp(g, j - 1), k], φ[i, jp(g, j), k],
+        c = g.lsqid[i, jp(g, j - 1), k]; c > 0 && g.recon === :lsq && return lsq_face(g, φ, i, jp(g, j - 1), k, 4)
+        return (c > 0 ? lsq_corr(g, φ, i, jp(g, j - 1), k, 4) : 0.0) + recon3(φ[i, jp(g, j - 2), k], φ[i, jp(g, j - 1), k], φ[i, jp(g, j), k],
                       vol(g, i, j - 2, k), vol(g, i, j - 1, k), vol(g, i, j, k), ay(g, i, j - 1, k), ay(g, i, j, k))
     else
-        return recon3(φ[i, jp(g, j + 1), k], φ[i, jp(g, j), k], φ[i, jp(g, j - 1), k],
+        c = g.lsqid[i, jp(g, j), k]; c > 0 && g.recon === :lsq && return lsq_face(g, φ, i, jp(g, j), k, 3)
+        return (c > 0 ? lsq_corr(g, φ, i, jp(g, j), k, 3) : 0.0) + recon3(φ[i, jp(g, j + 1), k], φ[i, jp(g, j), k], φ[i, jp(g, j - 1), k],
                       vol(g, i, j + 1, k), vol(g, i, j, k), vol(g, i, j - 1, k), ay(g, i, j + 1, k), ay(g, i, j, k))
     end
 end
 """Face value at the η-face k (2 … nz); beyond the walls the upstream face is closed."""
 @inline function face_z(g, φ, i, j, k, F)
     if !signbit(F)
+        c = g.lsqid[i, j, k-1]; c > 0 && g.recon === :lsq && return lsq_face(g, φ, i, j, k - 1, 6)
         ku = max(k - 2, 1)
-        return recon3(φ[i, j, ku], φ[i, j, k-1], φ[i, j, k], vol(g, i, j, ku), vol(g, i, j, k - 1), vol(g, i, j, k),
+        return (c > 0 ? lsq_corr(g, φ, i, j, k - 1, 6) : 0.0) + recon3(φ[i, j, ku], φ[i, j, k-1], φ[i, j, k], vol(g, i, j, ku), vol(g, i, j, k - 1), vol(g, i, j, k),
                       azs(g, i, j, k - 1), az(g, i, j, k), az(g, i, j, k - 1) > 0)
     else
+        c = g.lsqid[i, j, k]; c > 0 && g.recon === :lsq && return lsq_face(g, φ, i, j, k, 5)
         ku = min(k + 1, g.nz)
-        return recon3(φ[i, j, ku], φ[i, j, k], φ[i, j, k-1], vol(g, i, j, ku), vol(g, i, j, k), vol(g, i, j, k - 1),
+        return (c > 0 ? lsq_corr(g, φ, i, j, k, 5) : 0.0) + recon3(φ[i, j, ku], φ[i, j, k], φ[i, j, k-1], vol(g, i, j, ku), vol(g, i, j, k), vol(g, i, j, k - 1),
                       azs(g, i, j, k + 1), az(g, i, j, k), az(g, i, j, k + 1) > 0)
     end
 end

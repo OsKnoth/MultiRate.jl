@@ -29,6 +29,7 @@ export Grid3D, Model3D, project3d, total3d, with_sponge, sponge!, sound_speed_ma
        vertical_velocity, hydrostatic_column, balanced_state, level, FV3D_PRESSURE_FORM, iρ, iU, iV, iW, iΘ, nunknowns
 
 include("grid.jl")
+include("lsq.jl")
 include("model.jl")
 include("sponge.jl")
 include("operator.jl")
