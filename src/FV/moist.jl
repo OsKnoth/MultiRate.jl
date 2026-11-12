@@ -10,7 +10,7 @@
 # θ_ρ the density potential temperature with the moist κ_M. No saturation adjustment: the
 # condensation rate is an explicit relaxation to phase equilibrium with the Fischer–Burmeister function
 #     S_c = -φ_FB(ρ_vs(T) - ρ_v, ρ_c) / τ,   φ_FB(a, b) = (a + b - √(a² + b²))/2,
-# τ from the grid spacing (default half the acoustic fast step), and the latent heating
+# τ from the grid spacing (default a quarter of the acoustic fast step, the shortest stable τ), and the latent heating
 # Q_θ = (∂Θ/∂ρ_c)_θe S_c (reversible: θ_e is unchanged by the phase change). `micro = :fast` (default):
 # S_c from the current fast state in every small step; `micro = :slow`: S_c from the stage value y.
 # Constants and e_s(T) as in CGDycore.
@@ -128,7 +128,7 @@ function theta_phase_factor(mg::MoistGas, ρ, T, ρv, ρc)
 end
 
 """
-    MoistExnerModel(base::FVModel; mgas = MoistGas(), pvar = :pi, micro = :fast, τfac = 0.5, cs = 350.0,
+    MoistExnerModel(base::FVModel; mgas = MoistGas(), pvar = :pi, micro = :fast, τfac = 0.25, cs = 350.0,
                     wτ = nothing, τ = nothing)
 
 Moist flat FV model with the Exner pressure (pvar = :pi) or the pressure (pvar = :p) as an
@@ -137,8 +137,8 @@ additional prognostic variable: state `[ρ; U; W; Θ; V; C; π]` (V = ρq_v, C =
 MIS step. Condensation by the explicit Fischer–Burmeister relaxation, evaluated in every fast step
 (micro = :fast, default), at the slow stages (:slow), or off (:none). Relaxation time: the given τ, or
 τ = min(Δx, Δz)/wτ, or by default on the fast scale τ = τfac Δτ_ac with the acoustic step
-Δτ_ac = 0.85·0.92 min(Δx, Δz)/cs of the fast loop (τfac = 0.5; the explicit source is stable down to
-τ ≈ Δτ/4 in the Bryan–Fritsch bubble). :slow needs τ ≳ Δt/2 (e.g. wτ = 50 m/s at 250 m). The base model provides grid, momentum advection and sponge; its gas constant g is the gravity.
+Δτ_ac = 0.85·0.92 min(Δx, Δz)/cs of the fast loop (τfac = 0.25, the shortest relaxation that is stable in the Bryan–Fritsch bubble;
+at τfac = 0.2 the bubble is already wrong). :slow needs τ ≳ Δt/2 (e.g. wτ = 50 m/s at 250 m). The base model provides grid, momentum advection and sponge; its gas constant g is the gravity.
 """
 struct MoistExnerModel{M<:FVModel}
     base::M
@@ -157,7 +157,7 @@ struct MoistExnerModel{M<:FVModel}
     θc::Matrix{Float64}            # qc_f at the z-faces for the column solve
 end
 function MoistExnerModel(base::FVModel; mgas::MoistGas = MoistGas(), pvar::Symbol = :pi,
-                         micro::Symbol = :fast, τfac::Real = 0.5, cs::Real = 350.0, wτ = nothing, τ = nothing)
+                         micro::Symbol = :fast, τfac::Real = 0.25, cs::Real = 350.0, wτ = nothing, τ = nothing)
     pvar in (:pi, :p) || error("pvar: :pi or :p")
     micro in (:slow, :fast, :none) || error("micro: :slow, :fast or :none")
     _flat_only(base); _no_background(base)

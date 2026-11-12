@@ -498,6 +498,16 @@ end
     @test frozen_rates(FrozenToy(false), :MISF53) > 2.8
     @test frozen_rates(FrozenToy(false), :MIS_FV53) > 2.8   # designed for the FV frozen split
     @test frozen_rates(FrozenToy(false), :MIS_DG53) > 2.8   # designed for the DG frozen split
+    # Wicker–Skamarock RK3: order 2; Lawson and ETD with the fast part frozen at qⁿ: ETD keeps its
+    # order with a nonlinear fast flow, Lawson drops to 2 (φ(X + ΔS) ≠ φ(X) + e^{τL} ΔS)
+    for add in (true, false)
+        @test 1.8 < frozen_rates(FrozenToy(add), :WSRK3) < 2.3
+        @test frozen_rates(FrozenToy(add), :EB4) > 3.8
+        @test 1.8 < frozen_rates(FrozenToy(add), :ETD2) < 2.3
+        @test 0.9 < frozen_rates(FrozenToy(add), :EB1) < 1.2
+        @test frozen_rates(FrozenToy(add), :LRK4) > 1.8
+        @test frozen_rates(FrozenToy(add), :LRK3) > 1.8
+    end
     # FV (flat): F(q, q) = N(q), parts, gravity wave against RK4
     gas = CM.Gas()
     ρr, Θr, θr = CM.stratified_reference(gas)
@@ -722,10 +732,24 @@ end
         mf = FV.MoistExnerModel(b; mgas = mg, micro = :fast)
         Ns, Nf = TS.rhs_nonlinear(mm, xsup), TS.rhs_nonlinear(mf, xsup)
         @test maximum(abs, Ns - Nf) < 1e-12 * maximum(abs, Ns)
-        @test mf.τ ≈ 0.5 * 0.85 * 0.92 * min(g.dx, g.dz) / 350                 # default: half the acoustic step
+        @test mf.τ ≈ 0.25 * 0.85 * 0.92 * min(g.dx, g.dz) / 350                # default: a quarter of the acoustic step
         Nn = TS.rhs_nonlinear(FV.MoistExnerModel(b; mgas = mg, micro = :none), xsup)
         Sc = Ns[FV.iC(mm, 2, 3)] - Nn[FV.iC(mm, 2, 3)]
         @test Sc > 0 && abs(Ns[FV.iV(mm, 2, 3)] - Nn[FV.iV(mm, 2, 3)] + Sc) < 1e-12 * Sc           # condensation, vapour sink
+        # frozen RK3 (Wicker–Skamarock), Lawson and ETD steps of the moist model (fast phase change),
+        # supersaturated start: against RK4, error decreasing with Δt, conserved mass and water
+        xr = TS.run_rk4(mf, xsup, 0.05, 1200)
+        tot(y, f) = sum(y[f(i, k)] for i in 1:12, k in 1:8)
+        for name in (:WSRK3, :LRK4, :EB4)
+            e = map((10.0, 5.0)) do Δt
+                y = TS.run_frozen(mf, xsup, Δt, round(Int, 60 / Δt); tab = TS.mis_tableau(name), nsub = ceil(Int, Δt / 0.5), fast = :hevi)
+                @test abs(tot(y, (i, k) -> FV.iρ(g, i, k)) / tot(xsup, (i, k) -> FV.iρ(g, i, k)) - 1) < 1e-13
+                @test abs((tot(y, (i, k) -> FV.iV(mm, i, k)) + tot(y, (i, k) -> FV.iC(mm, i, k))) /
+                          (tot(xsup, (i, k) -> FV.iV(mm, i, k)) + tot(xsup, (i, k) -> FV.iC(mm, i, k))) - 1) < 1e-13
+                norm(y[1:b.nq] - xr[1:b.nq]) / norm(xr[1:b.nq] - xsup[1:b.nq])
+            end
+            @test e[2] < e[1] && e[2] < 0.05
+        end
     finally
         FV.FV_PRESSURE_FORM[] = :gradp
     end

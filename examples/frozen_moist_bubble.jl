@@ -3,7 +3,7 @@
 # no saturation adjustment, condensation as an explicit Fischer–Burmeister relaxation with τ on the fast scale
 # and the latent heating Q_θ in the ρθ_ρ equation; π recomputed after every MIS step).
 #
-#     [PVAR=pi|p] [MICRO=fast|slow] [TAUFAC=f] [WTAU=w] julia --project=examples examples/frozen_moist_bubble.jl [T] [nx]
+#     [PVAR=pi|p] [MICRO=fast|slow] [TAUFAC=f] [WTAU=w] [METHODS=MIS54,WSRK3,LRK4,EB4] julia --project=examples examples/frozen_moist_bubble.jl [T] [nx]
 #
 # Saturated, neutral atmosphere θ_e = 320 K, r_t = 0.02, 20 km × 10 km, nx × nx/2 cells (default
 # 100 × 50, Δx = 200 m). The background is in discrete hydrostatic balance with the pressure form
@@ -11,9 +11,11 @@
 # 2 K cos²(π r/(2 r_c)), r_c = 2 km, at (10 km, 2 km) at fixed pressure and r_t, saturated (as
 # CGDycore `PerturbMoistProfile`). MIS54, HEVI; reference RK4 of the same operator. T = 1000 s.
 # PVAR = p: the pressure itself as the additional variable (∂p/∂(ρ, Θ, V, C), plain δp).
-# MICRO = fast (default): phase change in every small step, τ = half the acoustic step; slow: at the
+# MICRO = fast (default): phase change in every small step, τ = a quarter of the acoustic step (shortest stable); slow: at the
 # slow stages (then set WTAU, τ = min(Δx, Δz)/WTAU ≳ Δt/2).
-# Output: table, frozen_moist_bubble_<PVAR>_<MICRO>.png (θ_e′, w, q_c at T).
+# METHODS: comma separated tableaus of the frozen step (default MIS54): MIS (MIS54, WSRK3 = Wicker–Skamarock
+# RK3, ...), Lawson (LRK4, LRK3, LRK2) or ETD (EB4, ETD2, EB1); Lawson and ETD freeze the fast part at qⁿ.
+# Output: table, frozen_moist_bubble_<PVAR>_<MICRO>.png (θ_e′, w, q_c at T, first method).
 
 include(joinpath(@__DIR__, "euler2d_common.jl"))
 using LinearAlgebra: norm
@@ -30,7 +32,7 @@ FV.FV_PRESSURE_FORM[] = :gradp
 base = FV.FVModel(grid, gas, ρr, Θr)
 const PVAR = Symbol(get(ENV, "PVAR", "pi"))
 const MICRO = Symbol(get(ENV, "MICRO", "fast"))
-m = FV.MoistExnerModel(base; mgas = mg, pvar = PVAR, micro = MICRO, τfac = parse(Float64, get(ENV, "TAUFAC", "0.5")),
+m = FV.MoistExnerModel(base; mgas = mg, pvar = PVAR, micro = MICRO, τfac = parse(Float64, get(ENV, "TAUFAC", "0.25")),
                         wτ = haskey(ENV, "WTAU") ? parse(Float64, ENV["WTAU"]) : nothing)
 const θe0, rt0 = 320.0, 0.02
 
@@ -138,10 +140,11 @@ tr = @elapsed xr = TS.run_rk4(m, x0, T / nref, nref)
 @printf("RK4 reference (%d steps, %.0f s): θ_e′ ∈ [%.3f, %.3f] K, max|w| = %.2f m/s, max q_c = %.2e (τ = %.1f s, micro = %s)\n",
         nref, tr, extrema(θer)..., maximum(abs, w_field(xr)), maximum(qc_field(xr)), m.τ, MICRO)
 
-tab = TS.mis_tableau(:MIS54)
+const METHODS = Symbol.(split(get(ENV, "METHODS", "MIS54"), ","))
 dτ = 0.85 * 0.92 * grid.dx / c
 res5 = nothing
-for Δt in (2.0, 5.0, 10.0)
+for meth in METHODS, Δt in (2.0, 5.0, 10.0)
+    tab = TS.mis_tableau(meth)
     n = round(Int, T / Δt); nsub = ceil(Int, Δt / dτ)
     x = copy(x0)
     w = TS.FrozenWork(m, length(x), tab); tmp = (zeros(length(x)), zeros(length(x)), zeros(length(x)))
@@ -157,22 +160,22 @@ for Δt in (2.0, 5.0, 10.0)
         x .= NaN
     end
     if !all(isfinite, x)
-        @printf("Δt = %4.1f s nsub %2d: failed\n", Δt, nsub); continue
+        @printf("%-6s Δt = %4.1f s nsub %2d: failed\n", meth, Δt, nsub); continue
     end
     θe = θe_field(x)
-    @printf("Δt = %4.1f s nsub %2d: θ_e′ ∈ [%.3f, %.3f] K, max|w| %.2f, error θ_e′ max %.2e K, Δmass %.1e, ΔΘ %.1e, Δ(ρq_t) %.1e, max rel. |π - π_eos| %.1e, max |φ_FB|/ρ %.1e, %.0f s\n",
-            Δt, nsub, extrema(θe)..., maximum(abs, w_field(x)), maximum(abs, θe - θer),
+    @printf("%-6s Δt = %4.1f s nsub %2d: θ_e′ ∈ [%.3f, %.3f] K, max|w| %.2f, error θ_e′ max %.2e K, Δmass %.1e, ΔΘ %.1e, Δ(ρq_t) %.1e, max rel. |π - π_eos| %.1e, max |φ_FB|/ρ %.1e, %.0f s\n",
+            meth, Δt, nsub, extrema(θe)..., maximum(abs, w_field(x)), maximum(abs, θe - θer),
             tot(x, (i, k) -> FV.iρ(grid, i, k)) / tot(x0, (i, k) -> FV.iρ(grid, i, k)) - 1,
             tot(x, (i, k) -> FV.iΘ(grid, i, k)) / tot(x0, (i, k) -> FV.iΘ(grid, i, k)) - 1,
             (tot(x, (i, k) -> FV.iV(m, i, k)) + tot(x, (i, k) -> FV.iC(m, i, k))) / (tot(x0, (i, k) -> FV.iV(m, i, k)) + tot(x0, (i, k) -> FV.iC(m, i, k))) - 1, drift, maximum(fb_field(x)), t)
-    Δt == 5.0 && (global res5 = x)
+    Δt == 5.0 && res5 === nothing && (global res5 = x)
     flush(stdout)
 end
 
 if res5 !== nothing
     fig = Figure(size = (1500, 800))
     xk, zk = grid.xc ./ 1e3, grid.zc ./ 1e3
-    for (r, (lab, x)) in enumerate((("frozen MIS54, Δt = 5 s", res5), ("RK4 reference", xr)))
+    for (r, (lab, x)) in enumerate((("frozen $(METHODS[1]), Δt = 5 s", res5), ("RK4 reference", xr)))
         for (col, (name, f, cr, cm)) in enumerate((("θ_e′ [K]", θe_field(x), (-0.5, 2.5), :thermal),
                                                    ("w [m/s]", w_field(x), (-12, 12), :balance),
                                                    ("q_c [kg/kg]", qc_field(x), (0, 0.02), :blues)))

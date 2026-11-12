@@ -330,13 +330,16 @@ and decays.
 
 \paragraph{Relaxation on the fast scale (default).} \code{micro = :fast} with
 $\tau=\tau_{\rm fac}\,\Delta\tau_{\rm ac}$, $\Delta\tau_{\rm ac}=0.85\cdot0.92\min(\Delta x,\Delta z)/c_s$
-($c_s=350$\,m/s, the acoustic step of the fast loop). The explicit source is stable down to
-$\tau\approx\Delta\tau/4$ and fails at $\Delta\tau/8$ ($80\times40$, $\dt=5$ and 10\,s); the default
-$\tau_{\rm fac}=0.5$ keeps a factor two. Stable is not accurate: with $\tau<\Delta\tau$ the relaxation is
+($c_s=350$\,m/s, the acoustic step of the fast loop). The default is the shortest stable relaxation,
+$\tau_{\rm fac}=0.25$ ($\tau=0.14$\,s at 250\,m, $\approx0.28$ of the actual small step $\Delta t/n_{\rm sub}=0.5$\,s):
+$80\times40$, $\dt=2$, 5, 10\,s, $\pi$ and $p$, $\max|w|=26.8$--27.0\,m/s at 1000\,s. At $\tau_{\rm fac}=0.2$ the
+run does not blow up, but the bubble is wrong ($\max|w|=8.5$--11.4\,m/s at $\dt=2$ and 10\,s, 27.1\,m/s at
+5\,s); at $\tau_{\rm fac}=0.125$ it is unstable. Stable is not accurate: with $\tau<\Delta\tau$ the relaxation is
 not resolved by the small step. $80\times40$, $\pi$ (the $p$ form is the same within 10\,\%), maximum
 error of $\theta_e'$ against RK4 with the same $\tau$ (RK4 step $\le\tau/2$):
 \begin{center}\begin{tabular}{lccccc}\toprule
 $\tau_{\rm fac}$ ($\tau$) & RK4 $\max|w|$ & MIS $\max|w|$ ($\dt=5$\,s) & $\dt=2$\,s & 5\,s & 10\,s\\\midrule
+0.25 (0.14\,s) & -- & 26.9 & -- & -- & --\\
 0.5 (0.28\,s) & 22.2 & 25.7 & 2.2 & 1.8 & 2.2\\
 1 (0.55\,s) & 22.1 & 24.2 & 1.0 & 0.86 & 0.97\\
 2 (1.1\,s) & 22.0 & 23.1 & 0.52 & 0.41 & 0.50\\
@@ -347,6 +350,31 @@ $\tau=5$\,s), the MIS error is the unresolved relaxation and does not decrease w
 the small step at $\tau_{\rm fac}=0.5$ ($\dt=5$\,s, nsub $10,20,40,80$) gives $\max|w|=25.7$, 23.5, 22.5,
 22.3\,m/s: convergence to RK4. Recommended: $\tau\gtrsim2\Delta\tau$ ($\tau_{\rm fac}=2$--4), i.e.\ the
 shortest relaxation the fast step still resolves.
+
+\paragraph{RK3, Lawson and ETD.} Besides MIS the frozen step takes the Wicker--Skamarock RK3
+(\code{WSRK3}, MIS with $\beta=\mathrm{diag}(1/3,1/2,1)$), Lawson (\code{LRK4}, \code{LRK3}) and ETD
+(\code{EB4}, \code{ETD2}) tableaus. Lawson and ETD freeze the fast part at the start of the step,
+$F_f(C(q^n),\cdot)$, which is nonlinear in $Z$ (Fischer--Burmeister source with \code{micro = :fast}); the
+slow forcing of stage $j$ is the remainder $\tilde S(Y_j)=N(Y_j)-F_f(C(q^n),Y_j)$. Lawson propagates the
+increments with the nonlinear fast flow, ETD integrates each stage from $q^n$ with the polynomial forcing
+(evaluated at the substep midpoint). The substeps are $\lceil c\,n_{\rm sub}\rceil$, so the fast step never
+exceeds $\dt/n_{\rm sub}$ (with rounding, the half step of Lawson at $n_{\rm sub}=5$ had $1.25\Delta\tau$
+and the relaxation at its limit broke down). Orders on the toy problem of the test suite (exact fast
+stages): WSRK3 2; EB4 4, also with the fast coefficient frozen at $q^n$; ETD2 2; LRK4 and LRK3 only 2,
+because $\varphi(X+\Delta S)\neq\varphi(X)+e^{\tau L}\Delta S$ for a nonlinear flow.
+
+Bubble, $80\times40$, $\pi$, 1000\,s, maximum error of $\theta_e'$ [K] against RK4 at $\dt=2$, 5, 10\,s:
+\begin{center}\small\setlength{\tabcolsep}{3pt}\begin{tabular}{lcccccc}\toprule
+& MIS54 & WSRK3 & LRK4 & LRK3 & EB4 & ETD2\\\midrule
+$\tau_{\rm fac}=0.25$ & 4.1/3.6/4.0 & 3.7/3.7/3.9 & 3.7/3.7/2.6 & 3.8/3.9/3.6 & 3.7/3.7/4.0 & 3.7/3.7/4.0\\
+$\tau_{\rm fac}=4$ & 0.31/0.27/0.32 & 0.27/0.28/0.29 & 0.29/0.39/2.3 & 0.28/1.6/2.6 & 0.27/0.27/0.29 & 0.27/0.26/0.37\\\bottomrule
+\end{tabular}\end{center}
+At the default $\tau_{\rm fac}=0.25$ all schemes give the same $\max|w|\approx27$\,m/s (RK4 22.2): the error
+is the unresolved relaxation in the fast step and does not depend on the slow scheme. With a resolved
+relaxation ($\tau_{\rm fac}=4$, RK4 21.7\,m/s) MIS54, WSRK3, EB4 and ETD2 agree within 0.1\,K
+($\max|w|$ 22.3--22.5\,m/s); Lawson degrades with $\dt$ (LRK3 $\max|w|=38.9$\,m/s at $\dt=10$\,s). The $p$
+form is the same within 10\,\%. Mass and total water are conserved to round-off by all schemes. Cost per
+step relative to MIS54 (fast time $\sum d_i$ resp.\ $\sum c_i$): WSRK3 0.7--0.8, ETD2 0.9, EB4 and LRK4 1.3.
 
 \section{Open points}
 \begin{itemize}
