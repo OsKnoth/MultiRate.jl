@@ -29,10 +29,18 @@ _no_background(m) = (all(iszero, m.pbal) && all(iszero, m.ρbal)) ||
 """dp/dΘ at a face: mean of the cell values γ p/Θ."""
 @inline dpdΘ_face(gas, Θl, Θr) = 0.5 * gas.γ * (pressure(gas, Θl) / Θl + pressure(gas, Θr) / Θr)
 
+"""Terrain following with `FV_PRESSURE_FORM = :product`: N(q) = F(q, q) of the frozen split (the
+product form has no separate full operator on the Gal-Chen grid)."""
+function rhs_frozen_form!(out, m::FVModel, q)
+    C = zeros(frozen_ncoef(m)); S = zeros(m.nq)
+    frozen_data!(C, S, m, q)
+    return frozen_fast!(out, m, C, q, :all, S)
+end
+
 """In-place N(q); allocation-free (uses the model's FVCache)."""
 function rhs_nonlinear!(out, m::FVModel, q::AbstractVector)
     m.grid isa CutCellFVGrid && return rhs_cutcell!(out,m,q)
-    m.grid.terrain && return rhs_terrain!(out, m, q)
+    m.grid.terrain && return FV_PRESSURE_FORM[] === :product ? rhs_frozen_form!(out, m, q) : rhs_terrain!(out, m, q)
     g = m.grid
     nx = g.nx
     nz = g.nz

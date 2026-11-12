@@ -504,6 +504,7 @@ end
         @test 1.8 < frozen_rates(FrozenToy(add), :WSRK3) < 2.3
         @test frozen_rates(FrozenToy(add), :EB4) > 3.8
         @test 1.8 < frozen_rates(FrozenToy(add), :ETD2) < 2.3
+        @test frozen_rates(FrozenToy(add), :ETD3) > 2.8
         @test 0.9 < frozen_rates(FrozenToy(add), :EB1) < 1.2
         @test frozen_rates(FrozenToy(add), :LRK4) > 1.8
         @test frozen_rates(FrozenToy(add), :LRK3) > 1.8
@@ -569,7 +570,31 @@ end
     finally
         FV.FV_PRESSURE_FORM[] = :gradp
     end
-    @test_throws ErrorException TS.frozen_ncoef(FV.FVModel(FV.FVGrid(8, 4, 40e3, 10e3; zs = x -> 100 * exp(-(x - 2e4)^2 / 1e8)), gas, ρr, Θr))
+    # terrain following: :gradp frozen with p(Θ_z) is the Gal-Chen operator rhs_terrain!; :product
+    # parts and exact column solve
+    gt = FV.FVGrid(16, 10, 40e3, 10e3; zs = x -> 800 / (1 + ((x - 20e3) / 4e3)^2))
+    bt = FV.FVModel(gt, gas, ρr, Θr)
+    qt = CM.project2d(bt, (x, z) -> (ρ = ρr(z) * (1 + 1e-3 * sin(2π * x / 40e3)); (ρ, 10ρ + sin(x / 5e3), 0.3 * sin(π * z / 10e3) * cos(x / 7e3), Θr(z) * (1 + 1e-3 * cos(x / 6e3)))))
+    Ct = zeros(TS.frozen_ncoef(bt)); St = zeros(bt.nq)
+    TS.frozen_data!(Ct, St, bt, qt)
+    Nt = TS.rhs_nonlinear(bt, qt)
+    @test maximum(abs, TS.frozen_fast!(zeros(bt.nq), bt, Ct, qt, :all, St) - Nt) < 1e-10 * maximum(abs, Nt)
+    try
+        FV.FV_PRESSURE_FORM[] = :product
+        TS.frozen_data!(Ct, St, bt, qt)
+        ot(p, z = qt) = TS.frozen_fast!(zeros(bt.nq), bt, Ct, z, p, St)
+        Nt = ot(:all)
+        @test maximum(abs, ot(:hthermo) + ot(:hmomentum) + ot(:vertical) - Nt) < 1e-13 * maximum(abs, Nt)
+        vt = 1e-3 .* sin.(1:bt.nq)
+        @test maximum(abs, ot(:all, qt .+ vt) + ot(:all, qt .- vt) - 2Nt) < 1e-11 * maximum(abs, Nt)
+        st = FV.frozen_stage_begin!(bt, Ct, qt)
+        Rt = 1e-3 .* sin.(1:bt.nq); Yt = zeros(bt.nq)
+        FV._frozen_column_solve!(Yt, st, bt, 3.0, Rt)
+        Gt(x) = TS.frozen_fast!(zeros(bt.nq), bt, Ct, x, :vertical, St)
+        @test maximum(abs.(Yt .- 3.0 .* (Gt(qt .+ Yt) .- Gt(qt)) .- Rt)) < 1e-10 * maximum(abs, Rt)
+    finally
+        FV.FV_PRESSURE_FORM[] = :gradp
+    end
 end
 
 @testset "FV2D: Exner pressure as an additional equation (frozen split)" begin

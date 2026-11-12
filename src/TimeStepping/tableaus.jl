@@ -86,7 +86,7 @@ nstages(t::ETDTableau) = length(t.c)
 fast_time(t::ETDTableau) = sum(t.c)
 
 """ETD tableaus (φ-coefficients as in the MATLAB `MethodETD.m`): :EB1 exponential Euler, :ETD2
-(Cox–Matthews ETD2RK), :EB4 (Krogstad's ETDRK4, c = 1/2, 1/2, 1, 1)."""
+(Cox–Matthews ETD2RK), :ETD3 (Cox–Matthews ETDRK3, c = 1/2, 1, 1), :EB4 (Krogstad's ETDRK4, c = 1/2, 1/2, 1, 1)."""
 function etd_tableau(name::Symbol)
     if name == :EB1
         a = zeros(1, 1, 1); a[1, 1, 1] = 1
@@ -96,6 +96,13 @@ function etd_tableau(name::Symbol)
         a[1, 1, 1] = 1                                    # Y2 = e^{hL}qⁿ + h φ1 S1
         a[2, 1, 1] = 1; a[2, 1, 2] = -1; a[2, 2, 2] = 1   # qⁿ⁺¹: h(φ1 - φ2) S1 + h φ2 S2
         return ETDTableau(name, [1.0, 1.0], a)
+    elseif name == :ETD3
+        # Cox–Matthews ETDRK3: c = 1/2, 1, 1
+        a = zeros(3, 3, 3)
+        a[1, 1, 1] = 0.5                                  # a = e^{hL/2}u + h/2 φ1(hL/2) N(u)
+        a[2, 1, 1] = -1; a[2, 2, 1] = 2                   # b = e^{hL}u + h φ1 (2N(a) - N(u))
+        a[3, 1, :] = [1, -3, 4]; a[3, 2, :] = [0, 4, -8]; a[3, 3, :] = [0, -1, 4]
+        return ETDTableau(name, [0.5, 1.0, 1.0], a)
     elseif name == :EB4
         a = zeros(4, 4, 3)
         a[1, 1, 1] = 0.5
@@ -104,7 +111,7 @@ function etd_tableau(name::Symbol)
         a[4, 1, :] = [1, -3, 4]; a[4, 2, :] = [0, 2, -4]; a[4, 3, :] = [0, 2, -4]; a[4, 4, :] = [0, -1, 4]
         return ETDTableau(name, [0.5, 0.5, 1.0, 1.0], a)
     end
-    error("unknown ETD tableau $name (:EB1, :ETD2, :EB4)")
+    error("unknown ETD tableau $name (:EB1, :ETD2, :ETD3, :EB4)")
 end
 
 """Lawson tableaus: :LRK4 (classical RK4), :LRK3 (Kutta's RK3, c = 0, 1/2, 1), :LRK2 (midpoint)."""
@@ -151,12 +158,12 @@ MIS4a with the authors' corrected β₅₁), :WSRK3 (Wicker–Skamarock RK3: β 
 :MIS_KW3 (Knoth–Wolke RK3 in MIS form, c = 0, 1/3, 3/4), :MIS54 (5 stages, Bauer & Knoth,
 J. Comput. Appl. Math. 387 (2021), Table 2), :MISF53 (MIS54 projected onto the frozen-order-3
 conditions, MethodDesign/), :MIS_FV42, :MIS_FV53 (designed for the frozen FV split), :MIS_DG53 (for the frozen DG split). :LRK4, :LRK3, :LRK2 give Lawson tableaus
-(`lawson_tableau`), :EB1, :ETD2, :EB4 ETD tableaus (`etd_tableau`), :EPIRKW3a, :EPIRKW3b,
+(`lawson_tableau`), :EB1, :ETD2, :ETD3, :EB4 ETD tableaus (`etd_tableau`), :EPIRKW3a, :EPIRKW3b,
 :EPIRK4 (`epirk_tableau`), :EAB1 … :EAB4 exponential Adams–Bashforth (`eab_tableau`), so the drivers can select
 them by name."""
 function mis_tableau(name::Symbol)
     name in (:LRK4, :LRK3, :LRK2) && return lawson_tableau(name)
-    name in (:EB1, :ETD2, :EB4) && return etd_tableau(name)
+    name in (:EB1, :ETD2, :ETD3, :EB4) && return etd_tableau(name)
     name in (:EPIRKW3a, :EPIRKW3b, :EPIRK4) && return epirk_tableau(name)
     name in (:EAB1, :EAB2, :EAB3, :EAB4) && return eab_tableau(name)
     name == :WSRK3 && return MISTableau(name, zeros(3, 3), [1/3 0 0; 0 1/2 0; 0 0 1.0], zeros(3, 3))

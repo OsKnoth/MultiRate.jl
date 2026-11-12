@@ -16,8 +16,8 @@
 # (p_r - p_l)/(Θ_r - Θ_l) of the :gradp scheme is replaced by the :product scheme, where the
 # derivative is defined also for equal neighbours.)
 
-_flat_only(m::FVModel) = (m.grid isa CutCellFVGrid || m.grid.terrain) &&
-    error("frozen split: flat FV grids only (no terrain, no cut cells)")
+_flat_only(m::FVModel) = m.grid isa CutCellFVGrid &&
+    error("frozen split: flat or terrain-following FV grids (no cut cells)")
 
 """Coefficient vector C = [θx (nx nz); θz (nx (nz+1)); P1 (nx nz); P2 (nx (nz+1))]: P1, P2 = dp/dΘ
 at the x- and z-faces (:product, otherwise unused)."""
@@ -36,7 +36,7 @@ pressure_form() = FV_PRESSURE_FORM[] === :product ? Product() :
                   FV_PRESSURE_FORM[] === :exner ? error("frozen split with :exner: use ExnerModel (exner.jl)") : GradP()
 
 
-"""C(y) and the slow part S(y) (momentum advection) of the flat FV operator."""
+"""C(y) and the slow part S(y) (momentum advection) of the flat or terrain-following FV operator."""
 function frozen_data!(C, S, m::FVModel, q)
     _flat_only(m)
     g = m.grid
@@ -107,43 +107,60 @@ z-face (i, k - 1/2)."""
 # Each block adds its terms to `out` (rows named in the comment) and nothing else. The momentum
 # blocks need `prepare_pressure!` (once per call) before them.
 
-"""Thermodynamic part, horizontal (ρ, Θ rows): -∂x U, -∂x(θx(y) U)."""
+"""Thermodynamic part, horizontal (ρ, Θ rows): -(1/J)[δx(Jx U), δx(θx(y) Jx U)] and, terrain
+following, the horizontal part -z_x Ū of the η-flux Ω (as exner.jl)."""
 function thermo_h!(out, m::FVModel, C, z)
     g = m.grid
     @inbounds for k in 1:g.nz, i in 1:g.nx
-        Ul, Ur = z[iU(g, i, k)], z[iU(g, i + 1, k)]
-        out[iρ(g, i, k)] -= (Ur - Ul) / g.dx
-        out[iΘ(g, i, k)] -= (_θx(C, g, ip(g, i + 1), k) * Ur - _θx(C, g, i, k) * Ul) / g.dx
+        Ul, Ur = g.Jx[ip(g, i)] * z[iU(g, i, k)], g.Jx[ip(g, i + 1)] * z[iU(g, i + 1, k)]
+        s = 1 / g.Jc[i]
+        out[iρ(g, i, k)] -= s * (Ur - Ul) / g.dx
+        out[iΘ(g, i, k)] -= s * (_θx(C, g, ip(g, i + 1), k) * Ur - _θx(C, g, i, k) * Ul) / g.dx
+        if g.terrain
+            Hb, Ht = Ωh(g, z, i, k), Ωh(g, z, i, k + 1)
+            out[iρ(g, i, k)] -= s * (Ht - Hb) / g.dz
+            out[iΘ(g, i, k)] -= s * (_θz(C, g, i, k + 1) * Ht - _θz(C, g, i, k) * Hb) / g.dz
+        end
     end
     return out
 end
 
-"""Thermodynamic part, vertical (ρ, Θ rows): -∂z W, -∂z(θz(y) W)."""
+"""Thermodynamic part, vertical (ρ, Θ rows): the W part of Ω, -δη W/(J Δη), -δη(θz(y) W)/(J Δη)."""
 function thermo_v!(out, m::FVModel, C, z)
     g = m.grid
     @inbounds for k in 1:g.nz, i in 1:g.nx
         Wb, Wt = Wface(g, z, i, k), Wface(g, z, i, k + 1)
-        out[iρ(g, i, k)] -= (Wt - Wb) / g.dz
-        out[iΘ(g, i, k)] -= (_θz(C, g, i, k + 1) * Wt - _θz(C, g, i, k) * Wb) / g.dz
+        h = dzc(g, i)
+        out[iρ(g, i, k)] -= (Wt - Wb) / h
+        out[iΘ(g, i, k)] -= (_θz(C, g, i, k + 1) * Wt - _θz(C, g, i, k) * Wb) / h
     end
     return out
 end
 
-"""Momentum part, horizontal (U rows): -∂x p."""
+"""Momentum part, horizontal (U rows): -∂x p|_z (:gradp, metric form of p(Θ_z)) or
+-(dp/dΘ)_f(y) ∂x Θ|_z (:product); flat grids: -δx p/Δx."""
 function momentum_h!(out, m::FVModel, C, z, pf)
     g = m.grid
-    @inbounds for k in 1:g.nz, i in 1:g.nx
-        out[iU(g, i, k)] -= dp_x(pf, m, C, z, i, k) / g.dx
+    if g.terrain
+        @inbounds for k in 1:g.nz, i in 1:g.nx
+            out[iU(g, i, k)] -= dpx_terrain(pf, m, C, z, i, k)
+        end
+    else
+        @inbounds for k in 1:g.nz, i in 1:g.nx
+            out[iU(g, i, k)] -= dp_x(pf, m, C, z, i, k) / g.dx
+        end
     end
     return out
 end
+@inline dpx_terrain(::GradP, m, C, z, i, k) = gradx_z((ii, kk) -> m.cache.pp[ii, kk], m.grid, i, k)
+@inline dpx_terrain(::Product, m, C, z, i, k) = (g = m.grid; _P1(C, g, i, k) * gradx_z((ii, kk) -> z[iΘ(g, ii, kk)], g, i, k))
 
-"""Momentum part, vertical (W rows): -∂z p - g ρ (ρ the mean of the two cells)."""
+"""Momentum part, vertical (W rows): -δη p/(J Δη) - g ρ (ρ the mean of the two cells)."""
 function momentum_v!(out, m::FVModel, C, z, pf)
     g = m.grid
     grav = m.gas.g
     @inbounds for k in 2:g.nz, i in 1:g.nx
-        out[iW(g, i, k)] -= dp_z(pf, m, C, z, i, k) / g.dz + grav * 0.5 * (z[iρ(g, i, k - 1)] + z[iρ(g, i, k)])
+        out[iW(g, i, k)] -= dp_z(pf, m, C, z, i, k) / dzc(g, i) + grav * 0.5 * (z[iρ(g, i, k - 1)] + z[iρ(g, i, k)])
     end
     return out
 end
@@ -258,11 +275,12 @@ end
 function _frozen_factor(s::FrozenColumn, m::FVModel, c)
     get!(s.factors, Float64(c)) do
         g = m.grid
-        nz, dz = g.nz, g.dz
-        r = (c / dz)^2
-        gg = c^2 * m.gas.g / (2dz)
+        nz = g.nz
         sub = zeros(nz + 1, g.nx); cp = zeros(nz + 1, g.nx); iden = zeros(nz + 1, g.nx)
         @inbounds for i in 1:g.nx, k in 2:nz
+            dz = dzc(g, i)                       # J Δη of the column
+            r = (c / dz)^2
+            gg = c^2 * m.gas.g / (2dz)
             a = k > 2 ? -r * s.β[i, k] * s.θz[i, k-1] + gg : 0.0
             d = 1 + r * s.θz[i, k] * (s.α[i, k] + s.β[i, k])
             b = k < nz ? -r * s.α[i, k] * s.θz[i, k+1] - gg : 0.0
@@ -276,10 +294,11 @@ end
 """Y = (I - c J_v)⁻¹ R for the frozen column (U rows: identity)."""
 function _frozen_column_solve!(Y, s::FrozenColumn, m::FVModel, c, R)
     g = m.grid
-    nz, dz, grav = g.nz, g.dz, m.gas.g
+    nz, grav = g.nz, m.gas.g
     sub, cp, iden = _frozen_factor(s, m, c)
     W = s.W
     @inbounds for i in 1:g.nx
+        dz = dzc(g, i)
         for k in 2:nz
             rhs = R[iW(g, i, k)] - (c / dz) * (s.α[i, k] * R[iΘ(g, i, k)] - s.β[i, k] * R[iΘ(g, i, k - 1)]) -
                   (c * grav / 2) * (R[iρ(g, i, k - 1)] + R[iρ(g, i, k)])
