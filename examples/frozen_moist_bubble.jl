@@ -15,7 +15,7 @@
 # slow stages (then set WTAU, τ = min(Δx, Δz)/WTAU ≳ Δt/2).
 # METHODS: comma separated tableaus of the frozen step (default MIS54): MIS (MIS54, WSRK3 = Wicker–Skamarock
 # RK3, ...), Lawson (LRK4, LRK3, LRK2) or ETD (EB4, ETD2, EB1); Lawson and ETD freeze the fast part at qⁿ.
-# Output: table, frozen_moist_bubble_<PVAR>_<MICRO>.png (θ_e′, w, q_c at T, first method).
+# Output: table, frozen_moist_bubble_<PVAR>_<MICRO>[_tf<TAUFAC>].png (θ_e′, w, q_c′ at T, first method).
 
 include(joinpath(@__DIR__, "euler2d_common.jl"))
 using LinearAlgebra: norm
@@ -174,17 +174,20 @@ for meth in METHODS, Δt in DTS
 end
 
 if res5 !== nothing
+    qcp(x) = (qx = qc_field(x); 1e3 .* (qx .- sum(qx; dims = 1) ./ size(qx, 1)))
+    qcmax = max(1e-3, maximum(abs, qcp(res5)), maximum(abs, qcp(xr)))
     fig = Figure(size = (1500, 800))
     xk, zk = grid.xc ./ 1e3, grid.zc ./ 1e3
     for (r, (lab, x)) in enumerate((("frozen $(METHODS[1]), Δt = 5 s", res5), ("RK4 reference", xr)))
         for (col, (name, f, cr, cm)) in enumerate((("θ_e′ [K]", θe_field(x), (-0.5, 2.5), :thermal),
                                                    ("w [m/s]", w_field(x), (-12, 12), :balance),
-                                                   ("q_c [kg/kg]", qc_field(x), (0, 0.02), :blues)))
+                                                   ("q_c′ [g/kg] (minus horizontal mean)", qcp(x), (-1, 1) .* qcmax, :balance)))
             ax = Axis(fig[r, 2col-1]; title = "$lab: $name", xlabel = "x [km]", ylabel = "z [km]", aspect = DataAspect(), limits = (4, 16, 0, 10))
             hm = heatmap!(ax, xk, col == 2 ? grid.zf[2:nz] ./ 1e3 : zk, f; colormap = cm, colorrange = cr)
             Colorbar(fig[r, 2col], hm)
         end
     end
-    save("frozen_moist_bubble_$(PVAR)_$(MICRO).png", fig)
-    println("wrote frozen_moist_bubble_$(PVAR)_$(MICRO).png")
+    fn = "frozen_moist_bubble_$(PVAR)_$(MICRO)$(haskey(ENV, "TAUFAC") ? "_tf" * ENV["TAUFAC"] : "").png"
+    save(fn, fig)
+    println("wrote ", fn)
 end

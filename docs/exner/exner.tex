@@ -399,6 +399,13 @@ resonance with the slow stages makes WSRK3 unstable, while the resolved slow mod
 untouched. It depends on $\omega=ck\dt$ only, not on $n_{\rm sub}$: unlike the extrapolation it does not
 vanish with many small steps.
 \end{itemize}
+\begin{figure}[htbp]\centering
+\includegraphics[width=\textwidth]{stab_g0.png}
+\caption{Amplification $|R(\mathrm i\omega,0)|$ of a pure acoustic mode per large step (exact fast stages,
+no extrapolation, Knoth--Wensch test). WSRK3, MIS\_KW3, Lawson and ETD reproduce the fast flow ($|R|=1$,
+dashed); MIS methods with $\alpha,\gamma\neq0$ damp the modes with $ck\dt=O(1)$, $1-|R|\sim\omega^4$
+($\omega^6$ for MIS54).}\label{fig:g0}
+\end{figure}
 Largest stable $C_{\rm adv}$ (resolution 0.05), Knoth--Wensch C-grid, exact fast stages, no
 extrapolation, for $C_{\rm sound}=0,1,2,4,8,12,16$ (0.00: unstable at the smallest $C_{\rm adv}$):
 \begin{center}\small\setlength{\tabcolsep}{4pt}\begin{tabular}{lccccccc}\toprule
@@ -417,6 +424,12 @@ LRK3 / LRK4 & 1.60 & 1.60 & 1.60 & 1.60 & 1.60 & 1.60 & 1.60/1.70\\
 ETD2 & 0.85 & 0.80 & 0.90 & 0.00 & 0.05 & 0.05 & 0.10\\
 EB4 & 1.70 & 1.50 & 1.50 & 1.35 & 0.00 & 0.00 & 0.00\\\bottomrule
 \end{tabular}\end{center}
+\begin{figure}[htbp]\centering
+\includegraphics[width=\textwidth]{stab_kw.png}
+\caption{Largest stable advective Courant number against the acoustic one (table above): WSRK3 and EB4
+lose stability at $C_{\rm sound}\ge4$ and 8 (unstable already at the smallest $C_{\rm adv}$), the damping MIS
+methods stay stable up to $C_{\rm adv}\approx2$--3.}\label{fig:kw}
+\end{figure}
 The real FV frozen split (column Fourier blocks with gravity and the vertical discretization,
 \code{MethodDesign/app\_stability.jl}, exact fast stages, $\Delta x=2.5$\,km, $U=10/20/40$\,m/s) is more
 restrictive, because there the fast and slow parts do not commute: largest stable $C_{\rm adv}$ WSRK3 and
@@ -448,6 +461,16 @@ within 4\,\%, the $\theta_e'$ error is still large (the unresolved relaxation); 
 schemes agree to 0.2\,K. Mass and total water conserved to round-off. \emph{The tables below are from the
 first version (heating at fixed $\theta_e$, 13--38\,\% too strong); the comparisons between schemes and
 between $\tau$ remain qualitatively valid.}
+\begin{figure}[htbp]\centering
+\includegraphics[width=\textwidth]{moist_bubble_tf025.png}\\[2mm]
+\includegraphics[width=\textwidth]{moist_bubble_tf4.png}
+\caption{Moist bubble at 1000\,s, $80\times40$, $\pi$, \code{micro = :fast}, Bryan--Fritsch heating;
+$\theta_e'$, $w$ and $q_c'$ (deviation from the horizontal mean). Top pair: default $\tau_{\rm fac}=0.25$
+($\tau=0.14$\,s), MIS54 ($\dt=5$\,s) against RK4: the rotors are smeared, the error (2.1\,K) is the
+relaxation not resolved by the small step. Bottom pair: $\tau_{\rm fac}=4$ ($\tau=2.2$\,s): MIS54 and RK4
+agree (0.14\,K). In the saturated environment the bubble carries less condensate than its surroundings ($q_c^\prime<0$); at $\tau_{\rm fac}=0.25$ also the $q_c^\prime$ rotors are smeared.}\label{fig:moistbubble}
+\end{figure}
+
 
 Bryan--Fritsch moist bubble, $80\times40$ cells ($\Delta x=\Delta z=250$\,m), $T=1000$\,s, MIS54 with HEVI,
 Fischer--Burmeister relaxation with $w_\tau=50$\,m/s ($\tau=5$\,s); reference RK4 of the same operator
@@ -572,6 +595,15 @@ hardly changed against the dry run. The $p$ and $\pi$ variants agree ($\max|w|$ 
 $\max q_c$ 0.147 and 0.149\,g/kg, the same cloud). With $RH_0=0.95$ the lower troposphere is almost
 saturated, condensation reduces the effective stability over a large region, the wave is weakened to
 $\max|w|=0.3$\,m/s and a sharp front of ascent at 25\,km upstream bounds the cloud.
+\begin{figure}[htbp]\centering
+\includegraphics[width=\textwidth]{moist_hill_dry.png}\\[1mm]
+\includegraphics[width=\textwidth]{moist_hill_rh80.png}\\[1mm]
+\includegraphics[width=\textwidth]{moist_hill_rh95.png}
+\caption{Mountain wave after 6\,h, $w$, $q_c$, RH ($\pi$, MIS54). Top: dry. Middle: $RH_0=0.80$, wave cloud
+only (no cap cloud). Bottom: $RH_0=0.95$, nearly saturated lower troposphere: large low cloud, wave
+weakened to $\max|w|=0.3$\,m/s (colour scale), front of ascent at 25\,km upstream. $RH_0=0.85$: figure above.}\label{fig:hills}
+\end{figure}
+
 
 \section{Open points}
 \begin{itemize}
