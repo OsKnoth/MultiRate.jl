@@ -12,7 +12,7 @@
 # RH0 = 0: dry run. Periodic channel 40 a, model top 12 km, Rayleigh damping of W above 8 km,
 # nx × 48 cells (default nx = 200, Δx = 2 km, Δη = 250 m). Each column is in discrete hydrostatic
 # balance with its own layer thickness J Δη; the flow starts impulsively. T default 21.6 a/U.
-# Output: table (every hour), frozen_moist_hill_<PVAR>.png (w, q_c, RH at T).
+# Output: table (every hour), frozen_moist_hill_<PVAR>_rh<RH0 %>.png (or _dry; w, q_c, RH at T).
 
 include(joinpath(@__DIR__, "euler2d_common.jl"))
 
@@ -155,6 +155,6 @@ for (col, (name, f, cr, cm)) in enumerate((("w [m/s]", wc, (-1, 1) .* max(1e-3, 
     lines!(ax, X[sel, 1], grid.Zf[sel, 1] ./ 1e3; color = :black)
     Colorbar(fig[1, 2col], sf)
 end
-fname = "frozen_moist_hill_$(PVAR)$(RH0 > 0 ? "" : "_dry").png"
+fname = "frozen_moist_hill_$(PVAR)_$(RH0 > 0 ? "rh$(round(Int, 100RH0))" : "dry").png"
 save(fname, fig)
 println("wrote $fname")

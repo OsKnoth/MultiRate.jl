@@ -1,6 +1,6 @@
 \documentclass[11pt,a4paper]{article}
 \usepackage[margin=2.4cm]{geometry}
-\usepackage{amsmath,amssymb,booktabs,hyperref}
+\usepackage{amsmath,amssymb,booktabs,hyperref,graphicx}
 \newcommand{\code}[1]{\texttt{#1}}
 \newcommand{\dt}{\Delta t}
 \title{The Exner pressure as an additional prognostic variable\\in the frozen split (dry and moist)}
@@ -524,6 +524,54 @@ relaxation ($\tau_{\rm fac}=4$, RK4 21.7\,m/s) MIS54, WSRK3, EB4 and ETD2 agree 
 ($\max|w|$ 22.3--22.5\,m/s); Lawson degrades with $\dt$ (LRK3 $\max|w|=38.9$\,m/s at $\dt=10$\,s). The $p$
 form is the same within 10\,\%. Mass and total water are conserved to round-off by all schemes. Cost per
 step relative to MIS54 (fast time $\sum d_i$ resp.\ $\sum c_i$): WSRK3 0.7--0.8, ETD2 0.9, EB4 and LRK4 1.3.
+
+\section{Terrain-following grid and a moist mountain wave}\label{sec:hill}
+The dry and the moist Exner/$p$ split work on the Gal-Chen grid $z=z_s(x)+\eta J$, $J=1-z_s/H$, as in
+FV3D: x-fluxes $J_xU$, $\eta$-flux $\Omega=W-z_x\bar U$ (zero at the ground and the top), divergence
+divided by $J$; the $W$ part of $\Omega$ is in the implicit HEVI column, the $-z_x\bar U$ part in the
+explicit horizontal half steps (same face coefficients $\theta_f$, $q_{v,f}$, $q_{c,f}$, $\kappa_f$). Pressure
+gradient
+\[
+-\partial_x\pi|_z=-\frac1{J_x}\Big[\delta_x(J\pi)-\delta_\eta(z_x\pi_\sigma)\Big],\qquad
+\partial_z\pi=\frac{\delta_\eta\pi}{J\Delta\eta},
+\]
+$\pi_\sigma$ the mean at the $\eta$-faces, quadratically extrapolated at the ground and the top; the
+column solver uses $J\Delta\eta$. On a flat grid everything reduces to the Cartesian code. Tests: with
+\code{pvar = :p} and $p=P(\Theta)$ the frozen operator equals the Gal-Chen operator of the base model
+(\code{rhs\_terrain!}) to $10^{-10}$; dry limit, parts, exact column solve, conservation of $\sum J\rho$ and
+of the water. The default relaxation time is now taken from the HEVI small step,
+$\tau=\tau_{\rm fac}\,0.85\cdot0.92\,\Delta x/c_s$ (the vertical is implicit; with $\Delta x\gg\Delta z$ the former
+$\min(\Delta x,\Delta z)$ was far below the stable limit); for $\Delta x=\Delta z$ nothing changes.
+
+\paragraph{Moist hydrostatic mountain wave} (\code{examples/frozen\_moist\_hill.jl}). Agnesi hill
+$h_0=400$\,m, $a=10$\,km (Gallus and Klemp 2000), $U=10$\,m/s, $N=0.01$\,s$^{-1}$ (dry $\theta$,
+$\theta_0=288$\,K), relative humidity $RH_0$ below 7\,km, decreasing to 20\,\% at 9\,km; channel 400\,km,
+top 12\,km, Rayleigh damping of $W$ above 8\,km; $200\times48$ cells ($\Delta x=2$\,km, $\Delta\eta=250$\,m);
+each column in discrete hydrostatic balance with its own $J\Delta\eta$ (rest-state residual $\max|N_W|\le
+9\cdot10^{-13}$; $\max|N_U|=1.1\cdot10^{-5}$ ($\pi$), $6.2\cdot10^{-5}$ ($p$): the horizontal
+pressure-gradient error on terrain, smaller for the almost linear $\pi$); impulsive start; MIS54, HEVI,
+$\dt=30$\,s, $n_{\rm sub}=7$, \code{micro = :fast}, $\tau=1.1$\,s; 6\,h. Mass and water are conserved to
+$10^{-14}$ in all runs.
+\begin{center}\small\begin{tabular}{lccp{0.55\textwidth}}\toprule
+$RH_0$ & $\max|w|$ [m/s] & $\max q_c$ [g/kg] & cloud ($q_c>10^{-5}$)\\\midrule
+dry & 0.71 & -- & --\\
+0.80 & 0.80 & 0.10 & wave cloud 5.8--7.5\,km above the hill\\
+0.85 ($\pi$) & 0.77 & 0.15 & cap cloud over the crest (0.4--0.8\,km) + wave cloud 5.8--7.8\,km + small cloud at 4.7\,km, 27\,km downstream\\
+0.85 ($p$) & 0.77 & 0.15 & the same\\
+0.95 & 0.30 & 0.54 & large low cloud from 25\,km upstream to 70\,km downstream, wave strongly weakened\\\bottomrule
+\end{tabular}\end{center}
+\begin{center}
+\includegraphics[width=\textwidth]{moist_hill_rh85.png}
+\end{center}
+With $RH_0=0.85$ (figure, $\pi$, 6\,h) the cloud forms where the wave lifts the air: the ascending
+branch ($w>0$) tilts upstream with height and reaches 6--8\,km just upstream of the hill; the cloud
+lies at its downstream edge, where the upward displacement is largest, and evaporates where the descent
+($w<0$) begins on the lee side --- the position of a lenticular cloud. Over the crest a shallow cap cloud
+forms (RH reaches 1 there; for $RH_0=0.8$ it stays at 0.95 and no cap cloud forms). The wave itself is
+hardly changed against the dry run. The $p$ and $\pi$ variants agree ($\max|w|$ 0.769 and 0.772\,m/s,
+$\max q_c$ 0.147 and 0.149\,g/kg, the same cloud). With $RH_0=0.95$ the lower troposphere is almost
+saturated, condensation reduces the effective stability over a large region, the wave is weakened to
+$\max|w|=0.3$\,m/s and a sharp front of ascent at 25\,km upstream bounds the cloud.
 
 \section{Open points}
 \begin{itemize}
