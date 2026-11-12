@@ -1,4 +1,4 @@
-# Exner pressure as an additional prognostic variable (flat FV grid, frozen split)
+# Exner pressure as an additional prognostic variable (flat or terrain-following FV grid, frozen split)
 #
 # π = (p/p00)^(R/cp) = (R Θ/p00)^(γ-1), Θ = ρθ. The pressure gradient is the product
 #     ∇p = cp Θ ∇π                                   (exact identity, cp = γ R/(γ-1)),
@@ -42,7 +42,7 @@ end
 """
     ExnerModel(base::FVModel)
 
-Flat FV model with the Exner pressure as an additional prognostic variable: state
+Flat or terrain-following (Gal-Chen) FV model with the Exner pressure as an additional prognostic variable: state
 `[q; π]` (`exner_state`, `base_state`), frozen split for `TimeStepping.run_frozen` (fast loops
 :verlet, :hevi, :rk4), π recomputed from Θ after every MIS step.
 """
@@ -56,7 +56,7 @@ struct ExnerModel{M<:FVModel}
 end
 function ExnerModel(base::FVModel; pvar::Symbol = :pi)
     pvar in (:pi, :p) || error("pvar: :pi or :p")
-    _flat_only(base); _no_background(base)
+    _no_cutcell(base); _no_background(base)
     g = base.grid
     nq = base.nq + g.nx * g.nz
     z1() = zeros(g.nx, g.nz + 1)
@@ -75,6 +75,36 @@ exner_state(m::ExnerModel, q) = (g = m.base.grid;
 base_state(m::ExnerModel, q) = q[1:m.base.nq]
 
 sound_speed_max(m::ExnerModel, q) = sound_speed_max(m.base, q)
+
+# ------------------------------------------------------------------ Gal-Chen metric (terrain following)
+# Flat grid: J = 1, z_x = 0, and all blocks reduce to the Cartesian ones. Terrain following
+# (as FV3D): x-flux Jx U, η-flux Ω = W - z_x Ū (W part vertical, -z_x Ū part horizontal),
+# divergence / J, -∂x π|_z = -(1/Jx)[δx(J π) - δη(z_x π_σ)], ∂z π = δη π/(J Δη).
+
+"""Cut-cell grids are not supported by the frozen Exner/moist split."""
+_no_cutcell(m::FVModel) = m.grid isa CutCellFVGrid && error("frozen Exner/moist split: flat or terrain-following FV grids (no cut cells)")
+"""Physical layer thickness J Δη of column i."""
+@inline dzc(g::FVGrid, i) = g.Jc[ip(g, i)] * g.dz
+"""Horizontal part -z_x Ū of Ω at the η-face k (2 … nz; zero at the walls and on flat grids)."""
+@inline Ωh(g::FVGrid, z, i, k) = (!g.terrain || k == 1 || k == g.nz + 1) ? 0.0 :
+    -g.zx_f[ip(g, i), k] * 0.25 * (z[iU(g, i, k - 1)] + z[iU(g, i + 1, k - 1)] + z[iU(g, i, k)] + z[iU(g, i + 1, k)])
+"""Cell field f(i, k) at the η-face kf of column i: mean, quadratically extrapolated face means at
+the ground and the top (as `fv_p_sigma`)."""
+@inline function fσ(f, g::FVGrid, i, kf)
+    mf(k) = 0.5 * (f(i, k - 1) + f(i, k))
+    kf == 1 && return 3mf(2) - 3mf(3) + mf(4)
+    kf == g.nz + 1 && return 3mf(g.nz) - 3mf(g.nz - 1) + mf(g.nz - 2)
+    return mf(kf)
+end
+"""∂x f|_z at the x-face (i, k) of the cell field f: (1/Jx)[δx(J f) - δη(z_x f_σ)] (flat: δx f)."""
+@inline function gradx_z(f, g::FVGrid, i, k)
+    im = ip(g, i - 1); ii = ip(g, i)
+    g.terrain || return (f(ii, k) - f(im, k)) / g.dx
+    d = (g.Jc[ii] * f(ii, k) - g.Jc[im] * f(im, k)) / g.dx
+    cor(kf) = 0.5 * (fσ(f, g, im, kf) + fσ(f, g, ii, kf))
+    d -= (g.zx_xf[ii, k+1] * cor(k + 1) - g.zx_xf[ii, k] * cor(k)) / g.dz
+    return d / g.Jx[ii]
+end
 
 # ------------------------------------------------------------------ coefficient vector
 # C = [θx (N); θz (Nz); Θx (N); Θz (Nz); cxL (N); cxR (N); czB (Nz); czT (Nz)], N = nx nz, Nz = nx (nz+1);
@@ -126,44 +156,53 @@ end
 
 # ------------------------------------------------------------------ building blocks of the fast part
 
-"""Thermodynamic part, horizontal (ρ, Θ, π rows)."""
+"""Thermodynamic part, horizontal (ρ, Θ, π rows): x-fluxes Jx U and the horizontal part of Ω."""
 function ethermo_h!(out, m::ExnerModel, C, z)
     g = m.base.grid
     @inbounds for k in 1:g.nz, i in 1:g.nx
-        Ul, Ur = z[iU(g, i, k)], z[iU(g, i + 1, k)]
-        out[iρ(g, i, k)] -= (Ur - Ul) / g.dx
-        out[iΘ(g, i, k)] -= (eθx(C, g, i + 1, k) * Ur - eθx(C, g, i, k) * Ul) / g.dx
-        out[iπ(m, i, k)] -= (ecxL(C, g, i + 1, k) * Ur - ecxR(C, g, i, k) * Ul) / g.dx
+        Ul, Ur = g.Jx[ip(g, i)] * z[iU(g, i, k)], g.Jx[ip(g, i + 1)] * z[iU(g, i + 1, k)]
+        s = 1 / g.Jc[i]
+        out[iρ(g, i, k)] -= s * (Ur - Ul) / g.dx
+        out[iΘ(g, i, k)] -= s * (eθx(C, g, i + 1, k) * Ur - eθx(C, g, i, k) * Ul) / g.dx
+        out[iπ(m, i, k)] -= s * (ecxL(C, g, i + 1, k) * Ur - ecxR(C, g, i, k) * Ul) / g.dx
+        if g.terrain
+            Hb, Ht = Ωh(g, z, i, k), Ωh(g, z, i, k + 1)
+            out[iρ(g, i, k)] -= s * (Ht - Hb) / g.dz
+            out[iΘ(g, i, k)] -= s * (eθz(C, g, i, k + 1) * Ht - eθz(C, g, i, k) * Hb) / g.dz
+            out[iπ(m, i, k)] -= s * (eczB(C, g, i, k + 1) * Ht - eczT(C, g, i, k) * Hb) / g.dz
+        end
     end
     return out
 end
 
-"""Thermodynamic part, vertical (ρ, Θ, π rows)."""
+"""Thermodynamic part, vertical (ρ, Θ, π rows): the W part of Ω."""
 function ethermo_v!(out, m::ExnerModel, C, z)
     g = m.base.grid
     @inbounds for k in 1:g.nz, i in 1:g.nx
         Wb, Wt = Wface(g, z, i, k), Wface(g, z, i, k + 1)
-        out[iρ(g, i, k)] -= (Wt - Wb) / g.dz
-        out[iΘ(g, i, k)] -= (eθz(C, g, i, k + 1) * Wt - eθz(C, g, i, k) * Wb) / g.dz
-        out[iπ(m, i, k)] -= (eczB(C, g, i, k + 1) * Wt - eczT(C, g, i, k) * Wb) / g.dz
+        h = dzc(g, i)
+        out[iρ(g, i, k)] -= (Wt - Wb) / h
+        out[iΘ(g, i, k)] -= (eθz(C, g, i, k + 1) * Wt - eθz(C, g, i, k) * Wb) / h
+        out[iπ(m, i, k)] -= (eczB(C, g, i, k + 1) * Wt - eczT(C, g, i, k) * Wb) / h
     end
     return out
 end
 
-"""Momentum part, horizontal (U rows): -P_x δx π, P_x = cp Θx (or -δx p)."""
+"""Momentum part, horizontal (U rows): -P_x ∂x π|_z, P_x = cp Θx (or -∂x p|_z)."""
 function emomentum_h!(out, m::ExnerModel, C, z)
     g = m.base.grid
+    f(i, k) = z[iπ(m, i, k)]
     @inbounds for k in 1:g.nz, i in 1:g.nx
-        out[iU(g, i, k)] -= eΘx(C, g, i, k) * (z[iπ(m, i, k)] - z[iπ(m, i - 1, k)]) / g.dx
+        out[iU(g, i, k)] -= eΘx(C, g, i, k) * gradx_z(f, g, i, k)
     end
     return out
 end
 
-"""Momentum part, vertical (W rows): -P_z δz π - g ρ̄ (or -δz p - g ρ̄)."""
+"""Momentum part, vertical (W rows): -P_z δη π/(J Δη) - g ρ̄ (or -δη p/(J Δη) - g ρ̄)."""
 function emomentum_v!(out, m::ExnerModel, C, z)
     g = m.base.grid; grav = m.base.gas.g
     @inbounds for k in 2:g.nz, i in 1:g.nx
-        out[iW(g, i, k)] -= eΘz(C, g, i, k) * (z[iπ(m, i, k)] - z[iπ(m, i, k - 1)]) / g.dz +
+        out[iW(g, i, k)] -= eΘz(C, g, i, k) * (z[iπ(m, i, k)] - z[iπ(m, i, k - 1)]) / dzc(g, i) +
                             grav * 0.5 * (z[iρ(g, i, k - 1)] + z[iρ(g, i, k)])
     end
     return out
@@ -233,11 +272,12 @@ end
 function _exner_factor(s::ExnerColumn, m, c)
     get!(s.factors, Float64(c)) do
         g = m.base.grid
-        nz, dz = g.nz, g.dz
-        r = (c / dz)^2
-        gg = c^2 * m.base.gas.g / (2dz)
+        nz = g.nz
         sub = zeros(nz + 1, g.nx); cpr = zeros(nz + 1, g.nx); iden = zeros(nz + 1, g.nx)
         @inbounds for i in 1:g.nx, k in 2:nz
+            dz = dzc(g, i)                       # J Δη of the column
+            r = (c / dz)^2
+            gg = c^2 * m.base.gas.g / (2dz)
             a = k > 2 ? -r * s.P[i, k] * s.cT[i, k-1] + gg : 0.0
             d = 1 + r * s.P[i, k] * (s.cT[i, k] + s.cB[i, k])
             b = k < nz ? -r * s.P[i, k] * s.cB[i, k+1] - gg : 0.0
@@ -251,10 +291,11 @@ end
 """Y = (I - c J_v)⁻¹ R (U rows: identity)."""
 function exner_column_solve!(Y, m::ExnerModel, c, R)
     s = m.column; g = m.base.grid
-    nz, dz, grav = g.nz, g.dz, m.base.gas.g
+    nz, grav = g.nz, m.base.gas.g
     sub, cpr, iden = _exner_factor(s, m, c)
     W = s.W
     @inbounds for i in 1:g.nx
+        dz = dzc(g, i)
         for k in 2:nz
             rhs = R[iW(g, i, k)] - (c / dz) * s.P[i, k] * (R[iπ(m, i, k)] - R[iπ(m, i, k - 1)]) -
                   (c * grav / 2) * (R[iρ(g, i, k - 1)] + R[iρ(g, i, k)])

@@ -1,4 +1,4 @@
-# Moist air with the Exner pressure as an additional prognostic variable (flat FV grid, frozen split)
+# Moist air with the Exner pressure as an additional prognostic variable (flat or terrain-following FV grid, frozen split)
 #
 # Formulation (I) of Jähn & Knoth (poster "Compressible modeling of a cloudy atmosphere using a
 # general pressure evolution equation"), Bryan & Fritsch (2002) thermodynamics:
@@ -153,13 +153,13 @@ end
     MoistExnerModel(base::FVModel; mgas = MoistGas(), pvar = :pi, micro = :fast, τfac = 0.25, cs = 350.0,
                     wτ = nothing, τ = nothing)
 
-Moist flat FV model with the Exner pressure (pvar = :pi) or the pressure (pvar = :p) as an
+Moist FV model (flat or terrain following, Gal-Chen) with the Exner pressure (pvar = :pi) or the pressure (pvar = :p) as an
 additional prognostic variable: state `[ρ; U; W; Θ; V; C; π]` (V = ρq_v, C = ρq_c) (`moist_exner_state`), frozen split for
 `TimeStepping.run_frozen` (:verlet, :hevi, :rk4), π recomputed from the equation of state after every
 MIS step. Condensation by the explicit Fischer–Burmeister relaxation, evaluated in every fast step
 (micro = :fast, default), at the slow stages (:slow), or off (:none). Relaxation time: the given τ, or
-τ = min(Δx, Δz)/wτ, or by default on the fast scale τ = τfac Δτ_ac with the acoustic step
-Δτ_ac = 0.85·0.92 min(Δx, Δz)/cs of the fast loop (τfac = 0.25, the shortest relaxation that is stable in the Bryan–Fritsch bubble;
+τ = min(Δx, Δz)/wτ (Δz the thinnest physical layer), or by default on the fast scale τ = τfac Δτ_ac with the acoustic step
+Δτ_ac = 0.85·0.92 Δx/cs of the HEVI fast loop (horizontal acoustic limit; the vertical is implicit) (τfac = 0.25, the shortest relaxation that is stable in the Bryan–Fritsch bubble;
 at τfac = 0.2 the bubble is already wrong). :slow needs τ ≳ Δt/2 (e.g. wτ = 50 m/s at 250 m). The base model provides grid, momentum advection and sponge; its gas constant g is the gravity.
 """
 struct MoistExnerModel{M<:FVModel}
@@ -182,12 +182,12 @@ function MoistExnerModel(base::FVModel; mgas::MoistGas = MoistGas(), pvar::Symbo
                          micro::Symbol = :fast, τfac::Real = 0.25, cs::Real = 350.0, wτ = nothing, τ = nothing)
     pvar in (:pi, :p) || error("pvar: :pi or :p")
     micro in (:slow, :fast, :none) || error("micro: :slow, :fast or :none")
-    _flat_only(base); _no_background(base)
+    _no_cutcell(base); _no_background(base)
     g = base.grid
     N, Nz = g.nx * g.nz, g.nx * (g.nz + 1)
     z1() = zeros(g.nx, g.nz + 1)
-    h = min(g.dx, g.dz)
-    τv = τ !== nothing ? Float64(τ) : wτ !== nothing ? h / wτ : τfac * 0.85 * 0.92 * h / cs
+    h = min(g.dx, minimum(g.Jc) * g.dz)        # physical spacing (terrain following: thinnest layer), for wτ
+    τv = τ !== nothing ? Float64(τ) : wτ !== nothing ? h / wτ : τfac * 0.85 * 0.92 * g.dx / cs   # HEVI: horizontal acoustic step
     return MoistExnerModel(base, mgas, pvar, micro, τv, base.nq + 3N, zeros(8N + 6Nz), zeros(base.nq + 3N),
                            zeros(g.nx, g.nz), zeros(g.nx, g.nz), zeros(4, g.nx, g.nz),
                            ExnerColumn(z1(), z1(), z1(), z1(), Dict{Float64,NTuple{3,Matrix{Float64}}}(), zeros(g.nz + 1)), z1(), z1())
@@ -291,12 +291,21 @@ end
 function mthermo_h!(out, m::MoistExnerModel, C, z)
     g = m.base.grid
     @inbounds for k in 1:g.nz, i in 1:g.nx
-        Ul, Ur = z[iU(g, i, k)], z[iU(g, i + 1, k)]
-        out[iρ(g, i, k)] -= (Ur - Ul) / g.dx
-        out[iΘ(g, i, k)] -= (mθx(C, g, i + 1, k) * Ur - mθx(C, g, i, k) * Ul) / g.dx
-        out[iV(m, i, k)] -= (mqx(C, g, i + 1, k) * Ur - mqx(C, g, i, k) * Ul) / g.dx
-        out[iC(m, i, k)] -= (mcx(C, g, i + 1, k) * Ur - mcx(C, g, i, k) * Ul) / g.dx
-        out[iπ(m, i, k)] -= (mκxL(C, g, i + 1, k) * Ur - mκxR(C, g, i, k) * Ul) / g.dx
+        Ul, Ur = g.Jx[ip(g, i)] * z[iU(g, i, k)], g.Jx[ip(g, i + 1)] * z[iU(g, i + 1, k)]
+        s = 1 / g.Jc[i]
+        out[iρ(g, i, k)] -= s * (Ur - Ul) / g.dx
+        out[iΘ(g, i, k)] -= s * (mθx(C, g, i + 1, k) * Ur - mθx(C, g, i, k) * Ul) / g.dx
+        out[iV(m, i, k)] -= s * (mqx(C, g, i + 1, k) * Ur - mqx(C, g, i, k) * Ul) / g.dx
+        out[iC(m, i, k)] -= s * (mcx(C, g, i + 1, k) * Ur - mcx(C, g, i, k) * Ul) / g.dx
+        out[iπ(m, i, k)] -= s * (mκxL(C, g, i + 1, k) * Ur - mκxR(C, g, i, k) * Ul) / g.dx
+        if g.terrain                             # horizontal part -z_x Ū of Ω
+            Hb, Ht = Ωh(g, z, i, k), Ωh(g, z, i, k + 1)
+            out[iρ(g, i, k)] -= s * (Ht - Hb) / g.dz
+            out[iΘ(g, i, k)] -= s * (mθz(C, g, i, k + 1) * Ht - mθz(C, g, i, k) * Hb) / g.dz
+            out[iV(m, i, k)] -= s * (mqz(C, g, i, k + 1) * Ht - mqz(C, g, i, k) * Hb) / g.dz
+            out[iC(m, i, k)] -= s * (mcz(C, g, i, k + 1) * Ht - mcz(C, g, i, k) * Hb) / g.dz
+            out[iπ(m, i, k)] -= s * (mκzB(C, g, i, k + 1) * Ht - mκzT(C, g, i, k) * Hb) / g.dz
+        end
     end
     return out
 end
@@ -304,25 +313,27 @@ function mthermo_v!(out, m::MoistExnerModel, C, z)
     g = m.base.grid
     @inbounds for k in 1:g.nz, i in 1:g.nx
         Wb, Wt = Wface(g, z, i, k), Wface(g, z, i, k + 1)
-        out[iρ(g, i, k)] -= (Wt - Wb) / g.dz
-        out[iΘ(g, i, k)] -= (mθz(C, g, i, k + 1) * Wt - mθz(C, g, i, k) * Wb) / g.dz
-        out[iV(m, i, k)] -= (mqz(C, g, i, k + 1) * Wt - mqz(C, g, i, k) * Wb) / g.dz
-        out[iC(m, i, k)] -= (mcz(C, g, i, k + 1) * Wt - mcz(C, g, i, k) * Wb) / g.dz
-        out[iπ(m, i, k)] -= (mκzB(C, g, i, k + 1) * Wt - mκzT(C, g, i, k) * Wb) / g.dz
+        h = dzc(g, i)
+        out[iρ(g, i, k)] -= (Wt - Wb) / h
+        out[iΘ(g, i, k)] -= (mθz(C, g, i, k + 1) * Wt - mθz(C, g, i, k) * Wb) / h
+        out[iV(m, i, k)] -= (mqz(C, g, i, k + 1) * Wt - mqz(C, g, i, k) * Wb) / h
+        out[iC(m, i, k)] -= (mcz(C, g, i, k + 1) * Wt - mcz(C, g, i, k) * Wb) / h
+        out[iπ(m, i, k)] -= (mκzB(C, g, i, k + 1) * Wt - mκzT(C, g, i, k) * Wb) / h
     end
     return out
 end
 function mmomentum_h!(out, m::MoistExnerModel, C, z)
     g = m.base.grid
+    f(i, k) = z[iπ(m, i, k)]
     @inbounds for k in 1:g.nz, i in 1:g.nx
-        out[iU(g, i, k)] -= mPx(C, g, i, k) * (z[iπ(m, i, k)] - z[iπ(m, i - 1, k)]) / g.dx
+        out[iU(g, i, k)] -= mPx(C, g, i, k) * gradx_z(f, g, i, k)
     end
     return out
 end
 function mmomentum_v!(out, m::MoistExnerModel, C, z)
     g = m.base.grid; grav = m.base.gas.g
     @inbounds for k in 2:g.nz, i in 1:g.nx
-        out[iW(g, i, k)] -= mPz(C, g, i, k) * (z[iπ(m, i, k)] - z[iπ(m, i, k - 1)]) / g.dz +
+        out[iW(g, i, k)] -= mPz(C, g, i, k) * (z[iπ(m, i, k)] - z[iπ(m, i, k - 1)]) / dzc(g, i) +
                             grav * 0.5 * (z[iρ(g, i, k - 1)] + z[iρ(g, i, k)])
     end
     return out
@@ -391,10 +402,11 @@ end
 
 function moist_column_solve!(Y, m::MoistExnerModel, c, R)
     s = m.column; g = m.base.grid
-    nz, dz, grav = g.nz, g.dz, m.base.gas.g
+    nz, grav = g.nz, m.base.gas.g
     sub, cpr, iden = _exner_factor(s, m, c)
     W = s.W
     @inbounds for i in 1:g.nx
+        dz = dzc(g, i)
         for k in 2:nz
             rhs = R[iW(g, i, k)] - (c / dz) * s.P[i, k] * (R[iπ(m, i, k)] - R[iπ(m, i, k - 1)]) -
                   (c * grav / 2) * (R[iρ(g, i, k - 1)] + R[iρ(g, i, k)])

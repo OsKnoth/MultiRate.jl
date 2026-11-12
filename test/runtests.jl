@@ -739,7 +739,7 @@ end
         mf = FV.MoistExnerModel(b; mgas = mg, micro = :fast)
         Ns, Nf = TS.rhs_nonlinear(mm, xsup), TS.rhs_nonlinear(mf, xsup)
         @test maximum(abs, Ns - Nf) < 1e-12 * maximum(abs, Ns)
-        @test mf.τ ≈ 0.25 * 0.85 * 0.92 * min(g.dx, g.dz) / 350                # default: a quarter of the acoustic step
+        @test mf.τ ≈ 0.25 * 0.85 * 0.92 * g.dx / 350                # default: a quarter of the HEVI acoustic step
         Nn = TS.rhs_nonlinear(FV.MoistExnerModel(b; mgas = mg, micro = :none), xsup)
         Sc = Ns[FV.iC(mm, 2, 3)] - Nn[FV.iC(mm, 2, 3)]
         @test Sc > 0 && abs(Ns[FV.iV(mm, 2, 3)] - Nn[FV.iV(mm, 2, 3)] + Sc) < 1e-12 * Sc           # condensation, vapour sink
@@ -759,6 +759,60 @@ end
         end
     finally
         FV.FV_PRESSURE_FORM[] = :gradp
+    end
+end
+
+@testset "FV2D: Exner and moist frozen split on the terrain-following grid" begin
+    gas = CM.Gas(); mg = FV.MoistGas()
+    gm = CM.Gas(R = mg.Rd, γ = mg.Cpd / (mg.Cpd - mg.Rd), p00 = mg.p0)
+    ρr, Θr, θr = CM.stratified_reference(gm; θ0 = 300.0, N = 0.01)
+    g = FV.FVGrid(16, 10, 40e3, 10e3; zs = x -> 800 / (1 + ((x - 20e3) / 4e3)^2))
+    @test g.terrain
+    b = FV.FVModel(g, gm, ρr, Θr)
+    q = CM.project2d(b, (x, z) -> (ρ = ρr(z) * (1 + 1e-3 * sin(2π * x / 40e3)); (ρ, 10ρ + sin(x / 5e3), 0.3 * sin(π * z / 10e3) * cos(x / 7e3), Θr(z) * (1 + 1e-3 * cos(x / 6e3)))))
+    # pvar = :p with p = P(Θ): the frozen operator is the Gal-Chen operator of the base model
+    # (same fluxes Jx U and Ω = W - z_x Ū, same metric pressure gradient)
+    try
+        FV.FV_PRESSURE_FORM[] = :gradp; FV.FV_TERRAIN_FORM[] = :flux
+        mp = FV.ExnerModel(b; pvar = :p)
+        xp = FV.exner_state(mp, q)
+        Nb = TS.rhs_nonlinear(b, q); Np = TS.rhs_nonlinear(mp, xp)
+        @test maximum(abs, Np[1:b.nq] - Nb) < 1e-10 * maximum(abs, Nb)
+    finally
+        FV.FV_PRESSURE_FORM[] = :gradp
+    end
+    for pvar in (:pi, :p)
+        md = FV.ExnerModel(b; pvar); mm = FV.MoistExnerModel(b; mgas = mg, pvar, micro = :slow)
+        xd = FV.exner_state(md, q)
+        # dry limit of the moist model on terrain
+        xm0 = FV.moist_exner_state(mm, q, zeros(16, 10))
+        Nd = TS.rhs_nonlinear(md, xd); Nm0 = TS.rhs_nonlinear(mm, xm0)
+        @test maximum(abs, Nm0[1:b.nq] - Nd[1:b.nq]) < 1e-9 * maximum(abs, Nd)
+        # moist: parts, linear fast part, exact column solve
+        x = FV.moist_exner_state(mm, q, [0.012 * q[FV.iρ(g, i, k)] for i in 1:16, k in 1:10])
+        C = zeros(TS.frozen_ncoef(mm)); S = zeros(mm.nq); TS.frozen_data!(C, S, mm, x)
+        o(p, z = x) = TS.frozen_fast!(zeros(mm.nq), mm, C, z, p, S)
+        N = TS.rhs_nonlinear(mm, x)
+        @test maximum(abs, o(:hthermo) + o(:hmomentum) + o(:vertical) - N) < 1e-13 * maximum(abs, N)
+        @test maximum(abs, o(:thermo) + o(:momentum) - N) < 1e-13 * maximum(abs, N)
+        v = 1e-3 .* sin.(1:mm.nq)
+        @test maximum(abs, o(:all, x .+ v) + o(:all, x .- v) - 2N) < 1e-11 * maximum(abs, N)
+        TS.frozen_stage_begin!(mm, C, x)
+        R = 1e-3 .* cos.(1:mm.nq); Y = zeros(mm.nq); FV.moist_column_solve!(Y, mm, 3.0, R)
+        Gv(z) = TS.frozen_fast!(zeros(mm.nq), mm, C, z, :vertical, S)
+        @test maximum(abs.(Y .- 3.0 .* (Gv(x .+ Y) .- Gv(x)) .- R)) < 1e-10 * maximum(abs, R)
+        # dry model: exact column solve on terrain
+        Cd = zeros(TS.frozen_ncoef(md)); Sd = zeros(md.nq); TS.frozen_data!(Cd, Sd, md, xd)
+        TS.frozen_stage_begin!(md, Cd, xd)
+        Rd = 1e-3 .* cos.(1:md.nq); Yd = zeros(md.nq); FV.exner_column_solve!(Yd, md, 3.0, Rd)
+        Gd(z) = TS.frozen_fast!(zeros(md.nq), md, Cd, z, :vertical, Sd)
+        @test maximum(abs.(Yd .- 3.0 .* (Gd(xd .+ Yd) .- Gd(xd)) .- Rd)) < 1e-10 * maximum(abs, Rd)
+        # mass and total water conserved by the frozen step (fluxes J-weighted: Σ J ρ)
+        y = TS.run_frozen(mm, x, 2.0, 3; tab = TS.mis_tableau(:MIS54), nsub = 4, fast = :hevi)
+        tot(z, f) = sum(g.Jc[i] * z[f(i, k)] for i in 1:16, k in 1:10)
+        @test abs(tot(y, (i, k) -> FV.iρ(g, i, k)) / tot(x, (i, k) -> FV.iρ(g, i, k)) - 1) < 1e-13
+        @test abs((tot(y, (i, k) -> FV.iV(mm, i, k)) + tot(y, (i, k) -> FV.iC(mm, i, k))) /
+                  (tot(x, (i, k) -> FV.iV(mm, i, k)) + tot(x, (i, k) -> FV.iC(mm, i, k))) - 1) < 1e-13
     end
 end
 
