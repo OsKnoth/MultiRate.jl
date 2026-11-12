@@ -11,7 +11,8 @@
 # condensation rate is an explicit relaxation to phase equilibrium with the Fischer–Burmeister function
 #     S_c = -φ_FB(ρ_vs(T) - ρ_v, ρ_c) / τ,   φ_FB(a, b) = (a + b - √(a² + b²))/2,
 # τ from the grid spacing (default a quarter of the acoustic fast step, the shortest stable τ), and the latent heating
-# Q_θ = (∂Θ/∂ρ_c)_θe S_c (reversible: θ_e is unchanged by the phase change). `micro = :fast` (default):
+# Q_θ = -Θ P S_c with the prefactor of Bryan & Fritsch (2002) (`theta_phase_factor`, isochoric first law),
+# and the source Q_p = [R_m (L - R_v T)/c_vm - R_v T] S_c of the pressure equation (`pressure_phase_factor`). `micro = :fast` (default):
 # S_c from the current fast state in every small step; `micro = :slow`: S_c from the stage value y.
 # Constants and e_s(T) as in CGDycore.
 #
@@ -117,14 +118,35 @@ negative when supersaturated, positive when subsaturated with condensate (then �
     return 0.5 * (a + ρc - sqrt(a * a + ρc * ρc)), T
 end
 
-"""∂Θ/∂ρ_c at fixed ρ, ρq_t and θ_e: the latent heating per condensation, Q_θ = this · S_c."""
-function theta_phase_factor(mg::MoistGas, ρ, T, ρv, ρc)
-    Q = ρv + ρc; ρd = ρ - Q
-    c = mg.Cpd + mg.Cpl * Q / ρd; rv = ρv / ρd; L = latent(mg, T)
-    dTdrv = -(L / (c * T)) / ((1 - mg.Rd / c) / T + rv * ((mg.Cpv - mg.Cpl) * T - L) / (c * T^2))
-    dT = -dTdrv / ρd                                  # dT/dρc (dρv = -dρc)
-    h = 1e-7 * ρ
-    return (_Θof(mg, ρ, T + dT * h, ρv - h, ρc + h) - _Θof(mg, ρ, T - dT * h, ρv + h, ρc - h)) / 2h
+"""
+    theta_phase_factor(mg, ρ, Θ, T, p, ρv, ρc)
+
+dΘ/dρ_c of the phase change (condensation dρ_c = -dρ_v > 0) at fixed ρ, Bryan & Fritsch (2002),
+as CGDycore `SimpleMicrophysicsPot` (there with the evaporation rate F_Ph = -S_c):
+    Q_Θ = -Θ P S_c,  P = -L/(c_pm T) - ln(p/p0) (R_m/c_pm) (R_v/R_m + (c_pl - c_pv)/c_pm) + R_v/R_m,
+with the density-weighted R_m = R_d ρ_d + R_v ρ_v, c_pm = c_pd ρ_d + c_pv ρ_v + c_pl ρ_c. Through the
+equation of state this is the isochoric first law, dT/dρ_c = (L - R_v T)/c_vm, c_vm = c_pm - R_m.
+"""
+function theta_phase_factor(mg::MoistGas, ρ, Θ, T, p, ρv, ρc)
+    ρd = ρ - ρv - ρc
+    cpm = mg.Cpd * ρd + mg.Cpv * ρv + mg.Cpl * ρc; Rm = mg.Rd * ρd + mg.Rv * ρv
+    L = latent(mg, T)
+    P = -L / (cpm * T) - log(p / mg.p0) * (Rm / cpm) * (mg.Rv / Rm + (mg.Cpl - mg.Cpv) / cpm) + mg.Rv / Rm
+    return -Θ * P
+end
+
+"""
+    pressure_phase_factor(mg, ρ, T, ρv, ρc)
+
+dp/dρ_c of the phase change at fixed ρ (isochoric, energy conserving), the source of the pressure
+equation Q_p = [R_m (L - R_v T)/c_vm - R_v T] S_c (p = R_m T: dR_m = -R_v dρ_c, dT = (L - R_v T)/c_vm dρ_c).
+Identical to the chain rule (∂p/∂Θ) dΘ/dρ_c + ∂p/∂ρ_c - ∂p/∂ρ_v of the equation of state with
+`theta_phase_factor`. Exner pressure: Q_π = (R_d/c_pd) (π/p) Q_p.
+"""
+function pressure_phase_factor(mg::MoistGas, ρ, T, ρv, ρc)
+    ρd = ρ - ρv - ρc
+    Rm = mg.Rd * ρd + mg.Rv * ρv; cvm = mg.Cpd * ρd + mg.Cpv * ρv + mg.Cpl * ρc - Rm
+    return Rm * (latent(mg, T) - mg.Rv * T) / cvm - mg.Rv * T
 end
 
 """
@@ -237,10 +259,10 @@ function frozen_data!(C, S, m::MoistExnerModel, q)
         m.φq[i, k] = ρv / ρ; m.φc[i, k] = ρc / ρ
         d = exner_derivatives(mg, ρ, Θ, ρv, ρc; f)
         for j in 1:4; m.abc[j, i, k] = d[j]; end
-        T = moist_state(mg, ρ, Θ, ρv, ρc)[1]
-        θS = theta_phase_factor(mg, ρ, T, ρv, ρc)
-        C[_mc(g, 0, i, k)] = θS
-        C[_mc(g, 1, i, k)] = d[2] * θS + d[4] - d[3]           # dπ/dρc along the phase change (dρv = -dρc)
+        T, _, _, p = moist_state(mg, ρ, Θ, ρv, ρc)
+        C[_mc(g, 0, i, k)] = theta_phase_factor(mg, ρ, Θ, T, p, ρv, ρc)          # Q_Θ / S_c (Bryan–Fritsch)
+        Qp = pressure_phase_factor(mg, ρ, T, ρv, ρc)                            # Q_p / S_c
+        C[_mc(g, 1, i, k)] = m.pvar === :p ? Qp : (mg.Rd / mg.Cpd) * (p / mg.p0)^(mg.Rd / mg.Cpd) / p * Qp
     end
     # momentum coefficient: c_pd Θ̂, Θ̂ = p/(R_d π) with p = p0 π^(c_pd/R_d) (pvar = :pi), or 1 (pvar = :p)
     Θh(i, k) = m.pvar === :p ? 1.0 : (p = mg.p0 * q[iπ(m, i, k)]^(mg.Cpd / mg.Rd); mg.Cpd * p / (mg.Rd * q[iπ(m, i, k)]))

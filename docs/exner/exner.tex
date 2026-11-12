@@ -114,12 +114,20 @@ S_c=-\frac{\varphi_{FB}(\rho_{vs}(T)-\rho_v,\;\rho_c)}{\tau},\qquad \tau=\frac{\
 \]
 with the relaxation time from the grid spacing (a parcel at speed $w_\tau$ crosses a cell in $\tau$).
 Evaporation never removes more than the condensate if $\Delta t\le\tau$. The latent heating is the
-reversible one, at fixed $\rho$, $Q$ and $\theta_e$:
+prefactor of Bryan and Fritsch (2002), as CGDycore \code{SimpleMicrophysicsPot} (there with the
+evaporation rate $F_{Ph}=-S_c$), with the density-weighted $R_m=R_d\rho_d+R_v\rho_v$,
+$c_{pm}=c_{pd}\rho_d+c_{pv}\rho_v+c_{pl}\rho_c$, $c_{vm}=c_{pm}-R_m$:
 \[
-Q_\theta=\Big(\frac{\partial\Theta}{\partial\rho_c}\Big)_{\rho,\,\rho_v+\rho_c,\,\theta_e}S_c,
+Q_\theta=-\Theta\,P\,S_c,\qquad
+P=-\frac{L}{c_{pm}T}-\ln\frac{p}{p_0}\,\frac{R_m}{c_{pm}}\Big(\frac{R_v}{R_m}+\frac{c_{pl}-c_{pv}}{c_{pm}}\Big)+\frac{R_v}{R_m}.
 \]
-from $\mathrm d\ln\theta_e=0$ ($\mathrm dT/\mathrm dr_v$ analytic, then $\Theta(\rho,T,\rho_v,\rho_c)$ by central
-differences; $\theta_e$ is conserved to second order in the condensed amount, test). Two options:
+Through the equation of state this is the isochoric first law (internal energy conserved at fixed $\rho$),
+\[
+\frac{\mathrm dT}{\mathrm d\rho_c}=\frac{L-R_vT}{c_{vm}}
+\]
+(test, $10^{-6}$). The first version kept $\theta_e$ (poster eq.~17) fixed instead; that heated 13--38\,\%
+too much ($\mathrm dT/\mathrm d\rho_c=3631$ against 2738\,K\,m$^3$/kg at 296\,K, 986\,hPa), because that
+$\theta_e$ is an isobaric, approximate invariant. Two options:
 \code{micro = :slow}, $S_c$ from the stage value $y$ in the slow part $S(y)$ (needs $\tau\gtrsim\Delta t$);
 \code{micro = :fast}, $S_c$ from the current fast state in every small step (explicit, needs
 $\tau\gtrsim\Delta\tau$). The phase change is also a source in the pressure equation (next
@@ -150,18 +158,19 @@ $\pi$ of $y$.
 (a,b,c,d)=\frac{\partial\pi}{\partial(\rho,\Theta,V,C)},
 \]
 so the transport part and the phase change both enter. The source of the pressure equation (the $Q_p$
-of the poster) is
+of the poster) follows from $p=R_mT$ with $\mathrm dR_m=-R_v\,\mathrm d\rho_c$ and the isochoric
+$\mathrm dT$ above:
 \[
-\partial_t\pi\big|_{\rm phase}=\kappa_S\,S_c,\qquad
-\kappa_S=b\Big(\frac{\partial\Theta}{\partial\rho_c}\Big)_{\theta_e}+d-c
+\partial_tp\big|_{\rm phase}=Q_p=\Big[\frac{R_m(L-R_vT)}{c_{vm}}-R_vT\Big]S_c,\qquad
+\partial_t\pi\big|_{\rm phase}=Q_\pi=\kappa_d\,\frac{\pi}{p}\,Q_p ,
 \]
-(latent heating plus the change of $R_m$ and $\kappa_M$ from vapour to liquid), frozen per cell, with
-$S_c$ from $y$ (\code{:slow}) or from the fast state (\code{:fast}). For $p$ at $T=284$\,K, $p=814$\,hPa,
-$\rho_v=1.1\cdot10^{-2}$, $\rho_c=9\cdot10^{-3}$\,kg/m$^3$: $\kappa_S=9.3\cdot10^5$\,Pa\,m$^3$/kg, of which
-$9.1\cdot10^5$ is the heating; it agrees with the isochoric estimate $L R_m/c_{vm}=9.5\cdot10^5$ to
-1.5\,\%. A condensation rate of $10^{-5}$\,kg\,m$^{-3}$\,s$^{-1}$ raises $p$ by 9\,Pa/s. Without this
-term $p$ (or $\pi$) would drift from the equation of state during the step and be corrected only by the
-reset.
+latent heating minus the loss of gas constant. It is identical to the chain rule
+$b\,(\mathrm d\Theta/\mathrm d\rho_c)+d-c$ of the equation of state with the Bryan--Fritsch $Q_\theta$
+(test, $10^{-6}$), so $\pi$ (or $p$) stays on the equation of state during the step. Frozen per cell
+(\code{pressure\_phase\_factor}), with $S_c$ from $y$ (\code{:slow}) or from the fast state (\code{:fast}).
+At 296\,K, 986\,hPa: $Q_p/S_c=7.8\cdot10^5$\,Pa\,m$^3$/kg (first version $1.07\cdot10^6$); a condensation
+rate of $10^{-5}$\,kg\,m$^{-3}$\,s$^{-1}$ raises $p$ by 8\,Pa/s. Without this term $p$ (or $\pi$) would drift
+from the equation of state during the step and be corrected only by the reset.
 frozen from $y$ (central differences of the explicit equation of state). With the flux divergences of
 $\rho$, $\Theta$, $V$, $C$ the transport part of the $\pi$ row is $-\delta(\kappa_f F)$ with one coefficient
 per face and neighbour, $\kappa_f=a+b\,\theta_f+c\,q_{v,f}+d\,q_{c,f}$ (upwind face values); the HEVI column
@@ -199,7 +208,7 @@ $\gamma p/\Theta$ (as in the product form); freezing the secant $p/\Theta$ inste
 (\code{FV\_PRESSURE\_FORM = :gradp}).
 
 \paragraph{Moist.} $\partial_t p=a\,\partial_t\rho+b\,\partial_t\Theta+c\,\partial_tV+d\,\partial_tC$ with
-$(a,b,c,d)=\partial p/\partial(\rho,\Theta,V,C)$ plus the phase source $\kappa_SS_c$:
+$(a,b,c,d)=\partial p/\partial(\rho,\Theta,V,C)$ plus the phase source $Q_p$:
 this is the source term $Q_p$ of the poster (frozen sound speed of the non-equilibrium mixture). The code is the moist
 model with $p$ in place of $\pi$ and $-\delta p$ in the momentum rows; the balanced initial column uses
 $p_k-p_{k-1}+g\Delta z\,\bar\rho=0$.
@@ -299,7 +308,147 @@ for $\pi$ the error even decreases. For this channel: $p$ with $\beta=0.1$ and M
 
 \paragraph{Moist bubble} (\code{examples/frozen\_moist\_bubble.jl}): see Section~\ref{sec:moistres}.
 
+\section{Stability: extrapolation, number of small steps, MIS without extrapolation}\label{sec:stab}
+
+\paragraph{Forward--backward with extrapolated pressure.} One acoustic step for a Fourier mode,
+$u^{n+1}=u^n-\mathrm i\,\tilde p^n$, $p^{n+1}=p^n-\mathrm i\mu^2u^{n+1}$ (scaled), $\tilde p^n=p^n+\beta(p^n-p^{n-1})$,
+$\mu=c\Delta\tau k$:
+\[
+\lambda^2-\big(2-(1+\beta)\mu^2\big)\lambda+(1-\beta\mu^2)=0 .
+\]
+For $\beta=0$ the roots lie on the unit circle for $\mu\le2$: the fast loop is neutral. With
+$\beta>0$ the product of the roots is $1-\beta\mu^2$, so $|\lambda|^2=1-\beta\mu^2$ for complex roots:
+every small step damps, the short waves most. Stability needs $\mu\le2/\sqrt{1+2\beta}$ (1.83 for
+$\beta=0.1$). To leading order this is a divergence damping $\nu\nabla(\nabla\cdot u)$ with
+\[
+\nu=\beta c^2\Delta\tau=\beta c^2\,\frac{\dt}{n_{\rm sub}}
+\]
+(Klemp, Skamarock and Ha): at fixed $\dt$ the damping per large step falls like $1/n_{\rm sub}$, and for
+$n_{\rm sub}\to\infty$ the fast loop tends to the exact, undamped fast flow.
+
+\paragraph{Many small steps with extrapolation.} Long channel (product form, HEVI, 36000\,s), $\max|w|$
+[m/s], physical level $1.5\cdot10^{-3}$:
+\begin{center}\small\begin{tabular}{lrccc}\toprule
+method, $\dt$ & $n_{\rm sub}$ & $\beta=0$ & $\beta=0.1$ & $\beta=0.1\times n_{\rm sub}/n_0$\\\midrule
+WSRK3, 100\,s & 18 & unstable & $2.6\cdot10^{-3}$ & $2.6\cdot10^{-3}$\\
+ & 36 & unstable & $7.2\cdot10^{-3}$ & $2.6\cdot10^{-3}$\\
+ & 72 & unstable & 0.17 & $3.7\cdot10^{-2}$\\
+ & 144 & unstable & 0.27 & --\\
+WSRK3, 200\,s & 36--288 & unstable & unstable & unstable\\
+MIS54, 100\,s & 18 & unstable & $5.7\cdot10^{-3}$ & $5.7\cdot10^{-3}$\\
+ & 36--144 & unstable & $1.5\cdot10^{-3}$ & $1.5\cdot10^{-3}$\\
+MIS54, 200\,s & 36 & unstable & $1.8\cdot10^{-3}$ & $1.8\cdot10^{-3}$\\
+ & 72 & unstable & $1.6\cdot10^{-3}$ & $1.6\cdot10^{-3}$\\
+ & 144 & unstable & $4.9\cdot10^{-2}$ & $1.5\cdot10^{-3}$\\
+ & 288 & unstable & unstable & --\\\bottomrule
+\end{tabular}\end{center}
+($n_0$ the smallest $n_{\rm sub}$; --: $\beta=0.8$, not run.) With fixed $\beta$, more small steps make the run
+\emph{less} stable, as $\nu\propto1/n_{\rm sub}$ predicts; scaling $\beta\propto n_{\rm sub}$ (fixed $\nu$)
+restores it as long as $\mu\le2/\sqrt{1+2\beta}$ allows. WSRK3 owes its stability entirely to the
+extrapolation; MIS54 at $\dt=100$\,s is stable for all $n_{\rm sub}$ (next paragraphs). The damping should be
+prescribed as $\nu$, i.e.\ $\beta=\nu\,n_{\rm sub}/(c^2\dt)$, not as a fixed $\beta$.
+
+\paragraph{Without extrapolation.} Long channel, $\beta=0$, $\max|w|$ after 36000\,s, $U=20$\,m/s,
+$\Delta x=2.5$\,km, $C_{\rm adv}=U\dt/\Delta x$ ($C_{\rm sound}\approx17\,C_{\rm adv}$), $n_{\rm sub}$ at the
+acoustic limit:
+\begin{center}\small\setlength{\tabcolsep}{4pt}\begin{tabular}{lcccccc}\toprule
+$C_{\rm adv}$ ($\dt$) & 0.1 (12.5\,s) & 0.2 & 0.4 & 0.6 & 0.8 & 1.2 (150\,s)\\\midrule
+WSRK3 & unstable & unstable & unstable & unstable & unstable & unstable\\
+MIS\_KW3 & 3.6 (growing) & unstable & unstable & unstable & unstable & unstable\\
+MIS2 & stable & stable & stable & stable & $6.2\cdot10^{-3}$ & unstable\\
+MIS4 & stable & stable & stable & stable & $3.6\cdot10^{-3}$ & $2.3\cdot10^{-2}$\\
+MIS4a & stable & stable & stable & stable & unstable & unstable\\
+MIS54, MISF53 & stable & stable & stable & unstable & unstable & unstable\\
+MIS\_FV42 & stable & stable & stable & stable & stable & unstable\\
+MIS\_FV53 & stable & stable & stable & stable & stable & $1.7\cdot10^{-3}$\\
+MIS\_DG53 & stable & stable & stable & stable & stable & stable\\\bottomrule
+\end{tabular}\end{center}
+(stable: $\max|w|\le1.8\cdot10^{-3}$.) Without extrapolation WSRK3 is unstable even at $C_{\rm adv}=0.1$,
+all MIS methods with $\alpha,\gamma\neq0$ are stable to $C_{\rm adv}=0.4$, the designed MIS\_FV53 and
+MIS\_DG53 to 1.2.
+
+\paragraph{Why MIS is more stable: damping of the fast modes.} In the acoustic-advection test of Knoth
+and Wensch (2014) the fast (acoustic) and slow (advection) operators commute; per Fourier mode the
+step with exact fast stages is a scalar $R(\mathrm i\omega,\mu)$, $\omega=ck\dt$ the acoustic phase per
+large step, $\mu$ the advection eigenvalue times $\dt$. Expand
+\[
+R(\mathrm i\omega,\mu)=e^{\mathrm i\omega}\sum_k g_k(\omega)\,\mu^k ,
+\]
+($g_k=1/k!$ for the underlying RK method at $\omega=0$). Two cases:
+\begin{itemize}
+\item $|g_0(\omega)|=1$: the step reproduces the fast flow exactly. This holds for WSRK3 (every stage
+restarts from $q^n$ and integrates over $d_i\dt$) and MIS\_KW3 (stages chained, $\alpha_{i,i-1}=1$), and
+for Lawson and ETD. Then stability for small $\mu=\mathrm i\kappa$ is decided by
+$|R|^2=1+a_1\kappa+a_2\kappa^2+\dots$, $a_1=-2\,\mathrm{Im}\,g_1$, $a_2=|g_1|^2-2\,\mathrm{Re}\,g_2$. WSRK3:
+$g_1=\mathrm{sinc}(\omega/2)$ is real ($a_1=0$), but $a_2>0$ for $\omega>6.3$ (max $0.11$ at
+$\omega=8.5$); MIS\_KW3: $a_2>0$ for $\omega>2.7$ (up to 6.5); EB4: $a_2>0$ for $\omega>8.6$. The growth
+$a_2\kappa^2$ exists at arbitrarily small advective Courant numbers and is opposed only by the upwind
+dissipation $O(C_{\rm adv}k^4)$ of the advection, and in practice by the extrapolation. Lawson:
+$g_k=1/k!$ exactly, $R=e^{\mathrm i\omega}R_{RK}(\mu)$, the RK stability on the advection for every
+$C_{\rm sound}$ (only in this commuting test; with the real split Lawson degrades, Section on RK3, Lawson
+and ETD).
+\item $|g_0(\omega)|<1$: the MIS methods with $\alpha,\gamma\neq0$. For $S=0$ stage $i$ starts from
+$q^n+\sum_j\alpha_{ij}\Delta Y_j$ and is forced by $\sum_j\gamma_{ij}\Delta Y_j/(d_i\dt)$; the fast
+increments themselves enter as initial values and forcing, so the step is not $e^{\dt L}$ but a
+trigonometric approximation of it, exact as $\omega\to0$ to the order of the method:
+$1-|g_0|\sim\omega^4$ (MIS54 $\omega^6$). $|R(\mathrm i\omega,0)|$ at $\omega=2,4,8,12$: MIS54 0.999, 0.973,
+0.578, 0.566; MISF53 0.994, 0.918, 0.538, 0.483; MIS4a 0.990, 0.877, 0.305, 0.663; MIS\_FV53 0.987, 0.859,
+0.531, 0.313; MIS\_DG53 0.994, 0.903, 0.181, 0.220; WSRK3, MIS\_KW3, LRK4, EB4 1. This is a built-in,
+scale-selective damping of the acoustic modes with $ck\dt=O(1)$, i.e.\ of exactly the modes whose
+resonance with the slow stages makes WSRK3 unstable, while the resolved slow modes ($\omega\ll1$) are
+untouched. It depends on $\omega=ck\dt$ only, not on $n_{\rm sub}$: unlike the extrapolation it does not
+vanish with many small steps.
+\end{itemize}
+Largest stable $C_{\rm adv}$ (resolution 0.05), Knoth--Wensch C-grid, exact fast stages, no
+extrapolation, for $C_{\rm sound}=0,1,2,4,8,12,16$ (0.00: unstable at the smallest $C_{\rm adv}$):
+\begin{center}\small\setlength{\tabcolsep}{4pt}\begin{tabular}{lccccccc}\toprule
+& 0 & 1 & 2 & 4 & 8 & 12 & 16\\\midrule
+WSRK3 & 1.60 & 1.40 & 1.30 & 0.00 & 0.00 & 0.00 & 0.00\\
+MIS\_KW3 & 1.60 & 1.15 & 0.65 & 0.00 & 0.00 & 0.00 & 0.00\\
+MIS2 & 1.35 & 0.80 & 0.50 & 0.70 & 1.30 & 2.00 & 2.65\\
+MIS4 & 1.60 & 1.45 & 1.30 & 0.85 & 1.15 & 2.00 & 2.80\\
+MIS4a & 1.95 & 1.75 & 1.70 & 1.65 & 2.05 & 2.95 & 0.00\\
+MIS54 & 2.05 & 2.10 & 2.30 & 2.70 & 2.35 & 3.00 & 2.10\\
+MISF53 & 2.05 & 2.20 & 2.45 & 2.40 & 2.55 & 3.00 & 0.00\\
+MIS\_FV42 & 1.85 & 1.65 & 1.60 & 1.50 & 1.20 & 2.05 & 2.60\\
+MIS\_FV53 & 2.05 & 2.15 & 2.30 & 2.20 & 2.85 & 3.00 & 2.95\\
+MIS\_DG53 & 2.35 & 2.35 & 1.85 & 1.35 & 2.15 & 2.30 & 3.00\\
+LRK3 / LRK4 & 1.60 & 1.60 & 1.60 & 1.60 & 1.60 & 1.60 & 1.60/1.70\\
+ETD2 & 0.85 & 0.80 & 0.90 & 0.00 & 0.05 & 0.05 & 0.10\\
+EB4 & 1.70 & 1.50 & 1.50 & 1.35 & 0.00 & 0.00 & 0.00\\\bottomrule
+\end{tabular}\end{center}
+The real FV frozen split (column Fourier blocks with gravity and the vertical discretization,
+\code{MethodDesign/app\_stability.jl}, exact fast stages, $\Delta x=2.5$\,km, $U=10/20/40$\,m/s) is more
+restrictive, because there the fast and slow parts do not commute: largest stable $C_{\rm adv}$ WSRK3 and
+MIS\_KW3 0.0/0.0/0.0, MIS2 0.6/0.6/0.1, MIS4 0.7/0.8/0.2, MIS4a, MIS54, MISF53 0.1/0.2/0.4, MIS\_FV42
+0.9/0.9/0.7, MIS\_FV53 1.2/0.2/0.5, MIS\_DG53 1.5/1.5/0.8. The channel runs above are somewhat more stable
+than these exact-stage limits (finite $n_{\rm sub}$ with the HEVI loop), but they have the same ranking:
+WSRK3 never, MIS54 to about 0.4, MIS\_FV53/MIS\_DG53 the furthest.
+
+\paragraph{Moist bubble without extrapolation.} $80\times40$, $\pi$, \code{micro = :fast}, $\tau_{\rm fac}=0.25$,
+1000\,s, $\beta=0$: WSRK3, MIS54, MISF53, MIS\_FV53, MIS\_DG53 and EB4 are all stable at $\dt=10$, 20, 30
+and 40\,s ($n_{\rm sub}$ up to 74, $C_{\rm adv}=\max|w|\dt/\Delta x$ up to 2.2), $\max|w|$ 13.4--13.6\,m/s
+(RK4 13.31), $\theta_e'$ error 2.11--2.13\,K for all (the unresolved relaxation dominates), total water
+conserved to $2\cdot10^{-15}$. The bubble has no mean wind and lasts 1000\,s, too short for the slow growth
+seen in the 10-hour channel; it does not show the difference between WSRK3 and MIS.
+
 \section{Moist bubble results}\label{sec:moistres}
+\paragraph{With the Bryan--Fritsch prefactor (current).} $80\times40$, 1000\,s, \code{micro = :fast}, maximum
+error of $\theta_e'$ [K] against RK4 and $\max|w|$ [m/s] at $\dt=2$, 5, 10\,s:
+\begin{center}\footnotesize\setlength{\tabcolsep}{3pt}\begin{tabular}{lccc}\toprule
+& RK4 ($\max|w|$, $\max\theta_e'$) & MIS54 & EB4\\\midrule
+$\pi$, $\tau_{\rm fac}=0.25$ & 13.31, 2.89 & 2.11/2.12/2.11 (13.5/13.3/13.4) & 2.13/2.13/2.12 (13.3/13.3/13.4)\\
+$p$, $\tau_{\rm fac}=0.25$ & 13.31, 2.89 & 2.10/2.12/2.11 (13.8/13.5/13.7) & 2.12/2.12/2.11 (13.5/13.5/13.6)\\
+$\pi$, $\tau_{\rm fac}=4$ & 12.52, 2.96 & 0.18/0.14/0.17 (12.5) & 0.14/0.14/0.17 (12.5)\\\bottomrule
+\end{tabular}\end{center}
+WSRK3 at $\tau_{\rm fac}=4$: 0.14/0.15/0.16\,K. With the energy-consistent heating the bubble is much weaker
+than with the first version ($\max|w|$ 13.3 against 22.2\,m/s, $\theta_e'\le2.9$ against 6.1\,K) and close to
+the dry 2\,K bubble, as intended by Bryan and Fritsch. At $\tau_{\rm fac}=0.25$ $\max|w|$ now agrees with RK4
+within 4\,\%, the $\theta_e'$ error is still large (the unresolved relaxation); at $\tau_{\rm fac}=4$ all
+schemes agree to 0.2\,K. Mass and total water conserved to round-off. \emph{The tables below are from the
+first version (heating at fixed $\theta_e$, 13--38\,\% too strong); the comparisons between schemes and
+between $\tau$ remain qualitatively valid.}
+
 Bryan--Fritsch moist bubble, $80\times40$ cells ($\Delta x=\Delta z=250$\,m), $T=1000$\,s, MIS54 with HEVI,
 Fischer--Burmeister relaxation with $w_\tau=50$\,m/s ($\tau=5$\,s); reference RK4 of the same operator
 (3574 steps). Rest-state residual of the balanced saturated column $7\cdot10^{-13}$ ($\pi$),

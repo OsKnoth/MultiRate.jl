@@ -724,10 +724,17 @@ end
               1e-15 * maximum(x[FV.iρ(g, i, k)] for i in 1:12, k in 1:8)
         ρ1, Θ1, Q1, c1 = x[FV.iρ(g, 2, 3)], x[FV.iΘ(g, 2, 3)], x[FV.iV(mm, 2, 3)], x[FV.iC(mm, 2, 3)]
         T1, ρv1, _, _ = FV.moist_state(mg, ρ1, Θ1, Q1, c1)
-        θS = FV.theta_phase_factor(mg, ρ1, T1, ρv1, c1)
+        p1 = FV.moist_state(mg, ρ1, Θ1, Q1, c1)[4]
+        θS = FV.theta_phase_factor(mg, ρ1, Θ1, T1, p1, ρv1, c1)          # Bryan–Fritsch prefactor
         @test θS > 0
-        h = 1e-5 * ρ1
-        @test abs(FV.theta_e(mg, ρ1, Θ1 + θS * h, Q1 - h, c1 + h) / FV.theta_e(mg, ρ1, Θ1, Q1, c1) - 1) < 1e-7
+        # through the equation of state: isochoric first law dT/dρc = (L - Rv T)/c_vm, and the
+        # closed-form pressure source = chain rule (∂p/∂Θ) θS + ∂p/∂ρc - ∂p/∂ρv
+        h = 1e-6 * ρ1
+        st(s) = FV.moist_state(mg, ρ1, Θ1 + s * θS * h, Q1 - s * h, c1 + s * h)
+        ρd1 = ρ1 - Q1 - c1; Rm1 = mg.Rd * ρd1 + mg.Rv * ρv1
+        cvm1 = mg.Cpd * ρd1 + mg.Cpv * ρv1 + mg.Cpl * c1 - Rm1
+        @test (st(1)[1] - st(-1)[1]) / 2h ≈ (FV.latent(mg, T1) - mg.Rv * T1) / cvm1 rtol = 1e-6
+        @test (st(1)[4] - st(-1)[4]) / 2h ≈ FV.pressure_phase_factor(mg, ρ1, T1, ρv1, c1) rtol = 1e-6
         xsup = copy(x); xsup[FV.iV(mm, 2, 3)] += 0.5c1; xsup[FV.iC(mm, 2, 3)] -= 0.5c1   # supersaturated cell
         mf = FV.MoistExnerModel(b; mgas = mg, micro = :fast)
         Ns, Nf = TS.rhs_nonlinear(mm, xsup), TS.rhs_nonlinear(mf, xsup)

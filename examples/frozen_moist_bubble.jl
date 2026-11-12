@@ -3,7 +3,7 @@
 # no saturation adjustment, condensation as an explicit Fischer–Burmeister relaxation with τ on the fast scale
 # and the latent heating Q_θ in the ρθ_ρ equation; π recomputed after every MIS step).
 #
-#     [PVAR=pi|p] [MICRO=fast|slow] [TAUFAC=f] [WTAU=w] [METHODS=MIS54,WSRK3,LRK4,EB4] julia --project=examples examples/frozen_moist_bubble.jl [T] [nx]
+#     [PVAR=pi|p] [MICRO=fast|slow] [TAUFAC=f] [WTAU=w] [METHODS=MIS54,WSRK3,LRK4,EB4] [DTS=2,5,10] julia --project=examples examples/frozen_moist_bubble.jl [T] [nx]
 #
 # Saturated, neutral atmosphere θ_e = 320 K, r_t = 0.02, 20 km × 10 km, nx × nx/2 cells (default
 # 100 × 50, Δx = 200 m). The background is in discrete hydrostatic balance with the pressure form
@@ -143,7 +143,8 @@ tr = @elapsed xr = TS.run_rk4(m, x0, T / nref, nref)
 const METHODS = Symbol.(split(get(ENV, "METHODS", "MIS54"), ","))
 dτ = 0.85 * 0.92 * grid.dx / c
 res5 = nothing
-for meth in METHODS, Δt in (2.0, 5.0, 10.0)
+const DTS = parse.(Float64, split(get(ENV, "DTS", "2,5,10"), ","))
+for meth in METHODS, Δt in DTS
     tab = TS.mis_tableau(meth)
     n = round(Int, T / Δt); nsub = ceil(Int, Δt / dτ)
     x = copy(x0)
