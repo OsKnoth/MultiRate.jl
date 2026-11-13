@@ -3,8 +3,9 @@
 \usepackage{amsmath,amssymb,booktabs,hyperref}
 \newcommand{\dtau}{\Delta\tau}
 \newcommand{\code}[1]{\texttt{\small #1}}
-\title{Fast integrators with a vertically implicit step\\
-on a terrain-following grid:\\ Verlet EI and the WRF forward--backward scheme}
+\newcommand{\tv}{\vartheta}   % thermodynamic variables (rho, Theta [, p or pi, moisture])
+\title{Fast integrators with a vertically implicit step:\\
+the WRF forward--backward scheme and Verlet EI,\\ Cartesian and terrain-following}
 \author{MultiRate.jl}
 \date{\today}
 \emergencystretch=3em
@@ -12,14 +13,15 @@ on a terrain-following grid:\\ Verlet EI and the WRF forward--backward scheme}
 \maketitle
 
 \begin{abstract}
-We formulate the linearly implicit Verlet step ``Version EI'' of the note \emph{Split-explicit
-with implicit treatment of part of the fast waves} (Imex.pdf, 2024) for the fast part of the
-Gal-Chen finite-volume discretization, derive the tridiagonal system for the vertical momentum $W$,
-discuss when the contravariant vertical mass flux $\Omega$ has to be the unknown instead, and compare
-the scheme with the forward--backward acoustic step of WRF with its vertically implicit,
-off-centred Crank--Nicolson step. Both are implemented as fast integrators of the frozen MIS
-split with the $W$ system and an explicit metric term (Section~\ref{sec:impl}) and compared on the
-Agnesi mountain wave (Section~\ref{sec:agnesi}).
+We describe the acoustic small step of WRF (forward--backward, vertically implicit,
+off-centred) and the linearly implicit Verlet step ``Version EI'' of the note \emph{Split-explicit
+with implicit treatment of part of the fast waves} (Imex.pdf, 2024), first in Cartesian
+coordinates and then on a terrain-following grid, where the contravariant vertical mass flux
+$\Omega$ is the unknown of the column system and all vertical pressure derivatives are implicit.
+The pressure is linearized throughout. Both schemes have the same two options, off-centring and
+explicit extrapolation (divergence damping); for equal options they are conjugate. The schemes
+are implemented in the frozen MIS split with the $W$ system and an explicit metric term
+(Section~\ref{sec:impl}) and compared on the Agnesi mountain wave (Section~\ref{sec:agnesi}).
 \end{abstract}
 
 \tableofcontents
@@ -27,439 +29,505 @@ Agnesi mountain wave (Section~\ref{sec:agnesi}).
 %======================================================================
 \section{Introduction}
 Split-explicit methods (MIS, RK3) integrate the fast acoustic--gravity part with small steps
-$\dtau$. On grids with $\Delta z\ll\Delta x$ the vertical acoustic Courant number
-$c_s\dtau/\Delta z$ is far above one, and the vertical part has to be implicit, while the horizontal
-part stays explicit: HEVI. Three ingredients decide the properties of such a small step:
+$\dtau=h$. On grids with $\Delta z\ll\Delta x$ the vertical acoustic Courant number
+$c_s\dtau/\Delta z$ is far above one. The vertical part has to be implicit; the horizontal
+part stays explicit (HEVI). Three ingredients decide the properties of such a small step:
 \begin{enumerate}
-\item the explicit horizontal integrator (Störmer--Verlet, forward--backward);
+\item the explicit horizontal integrator (forward--backward, Störmer--Verlet);
 \item the implicit vertical integrator (Crank--Nicolson, off-centred) and the variable whose
-column system is solved ($W$, $\Omega$);
-\item the place of the terrain metric terms (explicit or implicit).
+column system is solved ($W$, or $\Omega$ on terrain);
+\item which pressure derivatives are implicit on terrain.
 \end{enumerate}
-The scheme of the Imex note combines the first two in one Verlet step (Section~\ref{sec:ei});
-WRF (Klemp, Skamarock and Dudhia 2007; Skamarock et al.\ 2019) uses a forward--backward step with
-an off-centred vertically implicit part (Section~\ref{sec:wrf}). The comparison is in
-Section~\ref{sec:cmp}.
+Notation: $\tv$ denotes the thermodynamic variables, $\tv=(\rho,\Theta)$ with $\Theta=\rho\theta$ (in the extended
+forms also $p$ or $\pi$, in the moist form $\rho q_v$, $\rho q_c$); $U=\rho u$ and $W=\rho w$ are the momenta;
+$\theta_f$ is the frozen potential temperature at the faces; $h=\dtau$.
 
 %======================================================================
-\section{The fast system on the terrain-following grid}\label{sec:sys}
-Gal-Chen coordinate $z=z_s(x)+\eta J(x)$, $J=1-z_s/H$, C-grid with $\rho,\Theta$ (and $\pi$) at the cell
-centres, $U=\rho u$ at the $x$-faces, $W=\rho w$ at the $\eta$-faces; $\Omega=W-z_x\bar U$ is the
-contravariant mass flux through the $\eta$-surfaces ($\bar U$ the four-point mean; $\Omega=0$ at the ground
-and the top). Thermodynamic variables $t=(\rho,\Theta)$, momenta $(U,W)$. The fast part is
+\section{The fast system with linearized pressure}\label{sec:sys}
+\subsection{Linearized pressure}
+In the fast part the pressure enters only through its gradient. It is linearized about the frozen
+state of the stage,
+\[
+p=p_f+P\,(\Theta-\Theta_f),
+\]
+\[
+P=\Big(\frac{\partial p}{\partial\Theta}\Big)_f=\Big(\frac{\gamma p}{\Theta}\Big)_f ,
+\]
+with $P$ frozen in space and time within a stage. The gradient of $p_f-P\Theta_f$ is part of the constant
+forcing, so in the fast operator $p=P\Theta$. With the pressure itself as an additional variable the
+pressure is linear by construction ($\Theta$ replaced by $p$, $P=1$); with the Exner pressure the gradient is
+$c_p\Theta_f\nabla\pi$ ($P$ replaced by $c_p\Theta_f$). The algebra below holds for all three.
+
+\subsection{Cartesian coordinates}
+With frozen face values $\theta_f$ the fast system is
 \begin{align*}
-\rho_t &= -\tfrac1J\big[\delta_x(J_xU)+\delta_\eta\Omega\big],\\
-\Theta_t &= -\tfrac1J\big[\delta_x(\theta_xJ_xU)+\delta_\eta(\theta_\eta\Omega)\big],\\
-U_t &= -\tfrac1{J_x}\big[\delta_x(Jp)-\delta_\eta(z_x\,p_\sigma)\big],\\
-W_t &= -\frac{\delta_\eta p}{J\Delta\eta}-g\bar\rho ,
+\rho_t&=-\partial_xU-\partial_zW,\\
+\Theta_t&=-\partial_x(\theta_fU)-\partial_z(\theta_fW),\\
+U_t&=-\partial_xp,\\
+W_t&=-\partial_zp-g\rho,\\
+p&=P\,\Theta .
 \end{align*}
-$p_\sigma$ the mean at the $\eta$-faces, $\theta_x,\theta_\eta$ frozen face values, and $p=p(\Theta)$ (full
-pressure), $p\approx P\,\Theta$ with frozen $P=(\gamma p/\Theta)_f$ (product form) or the Exner pressure as an
-additional variable. We use the blocks
-\[
-t_t = D_h U + D_v W + f_t,\qquad U_t = G_x\,p + f_U,\qquad W_t = G_z\,p - g\bar\rho + f_W,
-\]
-$D_h$ the horizontal divergence \emph{including} the part $-z_x\bar U$ of $\Omega$, $D_v$ the part with $W$,
-$G_x$ the horizontal pressure gradient \emph{including} the metric term $\delta_\eta(z_xp_\sigma)/J_x$, $G_z$
-the vertical one; $f$ the constant forcing of the stage. Two observations shape everything that
-follows:
-\begin{itemize}
-\item a vertical pressure difference acts on $W$ \emph{and}, through the metric term, on $U$, and
-$U$ feeds back into the vertical divergence through $\Omega$;
-\item for $z_x=0$ the vertical part $(D_v,G_z,g)$ is a closed column system.
-\end{itemize}
+In block form, with the horizontal and the vertical divergence $D_h$, $D_v$ and the pressure forces
+$G_x=-\partial_x P$, $B_v=-\partial_zP-g$ (acting on $\Theta$ and $\rho$):
+\begin{align*}
+\tv_t&=D_hU+D_vW+f_\tv,\\
+U_t&=G_x\tv+f_U,\\
+W_t&=B_v\tv+f_W .
+\end{align*}
+$f$ is the constant forcing of the stage (slow tendencies, linearization remainder). The vertical part
+$(D_v,B_v)$ is a closed system in each column.
 
-%======================================================================
-\section{Verlet EI}\label{sec:ei}
-\subsection{The step}
-In the Imex note the momentum operator is split into an explicit part $M^E_{up}$ and an implicit part
-$M^I_{up},M^I_{u\rho}$; the divergence $M_{pu}$ is not split. Here $M_{pu}=D_h+D_v$, $M^E_{up}=G_x$ ($U$ rows),
-$M^I_{up}=G_z$, $M^I_{u\rho}=-g\,\overline{(\cdot)}$ ($W$ rows). With $h=\dtau$ and the off-centring $\gamma$
-(Version III; $\gamma=\tfrac12$ is Version EI):
-\begin{align}
-t^{n+1/2} &= t^n+\tfrac h2\big[D_hU^n+D_vW^n+f_t\big],\label{eq:ei1}\\
-U^{n+1} &= U^n+h\big[G_x\,p(t^{n+1/2})+f_U\big],\label{eq:ei2}\\
-W^{n+1} &= W^n+h\big[(1-\gamma)(G_zp^n-g\bar\rho^n)+\gamma(G_zp^{n+1}-g\bar\rho^{n+1})\big]+hf_W,\label{eq:ei3}\\
-t^{n+1} &= t^{n+1/2}+\tfrac h2\big[D_hU^{n+1}+D_vW^{n+1}+f_t\big].\label{eq:ei4}
-\end{align}
-The thermodynamic half steps are explicit in the full divergence; only $W$ is implicit.
-
-\subsection{The system for $W$}
-$U^{n+1}$ is known after \eqref{eq:ei2}. With $t^*=t^{n+1/2}+\tfrac h2[D_hU^{n+1}+f_t]$, \eqref{eq:ei4} reads
-$t^{n+1}=t^*+\tfrac h2D_vW^{n+1}$. Linearize $p^{n+1}=p(t^*)+P\,(\Theta^{n+1}-\Theta^*)$ (exact for the product
-form and the Exner form; for the full pressure linearly implicit with $P=\gamma p/\Theta$ at the start of the
-stage) and insert into \eqref{eq:ei3}:
+\subsection{Terrain-following coordinates and the contravariant mass flux}\label{sec:tf}
+Gal-Chen coordinate $z=z_s(x)+\eta J(x)$, $J=1-z_s/H$, metric $z_x=\partial_xz|_\eta=z_s'(1-\eta/H)$.
+The contravariant vertical mass flux through the $\eta$-surfaces is
 \[
-\Big[I-\tfrac{\gamma h^2}{2}\big(G_zP\,D_v^\Theta-g\,\overline{D_v^\rho}\big)\Big]W^{n+1}
-=W^n+h(1-\gamma)\big(G_zp^n-g\bar\rho^n\big)+h\gamma\big(G_zp(t^*)-g\bar\rho^*\big)+hf_W .
+\Omega=W-z_xU .
 \]
-With $D_v^\rho W=-\delta_\eta W/(J\Delta\eta)$, $D_v^\Theta W=-\delta_\eta(\theta_\eta W)/(J\Delta\eta)$ and the face pressure
-difference $\alpha_k\Theta_k-\beta_k\Theta_{k-1}$ ($\alpha=\beta=P_f$ for the product form) this is, at the face $k$
-of a column with $\Delta z=J\Delta\eta$,
+The fast system in flux form reads
+\begin{align*}
+J\rho_t&=-\partial_x(JU)-\partial_\eta\Omega,\\
+J\Theta_t&=-\partial_x(J\theta_fU)-\partial_\eta(\theta_f\Omega),\\
+U_t&=-\frac1J\big[\partial_x(Jp)-\partial_\eta(z_xp)\big],\\
+W_t&=-\frac1J\partial_\eta p-g\rho .
+\end{align*}
+Write the horizontal pressure force and the vertical pressure derivative separately,
 \[
-W_{k-1}\big[-r\beta_k\theta_{k-1}+g_g\big]+W_k\big[1+r\theta_k(\alpha_k+\beta_k)\big]+W_{k+1}\big[-r\alpha_k\theta_{k+1}-g_g\big]=b_k,
+G_xp=-\frac1J\big[\partial_x(Jp)-p\,\partial_\eta z_x\big],
 \]
 \[
-r=\frac{\gamma h^2}{2\Delta z^2},\qquad g_g=\frac{\gamma h^2g}{4\Delta z},
+G_\eta p=\frac1J\,\partial_\eta p .
 \]
-a tridiagonal system per column; $\rho^{n+1},\Theta^{n+1}$ follow from $t^{n+1}=t^*+\tfrac h2D_vW^{n+1}$.
-Equivalently: with the row scaling $D=\mathrm{diag}(\tfrac h2\ \text{on }t,\ \gamma h\ \text{on }W)$ the
-steps \eqref{eq:ei3}--\eqref{eq:ei4} are one solve $(I-DJ_v)Y=DG_v$ of the vertical part, preceded by the
-explicit vertical increments $\tfrac h2D_vW^n$, $(1-\gamma)hG_v$ in \eqref{eq:ei1}; the $W$ system depends on
-the product $\tfrac h2\cdot\gamma h$ only. The elimination in detail, for all forms, is in Section~\ref{sec:col}.
+Then $U_t=G_xp+z_xG_\eta p$, and from $\Omega_t=W_t-z_xU_t$
+\begin{align*}
+U_t&=G_xp+z_x\,G_\eta p,\\
+\Omega_t&=-(1+z_x^2)\,G_\eta p-g\rho-z_x\,G_xp .
+\end{align*}
+All vertical pressure derivatives $G_\eta p$ --- in the $U$ equation through the metric term and in the $\Omega$
+equation with the factor $1+z_x^2$ --- and gravity are treated implicitly; the horizontal pressure force
+$G_xp$ (in $U$ and in $\Omega$) and the horizontal divergence $\partial_x(JU)$ explicitly. The thermodynamic equations
+contain the momenta in the vertical only through $\Omega$, so $(\tv,\Omega)$ is a closed column system for the
+implicit part; $W=\Omega+z_xU$ is diagnostic. For $z_x=0$, $J=1$ this is the Cartesian system with $\Omega=W$.
 
-\subsection{Properties}
-\begin{itemize}
-\item For a purely vertical problem ($D_h=G_x=0$): $t^{n+1}=t^n+\tfrac h2D_v(W^n+W^{n+1})$ and
-\eqref{eq:ei3}: with $\gamma=\tfrac12$ this is the trapezoidal rule (Crank--Nicolson) of the column system,
-unconditionally stable and non-dissipative.
-\item For a purely horizontal problem it is Störmer--Verlet (position Verlet), symmetric, second
-order, stable for $|\omega h|\le2$.
-\item The step is symmetric for $\gamma=\tfrac12$ and of second order; for $\gamma\ne\tfrac12$ of first order.
-\item One column solve and two evaluations of the horizontal thermodynamic part, one of the
-horizontal momentum part, two of the vertical part per small step. The present Strang
-composition (\code{:hevi}: horizontal Verlet half step, vertical Crank--Nicolson, horizontal half
-step) needs one solve, four horizontal thermodynamic and two horizontal momentum evaluations.
-\end{itemize}
-
-%======================================================================
-\section{$W$ or the contravariant $\Omega$?}\label{sec:omega}
-\subsection{Metric term explicit: the two are equivalent}
-In \eqref{eq:ei2} the metric term $\delta_\eta(z_xp_\sigma)/J_x$ is part of $G_x$ and explicit. Then
-$\bar U^{n+1}$ is known before the column solve, and $\Omega^{n+1}=W^{n+1}-z_x\bar U^{n+1}$ is an affine shift:
-the system for $\Omega$ has the same matrix and the right-hand side shifted by the known
-$z_x\bar U^{n+1}$. Nothing is gained by solving for $\Omega$.
-
-\subsection{The price of the explicit metric term}
-Constant slope $s=z_x$, no gravity, small amplitude, vertical structure only. The fast system
-contains
+\paragraph{Why the metric term has to be implicit on steep terrain.} Constant slope $s=z_x$, no
+gravity, vertical structure only:
 \[
-p_t=-c_s^2\rho_0\,\partial_z(W-sU),\qquad W_t=-\frac{\partial_zp}{\rho_0},\qquad U_t=s\,\frac{\partial_zp}{\rho_0}
-\quad\Longrightarrow\quad \Omega_t=-(1+s^2)\frac{\partial_zp}{\rho_0},
+\Omega_t=-(1+s^2)\,\frac{\partial_\eta p}{\rho_0},
 \]
-the vertical acoustic mode of the terrain-following coordinate has the frequency $c_sk_z\sqrt{1+s^2}$,
-and the part $s^2$ of the restoring force passes through the explicit $U$. A heuristic bound for the
-explicit coupling, from the largest vertical wavenumber $k_z\approx2/(J\Delta\eta)$, is
+the vertical acoustic mode of the terrain-following coordinate has the frequency $c_sk_\eta\sqrt{1+s^2}$. If
+the metric term $z_xG_\eta p$ in the $U$ equation is explicit (as in WRF and in the present code), the part
+$s^2$ of the restoring force passes through the explicit $U$. A heuristic bound from the largest vertical
+wavenumber $k_\eta\approx2/(J\Delta\eta)$ is
 \[
 \frac{c_s\,\dtau\,|z_x|}{J\Delta\eta}\lesssim1 .
 \]
-(This is an estimate, not yet the stability analysis of the coupled step.) Agnesi case of the
-MIS study: $350\cdot4.3\cdot0.026/200\approx0.2$; steep terrain, $z_x=0.5$, $\Delta z=50$\,m:
-$\approx15$. For steep terrain the metric term has to be implicit.
-
-\subsection{Metric term implicit: the system for $\Omega$}
-Move the vertical pressure difference of the $U$ equation into the implicit part,
-\[
-M^I_{up}=\big(\delta_\eta(z_xp_\sigma)/J_x\ \text{on }U,\ G_z\ \text{on }W\big),\qquad M^E_{up}=-\delta_x(Jp)/J_x .
-\]
-The
-vertical divergence depends on the momenta only through $\Omega$ ($\delta_\eta\Omega$, $\delta_\eta(\theta_\eta\Omega)$), and
-\[
-\Omega^{n+1}=\Omega'+h\big[(1-\gamma)G_\Omega p^n+\gamma G_\Omega p^{n+1}\big],\qquad
-G_\Omega p=G_zp-z_x\,\overline{\tfrac1{J_x}\delta_\eta(z_xp_\sigma)}\ \approx\ -(1+z_x^2)\frac{\delta_\eta p}{J\Delta\eta},
-\]
-$\Omega'$ containing all explicit contributions. This is a tridiagonal system for $\Omega$ with the metric factor
-$1+z_x^2$ on the vertical pressure gradient; $U^{n+1}$ is completed afterwards with the known
-$p^{n+1}$. Exactly column-local it is only with two approximations:
-\begin{enumerate}
-\item[(a)] the four-point means ($\bar U$ in $\Omega$, $p_\sigma$ and the average to the $W$ face in the metric
-term) are taken within the column in the implicit part; exactly they couple neighbouring columns;
-\item[(b)] in \eqref{eq:ei4} the horizontal divergence $D_hU^{n+1}$ uses $U$ before its implicit metric
-increment. With the full $M_{pu}$, as in the Imex note
-($\mathcal M=I-\tfrac14\dtau^2M^I_{up}M_{pu}$), the system for $(U,W)$ is two-dimensional.
-\end{enumerate}
-With (b) the step is no longer exactly symmetric, and the energy argument of the C-grid has to be
-checked again.
+(An estimate, not a stability analysis of the coupled step.) Agnesi case: $350\cdot4.3\cdot0.026/200\approx0.2$;
+steep terrain, $z_x=0.5$, $\Delta z=50$\,m: $\approx15$.
 
 %======================================================================
-\section{The WRF forward--backward scheme}\label{sec:wrf}
+\section{The WRF idea in Cartesian coordinates}\label{sec:wrf}
 \subsection{WRF}
 WRF integrates the acoustic modes in the small steps of its RK3 (Wicker and Skamarock 2002), in a
-terrain-following \emph{hydrostatic-pressure (mass)} coordinate with column mass $\mu$, geopotential
-$\phi$ and perturbation variables about the state of the large step (Klemp, Skamarock and Dudhia
-2007; Skamarock et al.\ 2019). Schematically, one small step $\tau\to\tau+\dtau$:
-\begin{enumerate}
-\item \emph{horizontal momentum forward}: $U^{\tau+\dtau}=U^\tau+\dtau\,[\text{horizontal pressure gradient
-of }p^{*}+\text{metric term }\partial_\eta p\,\partial_x\phi+R_U]$, with the divergence damping
-$p^*=p^\tau+\gamma_d(p^\tau-p^{\tau-\dtau})$, $\gamma_d=0.1$; the metric term is explicit;
-\item \emph{column mass and $\Omega$ backward}: $\mu^{\tau+\dtau}$ from the vertically integrated horizontal
-divergence of $U^{\tau+\dtau}$, then $\Omega^{\tau+\dtau}$ diagnostically from the continuity equation of the
-column --- in the mass coordinate $\Omega$ is \emph{not} an unknown of the implicit system;
-\item $\Theta^{\tau+\dtau}$ with the horizontal fluxes of $U^{\tau+\dtau}$ and the vertical ones of $\Omega^{\tau+\dtau}$;
-\item \emph{vertically implicit}: $W$ and $\phi$ with the off-centred average
-$\overline a^\tau=\tfrac{1+\beta_d}2a^{\tau+\dtau}+\tfrac{1-\beta_d}2a^\tau$, $\beta_d=0.1$, in the vertical pressure
-gradient (pressure from the linearized equation of state in $\phi_\eta$, $\Theta$, $\mu$), the buoyancy and the
-geopotential equation $\phi_t\propto gW-\Omega\phi_\eta$; eliminating $\phi$ gives a tridiagonal system for $W$.
-\end{enumerate}
-In addition: an external-mode filter and, on the large step, the RK3 with $n_s/3$, $n_s/2$, $n_s$ small
-steps. The vertical unknown is the Cartesian $W$; the terrain enters the implicit system only
-through the explicit metric term and the diagnostic $\Omega$.
+terrain-following hydrostatic-pressure (mass) coordinate with column mass $\mu$, geopotential $\phi$
+and perturbation variables about the state of the large step (Klemp, Skamarock and Dudhia 2007;
+Skamarock et al.\ 2019). One small step: (1) horizontal momentum forward with the divergence-damped
+pressure; (2) column mass and $\Omega$ from the new horizontal fluxes ($\Omega$ is diagnostic in the mass
+coordinate); (3) $\Theta$ with the new fluxes; (4) $W$ and $\phi$ vertically implicit, off-centred, eliminated to a
+tridiagonal system for $W$. The idea, stripped of the mass coordinate, is the following
+forward--backward step in Cartesian coordinates.
 
-\subsection{The analogue on the Gal-Chen grid}
-In height coordinates $\Omega=W-z_x\bar U$ is not diagnostic; it couples $W$ to the thermodynamic variables.
-The analogue (\code{:wrf} in \code{TimeStepping/fast.jl}, linearized fast operator), with $\beta=(1+\beta_d)/2=0.55$:
+\subsection{The step}
+With the off-centring $\beta=(1+\varepsilon)/2$ and the weighted average
+\[
+a^\beta=(1-\beta)\,a^n+\beta\,a^{n+1},
+\]
+one small step $n\to n+1$ is
+\begin{align}
+\tilde p&=p^n+\gamma_d\,(p^n-p^{n-1}),\label{eq:wrf0}\\
+U^{n+1}&=U^n-h\,\partial_x\tilde p+hf_U,\label{eq:wrf1}\\
+\rho^{n+1}&=\rho^n-h\,\partial_xU^{n+1}-h\,\partial_zW^\beta+hf_\rho,\label{eq:wrf2}\\
+\Theta^{n+1}&=\Theta^n-h\,\partial_x(\theta_fU^{n+1})-h\,\partial_z(\theta_fW^\beta)+hf_\Theta,\label{eq:wrf3}\\
+W^{n+1}&=W^n-h\,\partial_zp^\beta-h\,g\rho^\beta+hf_W .\label{eq:wrf4}
+\end{align}
+The horizontal part is forward--backward: $U$ forward with the old (extrapolated) pressure, $\tv$ backward
+with the new $U$. The vertical part is the $\beta$-weighted Crank--Nicolson step of $(\tv,W)$ with $U^{n+1}$ fixed.
+Two options, both zero by default:
+\begin{itemize}
+\item off-centring $\varepsilon$ (WRF: \code{epssm} $=0.1$): damps the vertically propagating acoustic modes;
+\item explicit extrapolation $\gamma_d$ (WRF: \code{smdiv} $=0.1$, divergence damping): damps the horizontally
+propagating acoustic modes. In the first small step of a stage $p^{n-1}=p^n$.
+\end{itemize}
+
+\subsection{Elimination: the system for $W$}
+After \eqref{eq:wrf1} $U^{n+1}$ is known. Collect the known parts of \eqref{eq:wrf2}--\eqref{eq:wrf3},
 \begin{align*}
-U^{n+1}&=U^n+h\big[G_x\,p(t^{*})+f_U\big],\qquad t^*=t^n+\gamma_d(t^n-t^{n-1}),\\
-\begin{pmatrix}t\\W\end{pmatrix}^{n+1}&=\begin{pmatrix}t\\W\end{pmatrix}^n
-+h\begin{pmatrix}D_hU^{n+1}+f_t\\ f_W\end{pmatrix}
-+h\,A_v\Big[(1-\beta)\begin{pmatrix}t\\W\end{pmatrix}^n+\beta\begin{pmatrix}t\\W\end{pmatrix}^{n+1}\Big],
+\hat\rho&=\rho^n-h\,\partial_xU^{n+1}-(1-\beta)h\,\partial_zW^n+hf_\rho,\\
+\hat\Theta&=\Theta^n-h\,\partial_x(\theta_fU^{n+1})-(1-\beta)h\,\partial_z(\theta_fW^n)+hf_\Theta,
 \end{align*}
-$A_v$ the vertical part $(D_v;\,G_z,-g)$. Elimination gives the $W$ system of Section~\ref{sec:ei} with
-$r=\beta^2h^2/\Delta z^2$, $g_g=\beta^2h^2g/(2\Delta z)$; the metric term is explicit (as in WRF).
+so that
+\begin{align*}
+\rho^{n+1}&=\hat\rho-\beta h\,\partial_zW^{n+1},\\
+\Theta^{n+1}&=\hat\Theta-\beta h\,\partial_z(\theta_fW^{n+1}),\\
+p^{n+1}&=P\,\Theta^{n+1} .
+\end{align*}
+Inserted into \eqref{eq:wrf4}:
+\[
+W^{n+1}-\beta^2h^2\,\partial_z\big(P\,\partial_z(\theta_fW^{n+1})\big)-\beta^2h^2\,g\,\partial_zW^{n+1}=R_W,
+\]
+\[
+R_W=W^n-h\,\partial_z\big[(1-\beta)p^n+\beta P\hat\Theta\big]-hg\big[(1-\beta)\rho^n+\beta\hat\rho\big]+hf_W .
+\]
+The operator is a discrete Helmholtz operator in $z$: on the C-grid a tridiagonal matrix per column
+(Section~\ref{sec:col}). Afterwards $\rho^{n+1}$, $\Theta^{n+1}$ follow from the two lines above (back substitution).
+For $\beta=\tfrac12$ the matrix is $I-\tfrac{h^2}4(\partial_zP\partial_z\theta_f+g\partial_z)$.
+
+%======================================================================
+\section{Verlet EI in Cartesian coordinates}\label{sec:ei}
+\subsection{The step}
+In the Imex note the momentum operator is split into an explicit part (here the horizontal pressure
+force) and an implicit part (the vertical pressure force and gravity); the divergence is not split.
+With the same options as WRF, $\beta=(1+\varepsilon)/2$, one small step is
+\begin{align}
+\tv^{n+1/2}&=\tv^n+(1-\beta)h\,\big[D_hU^n+D_vW^n+f_\tv\big],\label{eq:ei1}\\
+W'&=W^n+(1-\beta)h\,\big[B_v\tv^n+f_W\big],\label{eq:ei1w}\\
+U^{n+1}&=U^n+h\,G_x\tilde\tv^{\,n+1/2}+hf_U,\label{eq:ei2}\\
+\tv^{n+1}&=\tv^{n+1/2}+\beta h\,\big[D_hU^{n+1}+D_vW^{n+1}+f_\tv\big],\label{eq:ei3}\\
+W^{n+1}&=W'+\beta h\,\big[B_v\tv^{n+1}+f_W\big],\label{eq:ei4}
+\end{align}
+with the extrapolation
+\[
+\tilde\tv^{\,n+1/2}=\tv^{n+1/2}+\gamma_d\big(\tv^{n+1/2}-\tv^{n-1/2}\big)
+\]
+(no extrapolation in the first small step of a stage). For $\varepsilon=\gamma_d=0$ this is Version EI of the Imex
+note: thermodynamic half step explicit in the full divergence, $U$ explicit, $W$ trapezoidal in the
+vertical pressure force and gravity, thermodynamic half step.
+
+\subsection{Elimination: the system for $W$}
+\eqref{eq:ei3}--\eqref{eq:ei4} are the implicit part. With
+\[
+\tv^*=\tv^{n+1/2}+\beta h\,\big[D_hU^{n+1}+f_\tv\big]
+\]
+they read $\tv^{n+1}=\tv^*+\beta h\,D_vW^{n+1}$ and $W^{n+1}=W'+\beta h\,[B_v\tv^{n+1}+f_W]$, and
+\[
+W^{n+1}-\beta^2h^2\,\partial_z\big(P\,\partial_z(\theta_fW^{n+1})\big)-\beta^2h^2\,g\,\partial_zW^{n+1}=W'+\beta h\,\big[B_v\tv^*+f_W\big] .
+\]
+The same matrix as in WRF. In the original Version III of the Imex note only the $W$ rows are off-centred
+($\gamma$ instead of $\beta$ in \eqref{eq:ei1w}, \eqref{eq:ei4}, $\tfrac h2$ in \eqref{eq:ei1}, \eqref{eq:ei3}); the matrix factor is then $\gamma h^2/2$.
+
+\subsection{Properties}
+\begin{itemize}
+\item Purely vertical problem ($D_h=G_x=0$): the $\beta$-weighted Crank--Nicolson step of the column;
+for $\varepsilon=0$ the trapezoidal rule, unconditionally stable and non-dissipative.
+\item Purely horizontal problem, $\varepsilon=0$: Störmer--Verlet (position Verlet), symmetric, second order,
+stable for $|\omega h|\le2$.
+\item For $\varepsilon=0$ the step is symmetric and of second order; for $\varepsilon>0$ of first order.
+\item With the half steps of consecutive small steps combined (Section~\ref{sec:opt}) the cost per small step
+is that of WRF: one evaluation of each part and one column solve.
+\end{itemize}
+
+%======================================================================
+\section{Orography: the contravariant $\Omega$ with all vertical pressure derivatives implicit}\label{sec:omega}
+\subsection{Splitting}
+On the terrain-following grid (Section~\ref{sec:tf}) the explicit part is the horizontal pressure force
+$G_xp$ in the $U$ and in the $\Omega$ equation and the horizontal divergence; the implicit part is everything
+with $G_\eta p$, gravity and the vertical divergence. With $p=P\Theta$ and $\beta=(1+\varepsilon)/2$:
+\begin{center}\small
+\begin{tabular}{lll}\toprule
+equation & explicit & implicit\\\midrule
+$\rho$ & $-\frac1J\partial_x(JU)$ & $-\frac1J\partial_\eta\Omega$\\
+$\Theta$ & $-\frac1J\partial_x(J\theta_fU)$ & $-\frac1J\partial_\eta(\theta_f\Omega)$\\
+$U$ & $G_xp$ & $z_x\,G_\eta p$\\
+$\Omega$ & $-z_x\,G_xp$ & $-(1+z_x^2)\,G_\eta p-g\rho$\\\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{The WRF step for $\Omega$}
+\begin{align}
+\tilde p&=p^n+\gamma_d\,(p^n-p^{n-1}),\label{eq:wo0}\\
+\hat U&=U^n+h\,G_x\tilde p+h\,z_xG_\eta p^n+hf_U,\label{eq:wo1}\\
+\hat\Omega&=\Omega^n-h\,z_xG_x\tilde p+hf_\Omega,\label{eq:wo2}\\
+\rho^{n+1}&=\rho^n-\frac hJ\,\partial_x(J\hat U)-\frac hJ\,\partial_\eta\Omega^\beta+hf_\rho,\label{eq:wo3}\\
+\Theta^{n+1}&=\Theta^n-\frac hJ\,\partial_x(J\theta_f\hat U)-\frac hJ\,\partial_\eta(\theta_f\Omega^\beta)+hf_\Theta,\label{eq:wo4}\\
+\Omega^{n+1}&=\hat\Omega-h\,(1+z_x^2)\,G_\eta p^\beta-h\,g\rho^\beta,\label{eq:wo5}\\
+U^{n+1}&=\hat U+\beta h\,z_xG_\eta\big(p^{n+1}-p^n\big),\label{eq:wo6}\\
+W^{n+1}&=\Omega^{n+1}+z_xU^{n+1}.\label{eq:wo7}
+\end{align}
+$\hat U$ is the predictor with the metric term at the old pressure; \eqref{eq:wo6} completes it to
+$U^{n+1}=U^n+hG_x\tilde p+hz_xG_\eta p^\beta+hf_U$, so that the vertical pressure derivative in the $U$ equation is
+$\beta$-weighted like the one in the $\Omega$ equation. The horizontal mass flux in \eqref{eq:wo3}--\eqref{eq:wo4} uses $\hat U$
+instead of $U^{n+1}$; the difference $\beta hz_xG_\eta(p^{n+1}-p^n)$ enters the thermodynamic variables in the
+\emph{next} small step. This lag is what keeps the implicit system column-local (point (b) below).
+
+\paragraph{Elimination.} As in the Cartesian case,
+\begin{align*}
+\hat\rho&=\rho^n-\frac hJ\,\partial_x(J\hat U)-(1-\beta)\frac hJ\,\partial_\eta\Omega^n+hf_\rho,\\
+\hat\Theta&=\Theta^n-\frac hJ\,\partial_x(J\theta_f\hat U)-(1-\beta)\frac hJ\,\partial_\eta(\theta_f\Omega^n)+hf_\Theta,\\
+\rho^{n+1}&=\hat\rho-\beta\frac hJ\,\partial_\eta\Omega^{n+1},\\
+\Theta^{n+1}&=\hat\Theta-\beta\frac hJ\,\partial_\eta(\theta_f\Omega^{n+1}),
+\end{align*}
+and \eqref{eq:wo5} becomes the tridiagonal system per column
+\[
+\Omega^{n+1}-\beta^2h^2\,\frac{1+z_x^2}{J}\,\partial_\eta\Big(\frac PJ\,\partial_\eta(\theta_f\Omega^{n+1})\Big)-\beta^2h^2\,\frac gJ\,\partial_\eta\Omega^{n+1}=R_\Omega,
+\]
+\[
+R_\Omega=\hat\Omega-h\,(1+z_x^2)\,G_\eta\big[(1-\beta)p^n+\beta P\hat\Theta\big]-hg\big[(1-\beta)\rho^n+\beta\hat\rho\big] .
+\]
+Compared with the Cartesian $W$ system: $\partial_z\to J^{-1}\partial_\eta$ and the factor $1+z_x^2$ on the pressure part. The
+boundary conditions are the natural ones, $\Omega=0$ at the ground and at the top (no flux through the lower
+boundary is $\Omega=0$, not $W=0$).
+
+\subsection{The EI step for $\Omega$}
+The same splitting in the Verlet structure: with $H$ the implicit part of the table (rows $\tv$, $U$, $\Omega$) and $K$
+the explicit kick ($U$ and $\Omega$ by $hG_x\tilde p$ and $-hz_xG_x\tilde p$),
+\begin{align*}
+z^{n+1/2}&=z^n+(1-\beta)h\,\big[H(z^n)+f\big],\\
+z'&=z^{n+1/2}+h\,K\big(\tilde\tv^{\,n+1/2}\big),\\
+z^{n+1}&=z'+\beta h\,\big[H(z^{n+1})+f\big],
+\end{align*}
+$z=(\tv,U,\Omega)$. The last line is the $\Omega$ system above, with the horizontal divergence of the $U$ before the
+metric increment of this line (again point (b)), followed by $U^{n+1}=U'+\beta hz_xG_\eta p^{n+1}$.
+
+\subsection{Column-locality on the C-grid}
+On the C-grid $U$ lives at the $x$-faces, $\Omega$ and $W$ at the $\eta$-faces of the columns. Two couplings between
+neighbouring columns appear and are handled as follows:
+\begin{enumerate}
+\item[(a)] The discrete $\Omega$ rate is the $W$ rate minus $z_x$ times the four-point mean of the $U$ rates; its
+metric part $z_x\,\overline{z_xG_\eta p}$ contains the vertical pressure differences of the two neighbouring columns.
+The implicit part uses the column-local $z_x^2G_\eta p$ of the own column, the remainder
+$z_x\overline{z_xG_\eta p}-z_x^2G_\eta p$ (a horizontal second difference, of the size of the horizontal Courant number
+times $z_x$) is explicit.
+\item[(b)] The horizontal mass flux of the metric increment of $U$ would couple the columns through
+$\partial_x(Jz_xG_\eta p^{n+1})$; it is lagged by one small step. The lag is explicit only in the horizontal direction
+and of horizontal-Courant size, $c_sh|z_x|/\Delta x$, not $c_sh|z_x|/\Delta z$.
+\end{enumerate}
+With (a) and (b) the system is tridiagonal per column, like the $W$ system. Without them it is
+two-dimensional ($\mathcal M=I-\tfrac14\dtau^2M^I_{up}M_{pu}$ in the notation of the Imex note). The lag in (b) makes the
+EI step for $\Omega$ not exactly symmetric; its order and stability have to be checked.
+
+\subsection{Explicit metric term: the present code}
+The present implementation keeps the metric term $z_xG_\eta p$ in the explicit $U$ equation, as WRF does. Then
+$U^{n+1}$ is known before the column solve, $\Omega^{n+1}=W^{n+1}-z_x\bar U^{n+1}$ is an affine shift of $W^{n+1}$,
+and the $\Omega$ system and the $W$ system (Sections~\ref{sec:wrf}, \ref{sec:ei}, without the factor $1+z_x^2$) are equivalent. This is
+sufficient as long as $c_s\dtau|z_x|/(J\Delta\eta)\lesssim1$ (Agnesi: 0.2).
 
 %======================================================================
 \section{Linear algebra}\label{sec:la}
 \subsection{The column system}\label{sec:col}
-In a column $i$ with $\Delta z=J_i\Delta\eta$, cells $k=1,\dots,n_z$ and faces $k=1,\dots,n_z+1$ ($W_1=W_{n_z+1}=0$),
-the vertical part $G_v$ acts only on the thermodynamic variables $t$ and on $W$; with frozen coefficients
-it is linear,
+In a column $i$ with $\Delta z=J_i\Delta\eta$, cells $k=1,\dots,n_z$ and faces $k=1,\dots,n_z+1$, the vertical part acts only
+on $\tv$ and on the vertical momentum ($W$, with $W_1=W_{n_z+1}=0$; on terrain with the explicit metric term the
+same system holds for $W$). With frozen coefficients it is linear,
 \[
-J_v=\begin{pmatrix}0&D_v\\ B_v&0\end{pmatrix}\quad\text{on }\begin{pmatrix}t\\W\end{pmatrix},
+J_v=\begin{pmatrix}0&D_v\\ B_v&0\end{pmatrix}\quad\text{on }\begin{pmatrix}\tv\\W\end{pmatrix}.
 \]
+For every thermodynamic variable $\phi$ with the frozen face factor $\phi_f$ ($1$ for $\rho$, $\theta_f$ for $\Theta$, the face
+mixing ratios for the moist variables)
 \[
-(D_vW)_{\phi,k}=-\frac{\phi_{k+1}W_{k+1}-\phi_kW_k}{\Delta z},\qquad
-(B_vt)_k=-\frac{\delta p_k}{\Delta z}-\frac g2(\rho_{k-1}+\rho_k),
+(D_vW)_{\phi,k}=-\frac{\phi_{f,k+1}W_{k+1}-\phi_{f,k}W_k}{\Delta z},
 \]
-$\phi$ the frozen face value of the variable ($\phi=1$ for $\rho$, $\theta_\eta$ for $\Theta$, $q_{v,\eta}$, $q_{c,\eta}$ for the moist
-variables), and the face pressure difference
+and at the face $k$
+\[
+(B_v\tv)_k=-\frac{\delta p_k}{\Delta z}-\frac g2(\rho_{k-1}+\rho_k) .
+\]
+The linearized face pressure difference is
 \begin{center}\small
 \begin{tabular}{lll}\toprule
 form & $\delta p_k$ & coefficients\\\midrule
-product & $\alpha_k\Theta_k-\beta_k\Theta_{k-1}$ & $\alpha_k=\beta_k=(\partial p/\partial\Theta)_{f,k}$, frozen\\
-\code{:gradp} & $p(\Theta_k)-p(\Theta_{k-1})$ & linearized: $\alpha_k\Theta_k-\beta_k\Theta_{k-1}$,\\
- & & $\alpha_k=(\gamma p/\Theta)_k$, $\beta_k=(\gamma p/\Theta)_{k-1}$ at the stage start\\
-Exner, moist & $P_k(\pi_k-\pi_{k-1})$ & $P_k=c_p\Theta_{f,k}$, $(D_vW)_{\pi,k}=-(c^B_{k+1}W_{k+1}-c^T_kW_k)/\Delta z$\\\bottomrule
+product & $\alpha_k\Theta_k-\beta_k\Theta_{k-1}$ & $\alpha_k=\beta_k=P_{f,k}$\\
+\code{:gradp} & $\alpha_k\Theta_k-\beta_k\Theta_{k-1}$ & $\alpha_k=P_k$, $\beta_k=P_{k-1}$ (cell values at the stage start)\\
+pressure variable & $p_k-p_{k-1}$ & $P_k=1$\\
+Exner, moist & $P_k(\pi_k-\pi_{k-1})$ & $P_k=c_p\Theta_{f,k}$\\\bottomrule
 \end{tabular}
 \end{center}
-For the full pressure the matrix is the Jacobian at the stage start (linearly implicit); for the other forms it is exact.
+with, for the extended forms, the face factors $c^B_k$, $c^T_k$ of the pressure equation,
+\[
+(D_vW)_{\pi,k}=-\frac{c^B_{k+1}W_{k+1}-c^T_kW_k}{\Delta z} .
+\]
 
-\paragraph{Two-factor solve.} All schemes need $Y=(I-DJ_v)^{-1}R$ with the row scaling $D=\mathrm{diag}(c_tI_t,\,c_wI_W)$:
+\paragraph{Two-factor solve.} All schemes need $Y=(I-DJ_v)^{-1}R$ with the row scaling $D=\mathrm{diag}(c_\tv I,\ c_wI)$:
 \[
-\begin{pmatrix}I&-c_tD_v\\-c_wB_v&I\end{pmatrix}\begin{pmatrix}Y_t\\Y_W\end{pmatrix}=\begin{pmatrix}R_t\\R_W\end{pmatrix}.
+\begin{pmatrix}I&-c_\tv D_v\\-c_wB_v&I\end{pmatrix}\begin{pmatrix}Y_\tv\\Y_W\end{pmatrix}=\begin{pmatrix}R_\tv\\R_W\end{pmatrix}.
 \]
-The first block row gives $Y_t=R_t+c_tD_vY_W$; inserted into the second (Schur complement on the $W$ block):
+The first block row gives
 \[
-\big(I-c_tc_w\,B_vD_v\big)\,Y_W=R_W+c_w\,B_vR_t .
+Y_\tv=R_\tv+c_\tv D_vY_W ;
 \]
-With $r=c_tc_w/\Delta z^2$ and $g_g=c_tc_wg/(2\Delta z)$, row $k=2,\dots,n_z$ of the product and \code{:gradp} forms is
+inserted into the second (Schur complement on the $W$ block):
+\[
+\big(I-c_\tv c_w\,B_vD_v\big)\,Y_W=R_W+c_w\,B_vR_\tv .
+\]
+With
+\[
+r=\frac{c_\tv c_w}{\Delta z^2},
+\]
+\[
+g_g=\frac{c_\tv c_wg}{2\Delta z},
+\]
+row $k=2,\dots,n_z$ of the product and \code{:gradp} forms is
 \begin{multline*}
-\big[-r\beta_k\theta_{k-1}+g_g\big]Y_{W,k-1}+\big[1+r\theta_k(\alpha_k+\beta_k)\big]Y_{W,k}+\big[-r\alpha_k\theta_{k+1}-g_g\big]Y_{W,k+1}\\
+\big[-r\beta_k\theta_{f,k-1}+g_g\big]Y_{W,k-1}+\big[1+r\theta_{f,k}(\alpha_k+\beta_k)\big]Y_{W,k}+\big[-r\alpha_k\theta_{f,k+1}-g_g\big]Y_{W,k+1}\\
 =R_{W,k}-\frac{c_w}{\Delta z}\big(\alpha_kR_{\Theta,k}-\beta_kR_{\Theta,k-1}\big)-\frac{c_wg}2\big(R_{\rho,k-1}+R_{\rho,k}\big),
 \end{multline*}
-of the Exner and moist forms
+and of the pressure, Exner and moist forms
 \begin{multline*}
 \big[-rP_kc^T_{k-1}+g_g\big]Y_{W,k-1}+\big[1+rP_k(c^T_k+c^B_k)\big]Y_{W,k}+\big[-rP_kc^B_{k+1}-g_g\big]Y_{W,k+1}\\
 =R_{W,k}-\frac{c_w}{\Delta z}P_k\big(R_{\pi,k}-R_{\pi,k-1}\big)-\frac{c_wg}2\big(R_{\rho,k-1}+R_{\rho,k}\big)
 \end{multline*}
-(the coefficient of $Y_{W,k-1}$ for $k=2$ and of $Y_{W,k+1}$ for $k=n_z$ vanish). The pressure part is a discrete
-$-c_s^2\partial_{zz}$ with positive diagonal, the gravity part $\pm g_g$ is antisymmetric and small
-($g_g/r=g\Delta z/2\ll c_s^2$); the system is solved by the Thomas algorithm without pivoting, factored once per stage and
-value of $c_tc_w$ (\code{\_frozen\_factor}, \code{\_exner\_factor}, cached under the key $c_tc_w$). Back substitution:
+(the coefficient of $Y_{W,k-1}$ for $k=2$ and of $Y_{W,k+1}$ for $k=n_z$ vanish). This is the discrete form of the
+Helmholtz operator of Section~\ref{sec:wrf}. The pressure part is a discrete $-c_s^2\partial_{zz}$ with positive
+diagonal, the gravity part $\pm g_g$ is antisymmetric and small ($g_g/r=g\Delta z/2\ll c_s^2$); the system is solved by the
+Thomas algorithm without pivoting, factored once per stage and value of $c_\tv c_w$ (\code{\_frozen\_factor},
+\code{\_exner\_factor}, cached under the key $c_\tv c_w$). Back substitution, for every thermodynamic variable:
 \[
-Y_{\phi,k}=R_{\phi,k}-\frac{c_t}{\Delta z}\big(\phi_{k+1}Y_{W,k+1}-\phi_kY_{W,k}\big)\quad\text{for every thermodynamic variable }\phi
+Y_{\phi,k}=R_{\phi,k}-\frac{c_\tv}{\Delta z}\big(\phi_{f,k+1}Y_{W,k+1}-\phi_{f,k}Y_{W,k}\big) .
 \]
-($\rho$, $\Theta$, $\pi$ with $c^B,c^T$, $q_v$, $q_c$); $U$ rows: $Y_U=R_U$. Moisture enters $B_v$ only through $\rho$ and
-$\pi$, so the moist variables are back substitution only. The matrix depends on $c_t$ and $c_w$ only
-through the product; the schemes use
+$U$ rows: $Y_U=R_U$. Moisture enters $B_v$ only through $\rho$ and $\pi$, so the moist variables are back
+substitution only. For the $\Omega$ system of Section~\ref{sec:omega} the same algebra holds with $W\to\Omega$, $c_w\to c_w(1+z_x^2)$
+in the pressure part of $B_v$ and $\Omega=0$ at the ground. The matrix depends on $c_\tv$ and $c_w$ only through
+the product:
 \begin{center}\small
 \begin{tabular}{lccc}\toprule
-& $c_t$ & $c_w$ & $c_tc_w$\\\midrule
+& $c_\tv$ & $c_w$ & $c_\tv c_w$\\\midrule
 HEVI (Crank--Nicolson step of length $h$) & $h/2$ & $h/2$ & $h^2/4$\\
-EI & $h/2$ & $\gamma h$ & $\gamma h^2/2$\\
-WRF & $\beta h$ & $\beta h$ & $\beta^2h^2$\\\bottomrule
+EI($\varepsilon$), WRF($\varepsilon$) & $\beta h$ & $\beta h$ & $\beta^2h^2$\\
+EI version III ($\gamma$) & $h/2$ & $\gamma h$ & $\gamma h^2/2$\\\bottomrule
 \end{tabular}
 \end{center}
-For $\gamma=\beta=\tfrac12$ the three matrices are identical.
+For $\varepsilon=0$ ($\gamma=\tfrac12$) the matrices are identical.
 
 \subsection{The steps as compositions}
-Let $H$ be the linear (affine with the forcing) part ``thermodynamics and vertical'', acting on
-$(t,W)$ with $U$ as a parameter,
+Let $H$ be the implicit part ``thermodynamics and vertical'', acting on $(\tv,W)$ with $U$ as a parameter
+(affine with the forcing),
 \[
-H(t,U,W)=\big(D_hU+D_vW+f_t,\ 0,\ B_vt+f_W\big),
+H(\tv,U,W)=\big(D_hU+D_vW+f_\tv,\ 0,\ B_v\tv+f_W\big).
 \]
-and define for a row scaling $D=(c_t,c_w)$ the explicit and the implicit step of $H$ and the momentum kick,
+For a scalar weight $c$ define the explicit and the implicit step of $H$,
 \[
-E_D\,z=z+D\,H(z),\qquad I_D\,z=z^+\ \text{with}\ z^+=z+D\,H(z^+),\qquad K_h\,z=z+h\,(0,\,G_xp(t)+f_U,\,0).
+E_c\,z=z+c\,H(z),
 \]
-$I_D$ is one two-factor solve: $z^+=z+(I-DJ)^{-1}DH(z)$; $U$ is constant in $E_D$ and $I_D$, so the horizontal
-thermodynamic term $D_hU$ is the same explicit or implicit. Then (Sections~\ref{sec:ei}, \ref{sec:wrf})
 \[
-\boxed{\ \text{EI}(\gamma)=I_{(h/2,\,\gamma h)}\circ K_h\circ E_{(h/2,\,(1-\gamma)h)},\qquad
-\text{WRF}(\beta)=I_{\beta h}\circ E_{(1-\beta)h}\circ K_h\ }
+I_c\,z=z^+\quad\text{with}\quad z^+=z+c\,H(z^+),
 \]
-($I_{\beta h}E_{(1-\beta)h}$ is the $\beta$-weighted Crank--Nicolson step of $H$ with the new $U$, the second line of
-the WRF step). Without $H$ ($D_v=B_v=0$) EI is position Verlet and WRF forward--backward; without $K$ both
-are the (off-centred) Crank--Nicolson step of the column.
+and the momentum kick with extrapolation,
+\[
+K_h\,z=z+h\,\big(0,\ G_x\tilde\tv+f_U,\ 0\big).
+\]
+$I_c$ is one two-factor solve, $z^+=z+(I-cJ)^{-1}cH(z)$. $U$ is constant within $E_c$ and $I_c$, so the horizontal
+divergence $D_hU$ is the same explicit or implicit. The two schemes are
+\[
+\text{WRF}(\varepsilon,\gamma_d)=I_{\beta h}\circ E_{(1-\beta)h}\circ K_h ,
+\]
+\[
+\text{EI}(\varepsilon,\gamma_d)=I_{\beta h}\circ K_h\circ E_{(1-\beta)h} .
+\]
+($I_{\beta h}E_{(1-\beta)h}$ is the $\beta$-weighted Crank--Nicolson step of the column with the new $U$.) Without $H$ EI is
+position Verlet and WRF forward--backward; without $K$ both are the (off-centred) Crank--Nicolson step.
 
-\paragraph{Equivalence for $\gamma=\beta=\tfrac12$.} With $c=h/2$ and $E_c=I+cH$, $I_c=(I-cH)^{-1}$ (affine: the
-constant parts commute as well, $(I+cH)(I-cH)^{-1}cf+cf=(I-cH)^{-1}2cf$), $E_c$ and $I_c$ commute, and
+\subsection{Conjugacy}\label{sec:opt}
+$E_{(1-\beta)h}=I+(1-\beta)hH$ and $I_{\beta h}=(I-\beta hH)^{-1}$ are functions of the same $H$ and commute. For the affine
+parts, with $Hz=Jz+a$,
 \[
-\text{WRF}(\tfrac12)=I_cE_cK_h=E_cI_cK_h=E_c\,\big(I_cK_hE_c\big)\,E_c^{-1}=E_c\,\text{EI}(\tfrac12)\,E_c^{-1}.
-\]
-This holds for arbitrary linear operators $D_h,D_v,G_x,B_v$ --- terrain (the $-z_x\bar U$ part of $\Omega$ and the
-metric term), gravity, sponge-free forcing --- not only for Fourier modes. Consequences:
-\begin{itemize}
-\item the two small steps have the same eigenvalues: the same stability limit, the same dispersion
-and (none) dissipation of every mode;
-\item they differ by the change of variables $E_c$ (an explicit half step of $H$): WRF's thermodynamic
-variables are EI's $t^{n+1/2}$, WRF's $W$ is EI's $W+\tfrac h2B_vt$. Over a stage of $n$ small steps
-\[
-\text{EI}^n=E_c^{-1}\,\text{WRF}^n\,E_c=I_cK_h\,\text{WRF}(\tfrac12)^{n-1}\,E_c ;
-\]
-\item the combined half steps of Section~\ref{sec:impl} are exactly this formula: $E_c$ at the stage start,
-then $n-1$ WRF steps ($E_cI_cK_h$; the update $Z\leftarrow2Z-Z_s$ is $E_c$ applied after $I_c$, since $I_c$ gives
-$cH(z^+)=z^+-z_s$), and the last step without $E_c$. EI with combined half steps \emph{is} WRF($\tfrac12$),
-started and finished correctly;
-\item in a MIS or RK3 stage $t$, $U$, $W$ start at the same time level. EI integrates exactly the fast
-flow of these variables to second order; WRF integrates $E_c$-transformed variables but starts from
-untransformed ones and returns untransformed ones: the stage map differs from EI's by
-$\text{WRF}^n-E_c^{-1}\text{WRF}^nE_c=O(\dtau)$ --- the first-order ``conjugation defect'' of Section~\ref{sec:cmp},
-and the only difference between the two schemes.
-\end{itemize}
-Verified in the code (frozen loop, hill grid, 10 steps of 2\,s with constant forcing):
-$\|\text{WRF}^n(E_cx)-E_c(\text{EI}^nx)\|/\|x\|=9\cdot10^{-16}$ (product), $3\cdot10^{-15}$ (Exner, moist),
-$2\cdot10^{-6}$ (\code{:gradp}, linearly implicit), while $\|\text{WRF}^nx-\text{EI}^nx\|/\|x\|=4$--$8\cdot10^{-4}$.
-
-\subsection{The options in both variants: off-centring and extrapolation}\label{sec:opt}
-Both variants have the same two optional parameters, default zero:
-\begin{itemize}
-\item the \emph{off-centring} $\varepsilon\ge0$ (WRF's \code{epssm}), $\beta=(1+\varepsilon)/2$;
-\item the \emph{explicit extrapolation} $\gamma_d\ge0$ (divergence damping, WRF's \code{smdiv}): the momentum kick
-uses the extrapolated thermodynamic state $t+\gamma_d(t-t_{\rm prev})$, $t_{\rm prev}$ the state of the previous kick,
-\[
-K_h^{\gamma_d}z=z+h\,\big(0,\ G_xp(t+\gamma_d(t-t_{\rm prev}))+f_U,\ 0\big).
-\]
-\end{itemize}
-They enter the two schemes in the same places:
-\[
-\boxed{\ \text{WRF}(\varepsilon,\gamma_d)=I_{\beta h}\circ E_{(1-\beta)h}\circ K_h^{\gamma_d},\qquad
-\text{EI}(\varepsilon,\gamma_d)=I_{\beta h}\circ K_h^{\gamma_d}\circ E_{(1-\beta)h}\ }
-\]
-with scalar weights on all rows of $H$ (thermodynamic rows including $D_hU$ and $f_t$, $W$ rows including $f_W$).
-\begin{itemize}
-\item \emph{Off-centring.} In WRF, $I_{\beta h}E_{(1-\beta)h}$ is the $\beta$-weighted Crank--Nicolson step of the column
-with the new $U$: $(1-\beta)$ old and $\beta$ new values of $D_vW$ in $t$ and of $B_vt$ in $W$. In EI the first
-(explicit) part gets the weight $(1-\beta)h$ and the last (implicit) part $\beta h$, on all rows; $D_hU$ is
-constant within $E$ and $I$, so only the split of the horizontal divergence between the old and the new
-$U$ changes ($\tfrac h2,\tfrac h2\to(1-\beta)h,\beta h$). For $\varepsilon=0$ EI is Verlet EI (Imex version 1).
-\item \emph{Extrapolation.} In WRF the kick uses $\tau^n+\gamma_d(\tau^n-\tau^{n-1})$ with $\tau^{-1}=\tau^0$ (no
-extrapolation in the first step of a stage). In EI the kick acts on $t^{n+1/2}$, so the extrapolation is
-$t^{n+1/2}+\gamma_d(t^{n+1/2}-t^{n-1/2})$, started at the first $t^{1/2}$ (no extrapolation in the first step).
-\end{itemize}
-\paragraph{Conjugacy for all $(\varepsilon,\gamma_d)$.} $E_{(1-\beta)h}=I+(1-\beta)hH$ and $I_{\beta h}=(I-\beta hH)^{-1}$ are
-functions of the same $H$ and commute; for the affine parts, with $H z=Jz+a$,
-\[
-E_{(1-\beta)h}I_{\beta h}z-I_{\beta h}E_{(1-\beta)h}z
-=\big[(I+(1-\beta)hJ)\beta h+(1-\beta)h(I-\beta hJ)-h\,I\big](I-\beta hJ)^{-1}a=0 .
+E_{(1-\beta)h}I_{\beta h}z-I_{\beta h}E_{(1-\beta)h}z=\big[\beta h(I+(1-\beta)hJ)+(1-\beta)h(I-\beta hJ)-hI\big](I-\beta hJ)^{-1}a=0 .
 \]
 Hence, with $E=E_{(1-\beta)h}$,
 \[
-\text{WRF}(\varepsilon,\gamma_d)=E\,\text{EI}(\varepsilon,\gamma_d)\,E^{-1},\qquad \text{EI}^n=E^{-1}\text{WRF}^nE=I_{\beta h}K_h\,\text{WRF}^{n-1}E .
+\text{WRF}(\varepsilon,\gamma_d)=E\ \text{EI}(\varepsilon,\gamma_d)\ E^{-1},
 \]
-For the extrapolation the history has to correspond as well: if the WRF state is $w^n=Ez^n$ ($z^n$ the EI
-state), WRF's $\tau^n$ is EI's $t^{n+1/2}$ for all $n$, and both extrapolations start without extrapolation;
-the kicks are identical. So for every choice of the two options EI and WRF have the same small
-step up to the change of variables $E$, the same eigenvalues, and the same stability; they differ only
-at the stage boundaries, where WRF starts and ends without $E$ ($O(\dtau)$ for $\varepsilon=0$, $O((1-\beta)\dtau)$
-in general). For $\varepsilon>0$ both are first order in $\dtau$; for $\varepsilon=0$ EI is second order and WRF first order
-(only through the stage boundaries).
-
-Verified in the code (frozen loop, hill grid, 10 steps of 2\,s, constant forcing, combined and separate
-half steps of EI): $\|\text{WRF}^n(Ex)-E(\text{EI}^nx)\|/\|x\|\le3\cdot10^{-15}$ for $(\varepsilon,\gamma_d)=(0,0),(0.1,0),(0,0.1),(0.1,0.1),
-(0.2,0.3)$ in the product, Exner, pressure and moist forms; $2$--$3\cdot10^{-6}$ for \code{:gradp} (linearly implicit).
-
-\paragraph{The Imex version III ($\gamma$, $W$ rows only).} EI also keeps the off-centring of the Imex note,
-\code{EI\_GAMMA[]} $=\gamma$, used only with $\varepsilon=0$: $E_{(h/2,(1-\gamma)h)}$ and $I_{(h/2,\gamma h)}$ with different weights on the
-thermodynamic and the $W$ rows. These do not commute for $\gamma\ne\tfrac12$: version III is not conjugate to WRF
-for any $\beta$, and damps the vertical modes less (Fourier analysis below).
-
-\paragraph{Combined half steps with the options.} With the weights $(e_t,e_w)$ of $E$ and $(i_t,i_w)$ of $I$ (EI($\varepsilon$):
-$e_t=e_w=(1-\beta)h$, $i_t=i_w=\beta h$; version III: $(\tfrac h2,(1-\gamma)h)$, $(\tfrac h2,\gamma h)$), $I$ adds $z^+-z_s=i_tH_t+D_{(i_t,i_w)}G_v(z^+)$
-and the next $E$ needs $e_tH_t+D_{(e_t,e_w)}G_v(z^+)$, so between two small steps
+and over a stage of $n$ small steps
 \[
-z\leftarrow z^++\frac{e_t}{i_t}\,(z^+-z_s)+D_{(0,\ e_w-e_ti_w/i_t)}G_v(z^+),
+\text{EI}^n=E^{-1}\,\text{WRF}^n\,E=I_{\beta h}K_h\,\text{WRF}^{n-1}E .
 \]
-the last term vanishing for EI($\varepsilon$) and being $(1-2\gamma)hB_v(t^+)$ for version III; $\frac{e_t}{i_t}=\frac{1-\beta}\beta$ ($=1$ for $\varepsilon=0$:
-$2z^+-z_s$). The extrapolation needs nothing extra.
+The extrapolation corresponds as well: if the WRF state is $Ez^n$ ($z^n$ the EI state), WRF's $\tv^n$ is EI's $\tv^{n+1/2}$,
+both extrapolations start without extrapolation, and the kicks are identical. This holds for arbitrary
+linear operators (terrain, gravity, forcing), not only for Fourier modes. Consequences:
+\begin{itemize}
+\item for equal options the two small steps have the same eigenvalues: the same stability, dispersion
+and dissipation;
+\item they differ by the change of variables $E$: WRF's thermodynamic variables are EI's $\tv^{n+1/2}$;
+\item in a MIS or RK3 stage $\tv$, $U$, $W$ start at the same time level. WRF starts and ends without $E$: its
+stage map differs from EI's by $O(\dtau)$ (for $\varepsilon=0$) --- the only difference between the two schemes.
+For $\varepsilon=0$ EI is second order and WRF first order (through the stage boundaries); for $\varepsilon>0$ both are first
+order.
+\end{itemize}
+Verified in the code (frozen loop, hill grid, 10 steps of 2\,s, constant forcing):
+$\|\text{WRF}^n(Ex)-E(\text{EI}^nx)\|/\|x\|\le3\cdot10^{-15}$ for $(\varepsilon,\gamma_d)=(0,0)$, $(0.1,0)$, $(0,0.1)$, $(0.1,0.1)$, $(0.2,0.3)$ in the
+product, Exner, pressure and moist forms, $2$--$3\cdot10^{-6}$ for \code{:gradp} (linearly implicit), while without $E$ the
+two differ by $4$--$8\cdot10^{-4}$. On terrain with the $\Omega$ system the lag (b) of Section~\ref{sec:omega} makes $E$ and $I$
+commute only approximately.
+
+\paragraph{Version III} ($\gamma$, only the $W$ rows off-centred): $E_{(h/2,(1-\gamma)h)}$ and $I_{(h/2,\gamma h)}$ have different weights on
+the thermodynamic and the $W$ rows and do not commute for $\gamma\ne\tfrac12$; it is not conjugate to WRF for any
+$\beta$ and damps less (below).
+
+\paragraph{Combined half steps.} Let $(e_\tv,e_w)$ be the weights of $E$ and $(i_\tv,i_w)$ those of $I$ (EI($\varepsilon$):
+$e_\tv=e_w=(1-\beta)h$, $i_\tv=i_w=\beta h$; version III: $(\tfrac h2,(1-\gamma)h)$ and $(\tfrac h2,\gamma h)$). $I$ adds $z^+-z_s$, $z_s$ the
+state before $I$; the next $E$ needs the same increment scaled by $e/i$. Between two small steps therefore
+\[
+z\leftarrow z^++\frac{e_\tv}{i_\tv}\,(z^+-z_s)+D_{(0,\ e_w-e_\tv i_w/i_\tv)}\,G_v(z^+) .
+\]
+The last term vanishes for EI($\varepsilon$) and is $(1-2\gamma)hB_v\tv^+$ for version III; $e_\tv/i_\tv=(1-\beta)/\beta$, i.e.\ $2z^+-z_s$ for
+$\varepsilon=0$. In terms of the compositions this is $\text{EI}^n=I_{\beta h}K_h\,\text{WRF}^{n-1}E$: EI with combined half steps is WRF,
+started and finished with the change of variables.
 
 \subsection{Fourier analysis}
-For the acoustic model $t'=-\mathrm i(k_xu+k_zw)c_s$, $u'=-\mathrm ik_xc_st$, $w'=-\mathrm ik_zc_st$ with $a_x=k_xc_sh$,
-$a_z=k_zc_sh$, $\nu=(1-\gamma)+\gamma\lambda$, $\mu=(1-\beta)+\beta\lambda$, the ansatz $z^n=\lambda^nz$ gives, besides the
-neutral mode $\lambda=1$,
+Acoustic model with one pressure-like variable $\tv$:
+\begin{align*}
+\tv'&=-\mathrm i\,c_s\,(k_xu+k_zw),\\
+u'&=-\mathrm i\,c_sk_x\,\tv,\\
+w'&=-\mathrm i\,c_sk_z\,\tv .
+\end{align*}
+With $a_x=c_sk_xh$, $a_z=c_sk_zh$ and
 \[
-\text{EI}(\gamma):\ (\lambda-1)^2+a_x^2\lambda+\tfrac{a_z^2}2\,\nu\,(1+\lambda)=0,\qquad
-\text{WRF}(\beta):\ (\lambda-1)^2+a_x^2\lambda+a_z^2\,\mu^2=0 .
+\mu=(1-\beta)+\beta\lambda ,
 \]
-(EI: from $t^{n+1/2}(\lambda-1+\tfrac{a_x^2}2)=t^n(\lambda-1-\tfrac{a_z^2}2\nu)$ and
-$t^n\lambda\big(\lambda-1+\tfrac{a_z^2}2\nu\big)=t^{n+1/2}\big(\lambda-1-\tfrac{a_x^2}2\lambda\big)$; the resultant factors as
-$(\lambda-1)[\dots]$.) For $\gamma=\beta=\tfrac12$, $\nu(1+\lambda)/2=\mu^2=(1+\lambda)^2/4$: identical polynomials, as proven above.
-Horizontally ($a_z=0$) both are stable for $a_x\le2$; vertically unconditionally. The modulus of the
-damped pair is the root of the ratio of constant and leading coefficient, $|\lambda|^2=(1+(1-\gamma)a_z^2/2)/(1+\gamma a_z^2/2)$
-(EI) and $(1+(1-\beta)^2a_z^2)/(1+\beta^2a_z^2)$ (WRF) for $a_x=0$ --- the formulas of Section~\ref{sec:cmp}. Spectral radius of
-the non-neutral modes:
+\[
+\nu=(1-\gamma)+\gamma\lambda ,
+\]
+the ansatz $z^n=\lambda^nz$ gives, besides the neutral mode $\lambda=1$, the characteristic equations
+\[
+\text{WRF}(\varepsilon),\ \text{EI}(\varepsilon):\quad(\lambda-1)^2+a_x^2\lambda+a_z^2\,\mu^2=0,
+\]
+\[
+\text{EI version III}(\gamma):\quad(\lambda-1)^2+a_x^2\lambda+\tfrac{a_z^2}2\,\nu\,(1+\lambda)=0 .
+\]
+For $\varepsilon=0$, $\gamma=\tfrac12$ both are $(\lambda-1)^2+a_x^2\lambda+a_z^2(1+\lambda)^2/4=0$. Horizontally ($a_z=0$) the schemes are stable for
+$a_x\le2$, vertically unconditionally. For $a_x=0$ the modulus of the damped pair is
+\[
+\text{WRF, EI}(\varepsilon):\quad|\lambda|^2=\frac{1+(1-\beta)^2a_z^2}{1+\beta^2a_z^2},
+\]
+\[
+\text{version III}:\quad|\lambda|^2=\frac{1+(1-\gamma)a_z^2/2}{1+\gamma a_z^2/2} .
+\]
+For $a_z\to\infty$: $(1-\beta)^2/\beta^2$ against $(1-\gamma)/\gamma$; $\varepsilon=0.1$ gives $|\lambda|\to0.82$, version III with $\gamma=0.55$ only $0.90$
+(the same limit needs $\gamma\approx0.60$). Spectral radius of the non-neutral modes:
 \begin{center}\small
-\begin{tabular}{cccccccc}\toprule
-$a_x$&$a_z$& EI $\gamma=0.5$ & EI $0.55$ & EI $0.6$ & WRF $\beta=0.55$ & WRF $0.5$\\\midrule
-0.0 & 1.0 & 1.0000 & 0.9802 & 0.9608 & 0.9608 & 1.0000\\
-0.0 & 3.0 & 1.0000 & 0.9330 & 0.8699 & 0.8708 & 1.0000\\
-0.0 & 20.0 & 1.0000 & 0.9054 & 0.8182 & 0.8198 & 1.0000\\
-1.0 & 0.3 & 1.0000 & 0.9978 & 0.9956 & 0.9956 & 1.0000\\
-1.5 & 3.0 & 1.0000 & 0.9330 & 0.8699 & 0.8708 & 1.0000\\
-1.5 & 20.0 & 1.0000 & 0.9054 & 0.9512 & 0.8198 & 1.0000\\\bottomrule
+\begin{tabular}{cccccc}\toprule
+$a_x$&$a_z$& $\varepsilon=0$ & WRF, EI $\varepsilon=0.1$ & III $\gamma=0.55$ & III $\gamma=0.6$\\\midrule
+0.0 & 1.0 & 1.0000 & 0.9608 & 0.9802 & 0.9608\\
+0.0 & 3.0 & 1.0000 & 0.8708 & 0.9330 & 0.8699\\
+0.0 & 20.0 & 1.0000 & 0.8198 & 0.9054 & 0.8182\\
+1.0 & 0.3 & 1.0000 & 0.9956 & 0.9978 & 0.9956\\
+1.5 & 3.0 & 1.0000 & 0.8708 & 0.9330 & 0.8699\\
+1.5 & 20.0 & 1.0000 & 0.8198 & 0.9054 & 0.9512\\\bottomrule
 \end{tabular}
 \end{center}
-EI with $\gamma\approx0.6$ damps like WRF with $\beta=0.55$, except for strongly coupled modes (large $a_x$ and $a_z$),
-where EI's damping is weaker. On a grid (max over $a_z\in[0,200]$) the horizontal limit is $a_x=2$ for all
-variants.
 
 %======================================================================
 \section{Comparison}\label{sec:cmp}
-\subsection{Horizontal: the same spectrum}
-For the oscillator $p'=-\omega u$, $u'=\omega p$, $a=\omega h$, forward--backward (momentum first) and Verlet
-(thermodynamic half step, momentum, half step) have the matrices
-\[
-M_{FB}=\begin{pmatrix}1-a^2&-a\\a&1\end{pmatrix},\qquad
-M_V=\begin{pmatrix}1-\tfrac{a^2}2&-a\big(1-\tfrac{a^2}4\big)\\a&1-\tfrac{a^2}2\end{pmatrix},
-\]
-both with trace $2-a^2$ and determinant 1: the same eigenvalues, stable for $|a|\le2$, no damping. They
-are conjugate, $M_{FB}=T_{1/2}M_VT_{1/2}^{-1}$ with the thermodynamic half step $T_{1/2}$: forward--backward
-is Verlet with the thermodynamic variables shifted by half a step. With the vertical part the same holds
-exactly with the transformation $E_c$, an explicit half step of the thermodynamic and vertical part
-(Section~\ref{sec:la}): EI($\tfrac12$) and WRF($\tfrac12$) are conjugate for the full linear system. Within a fast stage the
-conjugation acts only at the beginning and the end; at the stage boundaries of a MIS or RK3 step
-(where $t$ and $U$ start at the same time level) it leaves an error of first order in $\dtau$ in the fast
-modes, which does not accumulate over the small steps. Verlet EI has no such defect.
-
-\subsection{Vertical: damping}
-For the vertical oscillator ($p'=-\omega W$, $W'=\omega p$, $a=\omega h$), both schemes are unconditionally stable;
-the squared modulus of the eigenvalues is the determinant of the step matrix:
-\begin{align*}
-\text{WRF (}t\text{ and }W\text{ off-centred, }\beta):&\quad |\lambda|^2=\frac{1+(1-\beta)^2a^2}{1+\beta^2a^2},\\
-\text{EI (}W\text{ off-centred, }\gamma):&\quad |\lambda|^2=\frac{1+(1-\gamma)\,a^2/2}{1+\gamma\,a^2/2}.
-\end{align*}
-Both are 1 for $\beta=\gamma=\tfrac12$. For small $a$: $1-(2\beta-1)a^2$ against $1-(2\gamma-1)a^2/2$; for
-$a\to\infty$: $(1-\beta)^2/\beta^2$ against $(1-\gamma)/\gamma$. WRF's $\beta=0.55$ gives $|\lambda|\to0.82$, EI with
-$\gamma=0.55$ only $0.90$; the same limit needs $\gamma=1/(1+(1-\beta)^2/\beta^2)\approx0.60$. Off-centring makes both
-schemes first order in $\dtau$.
-
-\subsection{Summary}
 \begin{center}\small
 \begin{tabular}{p{3.6cm}p{5.2cm}p{5.2cm}}\toprule
 & Verlet EI & WRF forward--backward\\\midrule
-horizontal integrator & Störmer--Verlet, symmetric & forward--backward (conjugate to Verlet)\\
-order & 2 ($\gamma=\tfrac12$) & 1 (2 in the staggered interpretation; $\beta=\tfrac12$)\\
-vertical integrator & trapezoidal in $t$, $\gamma$-weighted in $W$ & $\beta$-weighted in $t$ and $W$\\
-damping & none ($\gamma=\tfrac12$); $W$ off-centring & off-centring $\beta$ + divergence damping $\gamma_d$\\
-unknown of the column solve & $W$ (or $\Omega$, Section~\ref{sec:omega}) & $W$ (WRF: after eliminating $\phi$; $\Omega$ diagnostic)\\
-metric term & explicit (or implicit with the $\Omega$ system) & explicit\\
-evaluations per small step & each part once, 1 solve (half steps combined) & each part once, 1 solve\\
-stage boundaries (MIS, RK3) & no defect & first-order conjugation defect\\
+horizontal integrator & Störmer--Verlet ($\varepsilon=0$) & forward--backward (conjugate)\\
+order & 2 ($\varepsilon=0$), 1 ($\varepsilon>0$) & 1\\
+vertical integrator & $\beta$-weighted in $\tv$ and $W$ (version III: $W$ only) & $\beta$-weighted in $\tv$ and $W$\\
+options & off-centring $\varepsilon$, extrapolation $\gamma_d$ & off-centring $\varepsilon$, extrapolation $\gamma_d$\\
+unknown of the column solve & $W$; on terrain $\Omega$ (Section~\ref{sec:omega}) & $W$ (WRF: after eliminating $\phi$)\\
+metric term & explicit (code) or implicit with $\Omega$ & explicit\\
+cost per small step & each part once, 1 solve (half steps combined) & each part once, 1 solve\\
+stage boundaries (MIS, RK3) & no defect & $O(\dtau)$ conjugation defect\\
 \bottomrule\end{tabular}
 \end{center}
-WRF needs its damping: RK3 has $|g_0|=1$ for the acoustic modes (MIS study), and the forward--backward
-step adds none; divergence damping and off-centring provide it (Wicker and Skamarock 2002; Baldauf
-2010). With MIS methods ($|g_0|<1$) Verlet EI can be used without damping, and the off-centring $\gamma$
-is available where the vertically propagating acoustic modes have to be damped.
+WRF needs its damping: RK3 has $|g_0|=1$ for the acoustic modes, and the forward--backward step adds none;
+divergence damping and off-centring provide it (Wicker and Skamarock 2002; Baldauf 2010). The same
+options act identically in EI.
 
 %======================================================================
 \section{Implementation in the frozen split}\label{sec:impl}
@@ -470,14 +538,14 @@ frozen models \code{FVModel} (full pressure \code{:gradp} or product form), \cod
 the frozen fast system $Z'=F_f(C,Z)+F$ the model splits $F_f$ into the parts
 \begin{center}\small
 \begin{tabular}{ll}\toprule
-\code{:hthermo} & $H_t$: $D_hU$ (incl.\ $-z_x\bar U$ in $\Omega$), forcing of $t$ and $W$, sponge\\
+\code{:hthermo} & $H_\tv$: $D_hU$ (incl.\ $-z_x\bar U$ in $\Omega$), forcing of $\tv$ and $W$, sponge\\
 \code{:hmomentum} & $H_U$: horizontal pressure gradient $G_xp$ (incl.\ the metric term), forcing of $U$\\
-\code{:vertical} & $G_v$: $D_vW$ in $t$, $G_zp-g\bar\rho$ in $W$\\\bottomrule
+\code{:vertical} & $G_v$: $D_vW$ in $\tv$, $G_zp-g\bar\rho$ in $W$\\\bottomrule
 \end{tabular}
 \end{center}
 and provides the column solve $y=(I-DJ_v)^{-1}R$, $J_v$ the Jacobian of $G_v$ (exact for the linear
 vertical parts of the product, Exner and moist forms, the linearly implicit approximation for
-\code{:gradp}), $D$ the row scaling $c_t$ on $t$ and $c_w$ on $W$; the $W$ system depends on $c_tc_w$ only and is
+\code{:gradp}), $D$ the row scaling $c_\tv$ on $\tv$ and $c_w$ on $W$; the $W$ system depends on $c_\tv c_w$ only and is
 factored once per stage (\code{frozen\_stage\_begin!}). Hooks (\code{FV/frozen\_ei.jl}):
 \code{frozen\_vertical\_rhs!} ($DG_v$), \code{frozen\_vertical\_implicit!} ($Z\leftarrow Z+(I-DJ_v)^{-1}DG_v(Z)$) and
 \code{frozen\_vertical\_solve!} (general right-hand side).
@@ -485,17 +553,17 @@ factored once per stage (\code{frozen\_stage\_begin!}). Hooks (\code{FV/frozen\_
 \paragraph{Options.} \code{frozen\_fast\_solve!}, \code{frozen\_mis\_step!} (MIS, Lawson, ETD) and \code{run\_frozen} take the
 keywords \code{offcenter} $=\varepsilon$ and \code{smdiv} $=\gamma_d$ (default 0) for \code{:ei} and \code{:wrf} alike; \code{EI\_GAMMA[]}
 (default $\tfrac12$) selects version III of EI ($\varepsilon=0$ only); \code{EI\_MERGE[]} (default true) the combined half steps.
-The weights $(e_t,e_w,i_t,i_w)$ are \code{ei\_weights(h, $\varepsilon$)}.
+The weights $(e_\tv,e_w,i_\tv,i_w)$ are \code{ei\_weights(h, $\varepsilon$)}.
 
 \paragraph{Verlet EI} (\code{:ei}):
 \begin{align*}
-Z&\leftarrow Z+e_t\,H_t(Z)+D_{(e_t,e_w)}G_v(Z) &&E:\ t^{n+1/2},\ W\text{ explicit part}\\
+Z&\leftarrow Z+e_\tv\,H_\tv(Z)+D_{(e_\tv,e_w)}G_v(Z) &&E:\ \tv^{n+1/2},\ W\text{ explicit part}\\
 Z&\leftarrow Z+h\,H_U\big(Z+\gamma_d(Z-Z_{\rm prev})\big) &&K:\ U^{n+1}\\
-Z&\leftarrow Z+i_t\,H_t(Z) &&I:\ \text{horizontal part}\\
-Z&\leftarrow Z+(I-D_{(i_t,i_w)}J_v)^{-1}D_{(i_t,i_w)}G_v(Z) &&I:\ t^{n+1},\ W^{n+1};
+Z&\leftarrow Z+i_\tv\,H_\tv(Z) &&I:\ \text{horizontal part}\\
+Z&\leftarrow Z+(I-D_{(i_\tv,i_w)}J_v)^{-1}D_{(i_\tv,i_w)}G_v(Z) &&I:\ \tv^{n+1},\ W^{n+1};
 \end{align*}
 $Z_{\rm prev}$ the state of the previous kick, $Z_{\rm prev}=Z$ after the first $E$. For linear $G_v$ and
-$\varepsilon=0$, $\gamma=\tfrac12$ this is exactly \eqref{eq:ei1}--\eqref{eq:ei4}. Combined half steps as in Section~\ref{sec:opt}: one
+$\varepsilon=0$ this is exactly \eqref{eq:ei1}--\eqref{eq:ei4}. Combined half steps as in Section~\ref{sec:opt}: one
 horizontal momentum, one horizontal thermodynamic and one vertical evaluation and one column solve per
 small step --- as WRF; only the first $E$ of a stage is extra. For \code{:gradp} (linearly implicit) and in the
 sponge (evaluated at the state before $I$) combined and separate half steps differ by $O(\dtau^2)$ per step
@@ -504,10 +572,10 @@ sponge (evaluated at the state before $I$) combined and separate half steps diff
 \paragraph{WRF} (\code{:wrf}):
 \begin{align*}
 Z&\leftarrow Z+h\,H_U\big(Z+\gamma_d(Z-Z_{\rm prev})\big) &&K:\ U^{n+1}\\
-Z&\leftarrow Z+(I-\beta hJ_v)^{-1}h\big[H_t(Z)+G_v(Z)\big] &&I_{\beta h}E_{(1-\beta)h}:\ t^{n+1},\ W^{n+1},
+Z&\leftarrow Z+(I-\beta hJ_v)^{-1}h\big[H_\tv(Z)+G_v(Z)\big] &&I_{\beta h}E_{(1-\beta)h}:\ \tv^{n+1},\ W^{n+1},
 \end{align*}
 $Z_{\rm prev}=Z$ at the start of the stage. For linear $G_v$ the second line is
-$Y^{n+1}=Y^n+h[H_t+(1-\beta)A_vY^n+\beta A_vY^{n+1}]$ of Section~\ref{sec:wrf}.
+\eqref{eq:wrf2}--\eqref{eq:wrf4}.
 
 \paragraph{Tests} (\code{test/runtests.jl}, ``Verlet EI and WRF fast integrators''): the two-factor
 column solve is exact for the linear forms; on one frozen stage of the hill problem (product,
@@ -643,9 +711,9 @@ Agnesi; to be checked on the moist cases (\code{MoistExnerModel}, \code{pvar = :
 \item The remaining gaps (Exner form; MIS4a without options): linear stability analysis of the coupled
 MIS--EI/WRF step.
 \item Rerun of the MIS study (\code{docs/mis\_agnesi}) with the corrected number of small steps.
-\item $W$ system with explicit metric term (sufficient for $c_s\dtau|z_x|/(J\Delta\eta)\lesssim1$) or the $\Omega$
-system with implicit metric term; for the $\Omega$ system the column-local approximations (a), (b) or the exact
-two-dimensional system.
+\item Orography: implement the $\Omega$ system with all vertical pressure derivatives implicit
+(Section~\ref{sec:omega}) for steep terrain ($c_s\dtau|z_x|/(J\Delta\eta)\gtrsim1$), with the column-local treatment (a), (b);
+check order, symmetry (EI) and stability of the lag (b) for constant slope.
 \end{enumerate}
 
 %======================================================================
