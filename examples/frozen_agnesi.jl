@@ -3,6 +3,7 @@
 # HEVI (horizontal Störmer–Verlet half steps around a (linearly implicit) Crank–Nicolson vertical step).
 # FORM (env):
 #   exner    frozen split of the extended system with the Exner pressure as an additional variable (`FV.ExnerModel`)
+#   pres     the same with the pressure p as the additional variable (`FV.ExnerModel(pvar = :p)`)
 #   gradp    frozen split of the FV operator, full pressure p(Θ_z) in the fast part (FV_PRESSURE_FORM = :gradp)
 #   product  frozen split, frozen product form (dp/dΘ)_f(y) δΘ (FV_PRESSURE_FORM = :product)
 #   linear   classical split N = L_n + (N - L_n): linear fast operator frozen at qⁿ (`fast_operator`), same
@@ -10,15 +11,21 @@
 #
 #     FORM=exner MODE=ref julia --project=examples examples/frozen_agnesi.jl          # RK4 reference (stored)
 #     [METHODS=MIS2,MIS3C,MIS4a,MIS54,WSRK3,ETD3,EB4,LRK4] [DTS=10,20,40,60,90,120] [NSUBFAC=1] \
+#     [FAST=hevi|ei|wrf] [SMDIV=0] [OFFCENTER=0] [EIGAMMA=0.5] \
 #         julia --project=examples examples/frozen_agnesi.jl                 # scan, table lines "RES …"
+# FAST: fast integrator of the frozen loop (`frozen_fast_solve!`): hevi (default), ei (Verlet EI), wrf
+# (WRF forward-backward, vertically implicit); both with the options SMDIV (divergence damping by
+# extrapolation of the thermodynamic variables, WRF γd) and OFFCENTER (ε, β = (1+ε)/2, WRF epssm);
+# EIGAMMA: Imex version III (W rows only, ei with OFFCENTER = 0).
 #
 # h(x) = h0/(1 + (x - xm)²/a²), h0 = 400 m, a = 10 km, U = 10 m/s, N = 0.01 1/s, θ0 = 300 K; periodic
 # channel 40 a = 400 km, top 15.6 km, Rayleigh damping of W above 9 km (rate 5 c_gz/(H - z_D));
 # Δx = 2 km (200 columns), Δη = 200 m (78 layers); each column in discrete hydrostatic balance of the
 # discretization of FORM; impulsive start; T = 10.8 a/U = 10800 s (env T). nsub = NSUBFAC ⌈Δt/Δτ⌉ with the
 # horizontal acoustic step Δτ = 0.85·0.92 Δx/c. Reference: RK4 of the same semi-discrete operator.
-# Output: lines "RES form method Δt nsub status max|w| relL2(w) max|Δw| relL2(θ') fast-steps time" (errors
-# NaN without reference) and the final states agnesi_x_<form>_<method>_<Δt>_<nsub>.jls in OUTDIR (SAVE=0: none).
+# Output: lines "RES form method Δt nsub status max|w| relL2(w) max|Δw| relL2(θ') fast-steps time fast" (errors
+# NaN without reference) and the final states agnesi_x_<form>_<method>_<Δt>_<nsub>[_<fast>].jls in OUTDIR (SAVE=0: none;
+# the suffix <fast> = FAST, with SMDIV, OFFCENTER, EIGAMMA if not default, unless FAST = hevi).
 
 include(joinpath(@__DIR__, "euler2d_common.jl"))
 using Serialization
@@ -28,7 +35,7 @@ const LX, HTOP, ZD = 40a, 15.6e3, 9e3
 const nx, nz = 200, 78
 const TEND = parse(Float64, get(ENV, "T", string(10.8a / U0)))
 const FORM = Symbol(get(ENV, "FORM", "exner"))
-FORM in (:exner, :gradp, :product, :linear) || error("FORM: exner, gradp, product or linear")
+FORM in (:exner, :pres, :gradp, :product, :linear) || error("FORM: exner, pres, gradp, product or linear")
 FV.FV_PRESSURE_FORM[] = FORM === :product ? :product : :gradp
 FV.FV_TERRAIN_FORM[] = :flux
 const OUTDIR = get(ENV, "OUTDIR", ".")
@@ -83,8 +90,8 @@ for i in 1:nx
 end
 cgz = U0 * min(1.0, U0 / (NBV * a))
 base = FV.with_sponge(base0, zeros(base0.nq); zD = ZD, αtop = 5cgz / (HTOP - ZD))
-m = FORM === :exner ? FV.ExnerModel(base; pvar = :pi) : base
-rest = FORM === :exner ? FV.exner_state(m, qb) : copy(qb)
+m = FORM === :exner ? FV.ExnerModel(base; pvar = :pi) : FORM === :pres ? FV.ExnerModel(base; pvar = :p) : base
+rest = FORM in (:exner, :pres) ? FV.exner_state(m, qb) : copy(qb)
 x0 = copy(rest)
 for k in 1:nz, i in 1:nx
     x0[FV.iU(grid, i, k)] = U0 * 0.5 * (qb[FV.iρ(grid, i - 1, k)] + qb[FV.iρ(grid, i, k)])
@@ -122,6 +129,13 @@ wmax_r = haveref ? maximum(abs, wr) : 0.4          # without reference: errors N
 methods = Symbol.(split(get(ENV, "METHODS", "MIS2,MIS3C,MIS4a,MIS54,WSRK3,ETD3,EB4,LRK4"), ","))
 dts = parse.(Float64, split(get(ENV, "DTS", "10,20,40,60,90,120"), ","))
 facs = parse.(Int, split(get(ENV, "NSUBFAC", "1"), ","))
+const FAST = Symbol(get(ENV, "FAST", "hevi"))
+const SMDIV = parse(Float64, get(ENV, "SMDIV", "0"))
+const OFFC = parse(Float64, get(ENV, "OFFCENTER", "0"))
+TS.EI_GAMMA[] = parse(Float64, get(ENV, "EIGAMMA", "0.5"))
+const FTAG = FAST === :hevi && SMDIV == 0 ? "" :
+    "_" * string(FAST) * (SMDIV != 0 ? "sd$(SMDIV)" : "") * (OFFC != 0 ? "e$(OFFC)" : "") *
+    (FAST === :ei && TS.EI_GAMMA[] != 0.5 ? "g$(TS.EI_GAMMA[])" : "")
 @printf("Agnesi FORM = %s, a = 10 km, %d × %d, Δx = %.0f m, Δη = %.0f m, T = %.0f s, Δτ_ac = %.2f s, reference max|w| = %.4f m/s\n",
         FORM, nx, nz, grid.dx, grid.dz, TEND, dτ, wmax_r)
 for meth in methods, Δt in dts, fac in facs
@@ -132,16 +146,16 @@ for meth in methods, Δt in dts, fac in facs
     if FORM === :linear
         w = TS.split_work(tab, length(x))
     else
-        w = TS.FrozenWork(m, length(x), tab); tmp = (zeros(length(x)), zeros(length(x)), zeros(length(x)))
+        w = TS.FrozenWork(m, length(x), tab); tmp = ntuple(_ -> zeros(length(x)), 4)
     end
     ok = true
     t = @elapsed try
         for s in 1:n
             if FORM === :linear      # linear fast operator frozen at qⁿ, refrozen every step
-                sF = TS.fast_operator(m, x; fast = :hevi)
-                TS.mis_step!(x, m, x, Δt, tab, sF, w; nsub, fast = :hevi)
+                sF = TS.fast_operator(m, x; fast = FAST)
+                TS.mis_step!(x, m, x, Δt, tab, sF, w; nsub, fast = FAST)
             else
-                TS.frozen_mis_step!(x, m, x, Δt, tab, w; nsub, fast = :hevi, tmp)
+                TS.frozen_mis_step!(x, m, x, Δt, tab, w; nsub, fast = FAST, tmp, smdiv = SMDIV, offcenter = OFFC)
                 TS.frozen_step_end!(m, x)
             end
             if s % 20 == 0 && (!all(isfinite, x) || maximum(abs, w_c(x)) > 20wmax_r)
@@ -158,10 +172,10 @@ for meth in methods, Δt in dts, fac in facs
     end
     if ok
         e = haveref ? (relL2(wx, wr), maximum(abs, (wx .- wr)[REG]), relL2(θp(x), θr_)) : (NaN, NaN, NaN)
-        @printf("RES %-7s %-6s %6.1f %3d stable   %.4f %.3e %.3e %.3e %7d %6.0f\n", FORM, meth, Δt, nsub, maximum(abs, wx), e..., fast, t)
-        get(ENV, "SAVE", "1") == "1" && serialize(joinpath(OUTDIR, "agnesi_x_$(FORM)_$(meth)_$(round(Int, Δt))_$(nsub).jls"), x)
+        @printf("RES %-7s %-6s %6.1f %3d stable   %.4f %.3e %.3e %.3e %7d %6.0f %s\n", FORM, meth, Δt, nsub, maximum(abs, wx), e..., fast, t, FAST)
+        get(ENV, "SAVE", "1") == "1" && serialize(joinpath(OUTDIR, "agnesi_x_$(FORM)_$(meth)_$(round(Int, Δt))_$(nsub)$(FTAG).jls"), x)
     else
-        @printf("RES %-7s %-6s %6.1f %3d unstable %.4f %.3e %.3e %.3e %7d %6.0f\n", FORM, meth, Δt, nsub, NaN, NaN, NaN, NaN, fast, t)
+        @printf("RES %-7s %-6s %6.1f %3d unstable %.4f %.3e %.3e %.3e %7d %6.0f %s\n", FORM, meth, Δt, nsub, NaN, NaN, NaN, NaN, fast, t, FAST)
     end
     flush(stdout)
 end

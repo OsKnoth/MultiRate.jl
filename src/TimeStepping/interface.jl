@@ -17,9 +17,15 @@
 #   vertical_apply!(out, s, q)              vertical part A_v q (no forcing)
 #   vertical_factor(s, c)                   factorization of I - c A_v (cached by the operator)
 #   vertical_solve!(Y, s, F, Ys)            Y = (I - c A_v)⁻¹ Ys, Y may alias Ys
+# Verlet EI (:ei, Imex.pdf version 1 EI), D = ct on the thermodynamic rows, cw on the W rows:
+#   ei_vertical!(out, s, q, ct, cw)         out = D A_v q
+#   ei_vertical_solve!(Y, s, ct, cw, R)     Y = (I - D A_v)⁻¹ R
 # WRF forward-backward (:wrf), additionally:
 #   fast_rhs_hmomentum!(out, s, q, f)       horizontal-momentum tendency (explicit, forward), other rows 0
 #   fast_rhs_hthermo!(out, s, q, f)         all other rows: explicit horizontal terms + f/M, horizontal momentum rows 0
+
+function ei_vertical! end
+function ei_vertical_solve! end
 
 """Supertype of the fast (acoustic-gravity) operators of all discretizations."""
 abstract type AbstractFastOperator end

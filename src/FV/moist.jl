@@ -400,16 +400,16 @@ function frozen_stage_begin!(m::MoistExnerModel, C, z)
     return s
 end
 
-function moist_column_solve!(Y, m::MoistExnerModel, c, R)
+function moist_column_solve!(Y, m::MoistExnerModel, c, R, cw = c)
     s = m.column; g = m.base.grid
     nz, grav = g.nz, m.base.gas.g
-    sub, cpr, iden = _exner_factor(s, m, c)
+    sub, cpr, iden = _exner_factor(s, m, c, cw)
     W = s.W
     @inbounds for i in 1:g.nx
         dz = dzc(g, i)
         for k in 2:nz
-            rhs = R[iW(g, i, k)] - (c / dz) * s.P[i, k] * (R[iπ(m, i, k)] - R[iπ(m, i, k - 1)]) -
-                  (c * grav / 2) * (R[iρ(g, i, k - 1)] + R[iρ(g, i, k)])
+            rhs = R[iW(g, i, k)] - (cw / dz) * s.P[i, k] * (R[iπ(m, i, k)] - R[iπ(m, i, k - 1)]) -
+                  (cw * grav / 2) * (R[iρ(g, i, k - 1)] + R[iρ(g, i, k)])
             W[k] = k == 2 ? rhs * iden[k, i] : (rhs - sub[k, i] * W[k-1]) * iden[k, i]
         end
         for k in nz-1:-1:2

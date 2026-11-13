@@ -841,6 +841,117 @@ end
     end
 end
 
+@testset "Fast substeps per stage: no fast step longer than Δt/nsub" begin
+    @test TS.fast_substeps(0.4704, 3) == 2            # MIS2 stage 3 (round gave 1 step of 0.47 Δt)
+    @test TS.fast_substeps(0.5, 12) == 6 && TS.fast_substeps(1 / 3, 12) == 4 && TS.fast_substeps(0.01, 12) == 1
+    for M in (:MIS2, :MIS3C, :MIS4a, :MIS54), nsub in 1:40
+        tab = TS.mis_tableau(M)
+        @test all(tab.d ./ TS.stage_substeps(tab, nsub) .<= 1 / nsub + 1e-12)
+    end
+end
+
+@testset "FV2D: Verlet EI and WRF fast integrators (Imex.pdf version 1 EI; KSD 2007)" begin
+    gas = CM.Gas(); mg = FV.MoistGas()
+    gm = CM.Gas(R = mg.Rd, γ = mg.Cpd / (mg.Cpd - mg.Rd), p00 = mg.p0)
+    ρr, Θr, θr = CM.stratified_reference(gm; θ0 = 300.0, N = 0.01)
+    g = FV.FVGrid(16, 10, 40e3, 10e3; zs = x -> 800 / (1 + ((x - 20e3) / 4e3)^2))
+    b = FV.FVModel(g, gm, ρr, Θr)
+    q = CM.project2d(b, (x, z) -> (ρ = ρr(z) * (1 + 1e-3 * sin(2π * x / 40e3)); (ρ, 10ρ + sin(x / 5e3), 0.3 * sin(π * z / 10e3) * cos(x / 7e3), Θr(z) * (1 + 1e-3 * cos(x / 6e3)))))
+    D(v, ct, cw) = FV._scale_tw!(copy(v), g, ct, cw)
+    try
+        FV.FV_TERRAIN_FORM[] = :flux
+        for form in (:product, :gradp, :exner, :pres, :moist)
+            FV.FV_PRESSURE_FORM[] = form === :product ? :product : :gradp
+            m = form === :exner ? FV.ExnerModel(b; pvar = :pi) : form === :pres ? FV.ExnerModel(b; pvar = :p) :
+                form === :moist ? FV.MoistExnerModel(b; mgas = mg, pvar = :pi, micro = :slow) : b
+            x = form in (:exner, :pres) ? FV.exner_state(m, q) :
+                form === :moist ? FV.moist_exner_state(m, q, [0.012 * q[FV.iρ(g, i, k)] for i in 1:16, k in 1:10]) : copy(q)
+            n = length(x)
+            C = zeros(TS.frozen_ncoef(m)); S = zeros(n); TS.frozen_data!(C, S, m, x)
+            TS.frozen_stage_begin!(m, C, x)
+            Gv(z) = TS.frozen_fast!(zeros(n), m, C, z, :vertical, S)
+            # two-factor column solve: Y - D J_v Y = R, D = 2 (thermodynamic rows), 5 (W rows)
+            if form !== :gradp           # vertical part linear: exact
+                R = 1e-3 .* cos.(1:n); Y = zeros(n); FV._vsolve!(Y, m, 2.0, 5.0, R)
+                @test maximum(abs.(Y .- D(Gv(x .+ Y) .- Gv(x), 2.0, 5.0) .- R)) < 1e-9 * maximum(abs, R)
+            end
+            # second order of the EI fast loop (against RK4 with small steps)
+            T = 8.0
+            run(meth, ns) = TS.frozen_fast_solve!(copy(x), m, C, S, T / ns, ns, zeros(n); method = meth,
+                                                  tmp = (zeros(n), zeros(n), zeros(n)))
+            xr = run(:rk4, 400)
+            e1, e2 = maximum(abs, run(:ei, 4) - xr), maximum(abs, run(:ei, 8) - xr)
+            @test log2(e1 / e2) > (form === :gradp ? 1.8 : form === :pres ? 1.6 : 1.9)   # :pres pre-asymptotic at 4 steps
+            # merged half steps (EI_MERGE) = separate half steps: exact for the linear vertical parts
+            for γ in (0.5, 0.6)
+                TS.EI_GAMMA[] = γ
+                TS.EI_MERGE[] = false; zu = run(:ei, 16)
+                TS.EI_MERGE[] = true;  zm = run(:ei, 16)
+                @test maximum(abs, zu - zm) < (form === :gradp ? 1e-5 : 1e-13) * maximum(abs, x)
+            end
+            TS.EI_GAMMA[] = 0.5
+            # WRF forward-backward, vertically implicit: first order (conjugate to Verlet), ε = 0.1
+            runo(meth, ns; ε = 0.0, sd = 0.0) = TS.frozen_fast_solve!(copy(x), m, C, S, T / ns, ns, zeros(n); method = meth,
+                                                                     tmp = ntuple(_ -> zeros(n), 4), offcenter = ε, smdiv = sd)
+            e1, e2 = maximum(abs, runo(:wrf, 16; ε = 0.1) - xr), maximum(abs, runo(:wrf, 32; ε = 0.1) - xr)
+            @test 0.85 < log2(e1 / e2) < 1.2
+            e1, e2 = maximum(abs, runo(:ei, 16; ε = 0.1) - xr), maximum(abs, runo(:ei, 32; ε = 0.1) - xr)
+            @test 0.85 < log2(e1 / e2) < 1.2
+            # EI and WRF with the same off-centring ε and extrapolation γd are conjugate:
+            # WRF^n E = E EI^n, E the explicit step (1-β)h of the thermodynamic + vertical part
+            if form !== :gradp
+                for (ε, sd) in ((0.0, 0.0), (0.1, 0.0), (0.1, 0.1)), merge in (true, false)
+                    TS.EI_MERGE[] = merge
+                    hw = (1 - (1 + ε) / 2) * T / 16
+                    Ec(z) = z .+ hw .* TS.frozen_fast!(zeros(n), m, C, z, :hthermo, S) .+ TS.frozen_vertical_rhs!(zeros(n), m, C, z, hw, hw)
+                    zw = TS.frozen_fast_solve!(Ec(x), m, C, S, T / 16, 16, zeros(n); method = :wrf, tmp = ntuple(_ -> zeros(n), 4), offcenter = ε, smdiv = sd)
+                    @test maximum(abs, zw - Ec(runo(:ei, 16; ε, sd))) < 1e-12 * maximum(abs, x)
+                end
+                TS.EI_MERGE[] = true
+            end
+        end
+        # purely vertical problem (flat grid, horizontally uniform, U = 0): EI = Crank–Nicolson = :hevi
+        FV.FV_PRESSURE_FORM[] = :product
+        gf = FV.FVGrid(8, 20, 40e3, 10e3); bf = FV.FVModel(gf, gm, ρr, Θr)
+        qf = CM.project2d(bf, (x, z) -> (ρ = ρr(z); (ρ, 0.0, 0.5 * sin(π * z / 10e3), Θr(z) * (1 + 1e-3 * sin(2π * z / 10e3)))))
+        nf = length(qf); Cf = zeros(TS.frozen_ncoef(bf)); Sf = zeros(nf); TS.frozen_data!(Cf, Sf, bf, qf); fill!(Sf, 0.0)
+        TS.frozen_stage_begin!(bf, Cf, qf)
+        tm = (zeros(nf), zeros(nf), zeros(nf))
+        ze = TS.frozen_fast_solve!(copy(qf), bf, Cf, Sf, 20.0, 3, zeros(nf); method = :ei, tmp = tm)
+        zh = TS.frozen_fast_solve!(copy(qf), bf, Cf, Sf, 20.0, 3, zeros(nf); method = :hevi, tmp = tm)
+        @test maximum(abs, ze - zh) < 1e-12 * maximum(abs, qf)
+        # WRF without off-centring: the same Crank–Nicolson step
+        zw = TS.frozen_fast_solve!(copy(qf), bf, Cf, Sf, 20.0, 3, zeros(nf); method = :wrf, tmp = tm)
+        @test maximum(abs, zw - zh) < 1e-12 * maximum(abs, qf)
+        # vertical acoustic Courant number c Δτ/Δz = 35: bounded
+        @test all(isfinite, ze) && maximum(abs, ze[[FV.iW(gf, i, k) for i in 1:8 for k in 2:20]]) < 2
+        # linearized path (FVFast): second order of fast_solve! with :ei, same limit as :hevi_verlet
+        FV.FV_PRESSURE_FORM[] = :gradp
+        s = TS.fast_operator(b, q; fast = :ei)
+        Fs = 1e-4 .* sin.(1:length(q))
+        sol(meth, ns) = TS.fast_solve!(zeros(length(q)), s, q, Fs, 8.0 / ns, ns; method = meth)
+        xr = sol(:ei, 512)
+        @test log2(maximum(abs, sol(:ei, 4) - xr) / maximum(abs, sol(:ei, 8) - xr)) > 1.8
+        @test maximum(abs, sol(:hevi_verlet, 512) - xr) < 1e-2 * maximum(abs, sol(:ei, 4) - xr)
+        # MIS with the EI fast loop: mass conserved on terrain, close to :hevi
+        md = FV.ExnerModel(b; pvar = :pi); xd = FV.exner_state(md, q)
+        ye = TS.run_frozen(md, xd, 2.0, 3; tab = TS.mis_tableau(:MIS2), nsub = 4, fast = :ei)
+        yh = TS.run_frozen(md, xd, 2.0, 3; tab = TS.mis_tableau(:MIS2), nsub = 4, fast = :hevi)
+        tot(z) = sum(g.Jc[i] * z[FV.iρ(g, i, k)] for i in 1:16, k in 1:10)
+        @test abs(tot(ye) / tot(xd) - 1) < 1e-13
+        @test maximum(abs, ye - yh) < 1e-2 * maximum(abs, ye - xd)          # O(Δτ²): both second order
+        yw = TS.run_frozen(md, xd, 2.0, 3; tab = TS.mis_tableau(:MIS2), nsub = 4, fast = :wrf, smdiv = 0.1, offcenter = 0.1)
+        @test abs(tot(yw) / tot(xd) - 1) < 1e-13
+        @test maximum(abs, yw - yh) < 0.2 * maximum(abs, yw - xd)           # O(Δτ): first order
+        # off-centring γ = 0.6 (version III): consistent, first order in Δτ
+        TS.EI_GAMMA[] = 0.6
+        e1, e2 = maximum(abs, sol(:ei, 16) - xr), maximum(abs, sol(:ei, 32) - xr)
+        @test 0.8 < log2(e1 / e2) < 1.3
+    finally
+        FV.FV_PRESSURE_FORM[] = :gradp; TS.EI_GAMMA[] = 0.5; TS.EI_MERGE[] = true
+    end
+end
+
 @testset "FV3D: 3D C-grid, cut cells, frozen split" begin
     F3 = MultiRate.FV3D
     gas = CM.Gas()

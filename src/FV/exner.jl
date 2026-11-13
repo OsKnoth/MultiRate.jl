@@ -269,15 +269,15 @@ function frozen_stage_begin!(m::ExnerModel, C, z)
     return s
 end
 
-function _exner_factor(s::ExnerColumn, m, c)
-    get!(s.factors, Float64(c)) do
+function _exner_factor(s::ExnerColumn, m, c, cw = c)
+    get!(s.factors, Float64(c * cw)) do
         g = m.base.grid
         nz = g.nz
         sub = zeros(nz + 1, g.nx); cpr = zeros(nz + 1, g.nx); iden = zeros(nz + 1, g.nx)
         @inbounds for i in 1:g.nx, k in 2:nz
             dz = dzc(g, i)                       # J Δη of the column
-            r = (c / dz)^2
-            gg = c^2 * m.base.gas.g / (2dz)
+            r = c * cw / dz^2
+            gg = c * cw * m.base.gas.g / (2dz)
             a = k > 2 ? -r * s.P[i, k] * s.cT[i, k-1] + gg : 0.0
             d = 1 + r * s.P[i, k] * (s.cT[i, k] + s.cB[i, k])
             b = k < nz ? -r * s.P[i, k] * s.cB[i, k+1] - gg : 0.0
@@ -288,17 +288,17 @@ function _exner_factor(s::ExnerColumn, m, c)
     end
 end
 
-"""Y = (I - c J_v)⁻¹ R (U rows: identity)."""
-function exner_column_solve!(Y, m::ExnerModel, c, R)
+"""Y = (I - D J_v)⁻¹ R, D = c on the thermodynamic rows and cw on the W rows (U rows: identity)."""
+function exner_column_solve!(Y, m::ExnerModel, c, R, cw = c)
     s = m.column; g = m.base.grid
     nz, grav = g.nz, m.base.gas.g
-    sub, cpr, iden = _exner_factor(s, m, c)
+    sub, cpr, iden = _exner_factor(s, m, c, cw)
     W = s.W
     @inbounds for i in 1:g.nx
         dz = dzc(g, i)
         for k in 2:nz
-            rhs = R[iW(g, i, k)] - (c / dz) * s.P[i, k] * (R[iπ(m, i, k)] - R[iπ(m, i, k - 1)]) -
-                  (c * grav / 2) * (R[iρ(g, i, k - 1)] + R[iρ(g, i, k)])
+            rhs = R[iW(g, i, k)] - (cw / dz) * s.P[i, k] * (R[iπ(m, i, k)] - R[iπ(m, i, k - 1)]) -
+                  (cw * grav / 2) * (R[iρ(g, i, k - 1)] + R[iρ(g, i, k)])
             W[k] = k == 2 ? rhs * iden[k, i] : (rhs - sub[k, i] * W[k-1]) * iden[k, i]
         end
         for k in nz-1:-1:2

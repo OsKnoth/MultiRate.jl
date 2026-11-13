@@ -54,6 +54,6 @@ function mis_step!(qnew, model, q, Δt, tab::LawsonTableau, sF, w::MISWork; nsub
 end
 
 function _propagate!(out, sF, x, τ, Δt, nsub, fast)
-    n = max(1, round(Int, τ / Δt * nsub))
+    n = fast_substeps(τ / Δt, nsub)
     return fast_solve!(out, sF, x, nothing, τ / n, n; method = fast)
 end

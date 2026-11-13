@@ -7,10 +7,18 @@ const IMEX_AE = [0.0 0.0 0.0; IMEX_GM 0.0 0.0; IMEX_DL (1 - IMEX_DL) 0.0]
 const IMEX_AI = [0.0 0.0 0.0; 0.0 IMEX_GM 0.0; 0.0 (1 - IMEX_GM) IMEX_GM]
 
 """Off-centring of the WRF vertically implicit acoustic step, β = (1 + epssm)/2 with epssm = 0.1."""
-const WRF_BETA = 0.55
+const WRF_BETA = Ref(0.55)
 
 """WRF divergence damping (smdiv): horizontal pressure gradient from p + γd (p - p_old)."""
 const WRF_SMDIV = 0.1
+
+"""Off-centring γ of the vertical momentum in the Verlet EI step (:ei; Imex.pdf version III):
+W⁺ = W + Δτ[(1 - γ) B_v(t) + γ B_v(t⁺)] + …; γ = 1/2 is version EI (trapezoidal, second order)."""
+const EI_GAMMA = Ref(0.5)
+
+"""Verlet EI in the frozen split (`frozen_fast_solve!`, :ei): combine the half steps of consecutive
+fast steps (true) or evaluate each half step (false; the two agree for linear fast parts)."""
+const EI_MERGE = Ref(true)
 
 """
     fast_solve!(qout, s, q0, F_slow, dt, nsteps; method=:imex)
@@ -23,9 +31,13 @@ q0 (qout may alias q0). Methods:
   :hevi_verlet  Strang: horizontal Störmer–Verlet half step, vertical Crank–Nicolson,
            horizontal half step (needs `fast_rhs_hthermo!`, `fast_rhs_hmomentum!`)
   :verlet  Störmer–Verlet: (ρ, Θ) half step, momentum full step, (ρ, Θ) half step
+  :ei      Verlet EI (Imex.pdf, version 1 EI): (ρ, Θ) half step explicit in the full divergence,
+           U explicit, W with the trapezoidal rule in the vertical pressure gradient and gravity
+           (off-centring `EI_GAMMA`), (ρ, Θ) half step; one column solve per step (needs
+           `fast_rhs_hthermo!`, `fast_rhs_hmomentum!`, `ei_vertical!`, `ei_vertical_solve!`)
   :fb      forward-backward: momentum explicit, interface implicit, then (ρ, Θ)
   :wrf     WRF acoustic step: horizontal momentum forward, then (ρ, Θ, vertical momentum)
-           vertically implicit, off-centred Crank–Nicolson (β = WRF_BETA), divergence damping
+           vertically implicit, off-centred Crank–Nicolson (β = WRF_BETA[]), divergence damping
            by the pressure extrapolation of WRF (γd = WRF_SMDIV)
   :rosenbrock_amf model-specific Rosenbrock-W fast integration with approximate matrix factors
   :hevi_amf model-specific HEVI with approximate matrix factors in the implicit step
@@ -121,7 +133,7 @@ end
 const NO_COMPOSITION = [1.0]
 const COMPOSITIONS = Dict{Symbol,Tuple{Symbol,Vector{Float64}}}(
     Symbol(base, suf) => (base, collect(ws))
-    for base in (:verlet, :hevi, :hevi_verlet, :hevi_relax, :imex, :fb)
+    for base in (:verlet, :hevi, :hevi_verlet, :hevi_relax, :imex, :fb, :ei)
     for (suf, ws) in (("_y4", YOSHIDA4), ("_s4", SUZUKI4), ("_y6", YOSHIDA6)))
 
 """max|w_k| of the composition: the base loop sees substeps up to this factor times dτ."""
@@ -141,6 +153,8 @@ function _fast_loop!(method, q, s, f, dt, nsteps, Y, k1, k2, tmp, rhs)
         hevi_loop!(q, s, f, dt, nsteps, Y, k1, k2, tmp, rhs; relax_horizontal = true)
     elseif method == :verlet
         verlet_loop!(q, s, f, dt, nsteps, k1, k2)
+    elseif method == :ei
+        ei_loop!(q, s, f, dt, nsteps, Y, k1, k2)
     elseif method == :fb
         fb_loop!(q, s, f, dt, nsteps, k1, k2)
     elseif method == :wrf
@@ -219,6 +233,31 @@ function hevi_verlet_loop!(q, s, f, dt, nsteps, Y, k1, k2, tmp, rhs; forcing::Sy
     return q
 end
 
+"""
+Verlet EI (Imex.pdf, Section 1, version 1 EI) for q' = L q + f with the thermodynamic variables
+t = (ρ, Θ), L = [A_h + A_v on t; B_h on U; B_v on W]: with c = Δτ/2, γ = `EI_GAMMA[]`,
+    t½  = t + c (A_h U + A_v W + f_t),              W' = W + (1 - γ)Δτ B_v t + c f_W
+    U⁺  = U + Δτ (B_h t½ + f_U)
+    t*  = t½ + c (A_h U⁺ + f_t),                    W'' = W' + c f_W
+    t⁺  = t* + c A_v W⁺,                            W⁺ = W'' + γΔτ B_v t⁺
+the last line one column solve (I - D A_v) Y = D A_v q, D = c (t rows), γΔτ (W rows). For a purely
+vertical problem the step is Crank–Nicolson; with γ = 1/2 it is symmetric and of second order.
+"""
+function ei_loop!(q, s, f, dt, nsteps, Y, k1, k2)
+    c, γ = dt / 2, EI_GAMMA[]
+    for _ in 1:nsteps
+        fast_rhs_hthermo!(k1, s, q, f)
+        ei_vertical!(k2, s, q, c, (1 - γ) * dt)
+        @. q += c * k1 + k2
+        fast_rhs_hmomentum!(k1, s, q, f); @. q += dt * k1
+        fast_rhs_hthermo!(k1, s, q, f);   @. q += c * k1
+        ei_vertical!(k2, s, q, c, γ * dt)
+        ei_vertical_solve!(Y, s, c, γ * dt, k2)
+        @. q += Y
+    end
+    return q
+end
+
 """Placement of the constant fast forcing in `:hevi_verlet` (:vertical or :horizontal)."""
 const HEVI_VERLET_FORCING = Ref(:horizontal)
 
@@ -258,7 +297,7 @@ vertically implicit with off-centring β:
     (I - β dt A_v) Yⁿ⁺¹ = Yⁿ + dt [(1 - β) A_v Yⁿ + H(qⁿ with new horizontal momentum) + f]
 """
 function wrf_loop!(q, s, f, dt, nsteps, qold, kh, kt, tmp, rhs)
-    β = WRF_BETA
+    β = WRF_BETA[]
     γd = WRF_SMDIV
     F = vertical_factor(s, β * dt)
     qold .= q

@@ -39,27 +39,30 @@ function factor_vertical!(F::FVVerticalFactor, s::FVFast, c)
     return F
 end
 
-function vertical_factor(s::FVFast, c)
-    get!(s.lucache, Float64(c)) do
+"""Factors of I - D A_v, D = c on the thermodynamic rows and cw on the W rows: the W system depends
+on c cw only (cached by c cw, stored with c = √(c cw))."""
+function vertical_factor(s::FVFast, c, cw = c)
+    get!(s.lucache, Float64(c * cw)) do
         g = s.grid
-        F = FVVerticalFactor(Float64(c), zeros(g.nz + 1, g.nx), zeros(g.nz + 1, g.nx), zeros(g.nz + 1, g.nx))
-        factor_vertical!(F, s, c)
+        ce = sqrt(c * cw)
+        F = FVVerticalFactor(ce, zeros(g.nz + 1, g.nx), zeros(g.nz + 1, g.nx), zeros(g.nz + 1, g.nx))
+        factor_vertical!(F, s, ce)
     end
 end
 
-"""Y = (I - c A_v)⁻¹ Ys (Y may alias Ys)."""
-function vertical_solve!(Y, s::FVFast, F::FVVerticalFactor, Ys)
+"""Y = (I - D A_v)⁻¹ Ys (Y may alias Ys), D = c on the thermodynamic rows and cw on the W rows
+(default c = cw = F.c; F must be the factor of c cw)."""
+function vertical_solve!(Y, s::FVFast, F::FVVerticalFactor, Ys, c = F.c, cw = c)
     g = s.grid
     nz = g.nz
     grav = s.gas.g
-    c = F.c
     W = s.colbuf
     @inbounds for i in 1:g.nx
         dz = g.terrain ? g.Jc[i] * g.dz : g.dz
         # forward sweep (dp stored in W)
         for k in 2:nz
-            rhs = Ys[iW(g, i, k)] - (c / dz) * (s.a[i, k] * Ys[iΘ(g, i, k)] - s.a[i, k-1] * Ys[iΘ(g, i, k - 1)]) -
-                  (c * grav / 2) * (Ys[iρ(g, i, k - 1)] + Ys[iρ(g, i, k)])
+            rhs = Ys[iW(g, i, k)] - (cw / dz) * (s.a[i, k] * Ys[iΘ(g, i, k)] - s.a[i, k-1] * Ys[iΘ(g, i, k - 1)]) -
+                  (cw * grav / 2) * (Ys[iρ(g, i, k - 1)] + Ys[iρ(g, i, k)])
             W[k] = k == 2 ? rhs * F.iden[k, i] : (rhs - F.sub[k, i] * W[k-1]) * F.iden[k, i]
         end
         for k in nz-1:-1:2
@@ -125,4 +128,34 @@ function hevi_loop!(q, s::FVFast, f, dt, nsteps, Y, k1, k2, tmp, rhs)
         @. q += (halfdt / 2) * k1
     end
     return q
+end
+
+# ------------------------------------------------------------------ Verlet EI (Imex.pdf, version 1 EI)
+"""Vertical part A_v q with the thermodynamic rows scaled by ct and the W rows by cw."""
+function ei_vertical!(out, s::FVFast, q, ct, cw)
+    s.vadv && error("fast = :ei: vertical advection of U in the fast part (FV_VADV_FAST) is not supported")
+    vertical_apply!(out, s, q)
+    _scale_tw!(out, s.grid, ct, cw)
+end
+
+"""Y = (I - D A_v)⁻¹ R, D = ct on the thermodynamic rows and cw on the W rows."""
+ei_vertical_solve!(Y, s::FVFast, ct, cw, R) = vertical_solve!(Y, s, vertical_factor(s, ct, cw), R, ct, cw)
+
+"""out *= ct on all rows, then the W rows by cw/ct; ct = 0: W rows by cw, all other rows zero.
+U rows of a vertical part are zero."""
+function _scale_tw!(out, g, ct, cw)
+    if ct == 0
+        w = [cw * out[iW(g, i, k)] for i in 1:g.nx, k in 2:g.nz]
+        fill!(out, 0.0)
+        @inbounds for k in 2:g.nz, i in 1:g.nx
+            out[iW(g, i, k)] = w[i, k-1]
+        end
+        return out
+    end
+    @. out *= ct
+    f = cw / ct
+    @inbounds for k in 2:g.nz, i in 1:g.nx
+        out[iW(g, i, k)] *= f
+    end
+    return out
 end

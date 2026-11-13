@@ -40,8 +40,18 @@ MISStepper(; tab::SplitTableau = mis_tableau(:MIS4a), nsub::Integer = 12, fast::
            refreeze::Bool = true, refreeze_every::Integer = 1, fast_options::NamedTuple = NamedTuple()) =
     MISStepper(tab, nsub, fast, refreeze, refreeze_every, fast_options)
 
-"""Fast substeps per MIS stage: n_i = max(1, round(d_i nsub)); for WSRK3 nsub/3, nsub/2, nsub (WRF)."""
-stage_substeps(tab::MISTableau, nsub::Int) = [max(1, round(Int, d * nsub)) for d in tab.d]
+"""
+    fast_substeps(x, nsub)
+
+Fast steps for a fast interval of length x Δt with nsub steps per Δt: ⌈x nsub⌉ (at least 1), so
+that no fast step is longer than Δt/nsub, the step for which nsub was chosen (Δt/nsub ≤ Δτ_max).
+(Rounding to the nearest integer, used before, allowed steps up to 1.5 Δt/nsub, e.g. MIS2 with
+nsub = 3: stage 3, d = 0.47, one step of 0.47 Δt.) The tolerance keeps exact multiples.
+"""
+fast_substeps(x::Real, nsub::Integer) = max(1, ceil(Int, x * nsub - 1e-9))
+
+"""Fast substeps per MIS stage: n_i = `fast_substeps`(d_i, nsub); for WSRK3 nsub/3, nsub/2, nsub (WRF)."""
+stage_substeps(tab::MISTableau, nsub::Int) = [fast_substeps(d, nsub) for d in tab.d]
 
 """
     mis_step!(qnew, model, q, Δt, tab, sF, work; nsub=12, fast=:imex)
@@ -71,7 +81,7 @@ function mis_step!(qnew, model, q, Δt, tab::MISTableau, sF, w::MISWork; nsub::I
             @. w.Z += a * ΔYj
             @. w.Fs += g * ΔYj + b * Sj
         end
-        n = max(1, round(Int, d * nsub))
+        n = fast_substeps(d, nsub)
         fast_solve!(w.Z, sF, w.Z, w.Fs, d * Δt / n, n; method = fast)
         @. w.ΔY[i] = w.Z - q
     end

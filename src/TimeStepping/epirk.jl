@@ -114,7 +114,7 @@ function mis_step!(qnew, model, q, Δt, tab::EPIRKTableau, sF, w::MISWork; nsub:
                 end
             end
             G[1] .-= w.Fs
-            fast_solve_poly!(w.Z, sF, q, G, gs * Δt, max(1, round(Int, gs * nsub)); method = fast)
+            fast_solve_poly!(w.Z, sF, q, G, gs * Δt, fast_substeps(gs, nsub); method = fast)
             @. w.Y += w.Z - q
         end
     end

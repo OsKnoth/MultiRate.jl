@@ -26,7 +26,7 @@ function mis_step!(qnew, model, q, Δt, tab::ETDTableau, sF, w::MISWork; nsub::I
             end
         end
         T = tab.c[i] * Δt
-        n = max(1, round(Int, tab.c[i] * nsub))
+        n = fast_substeps(tab.c[i], nsub)
         fast_solve_poly!(w.Y, sF, q, G, T, n; method = fast)    # Y_{i+1}
     end
     qnew .= w.Y

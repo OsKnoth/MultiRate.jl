@@ -108,8 +108,8 @@ function refreeze!(s::FVFast, m::FVModel, q, pfac)
             end
         end
     end
-    for (c, F) in s.lucache
-        factor_vertical!(F, s, c)
+    for (_, F) in s.lucache
+        factor_vertical!(F, s, F.c)
     end
     return s
 end
