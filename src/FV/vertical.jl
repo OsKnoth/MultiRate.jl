@@ -141,14 +141,18 @@ end
 """Y = (I - D A_v)⁻¹ R, D = ct on the thermodynamic rows and cw on the W rows."""
 ei_vertical_solve!(Y, s::FVFast, ct, cw, R) = vertical_solve!(Y, s, vertical_factor(s, ct, cw), R, ct, cw)
 
-"""out *= ct on all rows, then the W rows by cw/ct; ct = 0: W rows by cw, all other rows zero.
-U rows of a vertical part are zero."""
+"""out *= ct on the thermodynamic rows, cw on the momentum rows (W; U for the implicit metric term,
+FV_METRIC_IMPLICIT; otherwise zero in a vertical part); ct = 0 allowed."""
 function _scale_tw!(out, g, ct, cw)
     if ct == 0
         w = [cw * out[iW(g, i, k)] for i in 1:g.nx, k in 2:g.nz]
+        u = [cw * out[iU(g, i, k)] for i in 1:g.nx, k in 1:g.nz]
         fill!(out, 0.0)
         @inbounds for k in 2:g.nz, i in 1:g.nx
             out[iW(g, i, k)] = w[i, k-1]
+        end
+        @inbounds for k in 1:g.nz, i in 1:g.nx
+            out[iU(g, i, k)] = u[i, k]
         end
         return out
     end
@@ -156,6 +160,9 @@ function _scale_tw!(out, g, ct, cw)
     f = cw / ct
     @inbounds for k in 2:g.nz, i in 1:g.nx
         out[iW(g, i, k)] *= f
+    end
+    @inbounds for k in 1:g.nz, i in 1:g.nx
+        out[iU(g, i, k)] *= f
     end
     return out
 end

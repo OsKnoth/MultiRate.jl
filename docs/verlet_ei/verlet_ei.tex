@@ -106,7 +106,9 @@ All vertical pressure derivatives $G_\eta p$ --- in the $U$ equation through the
 equation with the factor $1+z_x^2$ --- and gravity are treated implicitly; the horizontal pressure force
 $G_xp$ (in $U$ and in $\Omega$) and the horizontal divergence $\partial_x(JU)$ explicitly. The thermodynamic equations
 contain the momenta in the vertical only through $\Omega$, so $(\tv,\Omega)$ is a closed column system for the
-implicit part; $W=\Omega+z_xU$ is diagnostic. For $z_x=0$, $J=1$ this is the Cartesian system with $\Omega=W$.
+implicit part. $U$ and $W$ remain the prognostic variables; $\Omega$ is the variable of the column solve,
+and $U$, $W$ are computed from the new pressure afterwards (Section~\ref{sec:omega}). For $z_x=0$, $J=1$ this is the
+Cartesian system with $\Omega=W$.
 
 \paragraph{Why the metric term has to be implicit on steep terrain.} Constant slope $s=z_x$, no
 gravity, vertical structure only:
@@ -225,89 +227,202 @@ is that of WRF: one evaluation of each part and one column solve.
 \end{itemize}
 
 %======================================================================
-\section{Orography: the contravariant $\Omega$ with all vertical pressure derivatives implicit}\label{sec:omega}
-\subsection{Splitting}
-On the terrain-following grid (Section~\ref{sec:tf}) the explicit part is the horizontal pressure force
-$G_xp$ in the $U$ and in the $\Omega$ equation and the horizontal divergence; the implicit part is everything
-with $G_\eta p$, gravity and the vertical divergence. With $p=P\Theta$ and $\beta=(1+\varepsilon)/2$:
+\section{Orography: solve in $\Omega$, all vertical pressure derivatives implicit}\label{sec:omega}
+\subsection{The momentum equations in $U$ and $W$}
+On the terrain-following grid (Section~\ref{sec:tf}) collect the momenta in $M=(U,W)^T$. With the metric
+vector
+\[
+b=\begin{pmatrix}-z_x\\ 1\end{pmatrix}
+\]
+the momentum equations are
+\[
+M_t=\begin{pmatrix}G_xp\\ 0\end{pmatrix}-b\,G_\eta p-\begin{pmatrix}0\\ g\rho\end{pmatrix}+f_M .
+\]
+The first term (horizontal pressure force) is explicit; the second (every vertical pressure derivative:
+the metric term $z_xG_\eta p$ in $U$ and $-G_\eta p$ in $W$) and the third (gravity) are implicit. The contravariant
+mass flux is the metric row applied to $M$,
+\[
+\Omega=b^TM=W-z_xU ,
+\]
+and the thermodynamic equations contain the momenta in the vertical only through $\Omega$:
+\begin{align*}
+J\rho_t&=-\partial_x(JU)-\partial_\eta\Omega,\\
+J\Theta_t&=-\partial_x(J\theta_fU)-\partial_\eta(\theta_f\Omega).
+\end{align*}
+The horizontal divergence is explicit. With $p=P\Theta$ and $\beta=(1+\varepsilon)/2$ the splitting is
 \begin{center}\small
 \begin{tabular}{lll}\toprule
 equation & explicit & implicit\\\midrule
 $\rho$ & $-\frac1J\partial_x(JU)$ & $-\frac1J\partial_\eta\Omega$\\
 $\Theta$ & $-\frac1J\partial_x(J\theta_fU)$ & $-\frac1J\partial_\eta(\theta_f\Omega)$\\
 $U$ & $G_xp$ & $z_x\,G_\eta p$\\
-$\Omega$ & $-z_x\,G_xp$ & $-(1+z_x^2)\,G_\eta p-g\rho$\\\bottomrule
+$W$ & --- & $-G_\eta p-g\rho$\\\bottomrule
 \end{tabular}
 \end{center}
 
-\subsection{The WRF step for $\Omega$}
-\begin{align}
-\tilde p&=p^n+\gamma_d\,(p^n-p^{n-1}),\label{eq:wo0}\\
-\hat U&=U^n+h\,G_x\tilde p+h\,z_xG_\eta p^n+hf_U,\label{eq:wo1}\\
-\hat\Omega&=\Omega^n-h\,z_xG_x\tilde p+hf_\Omega,\label{eq:wo2}\\
-\rho^{n+1}&=\rho^n-\frac hJ\,\partial_x(J\hat U)-\frac hJ\,\partial_\eta\Omega^\beta+hf_\rho,\label{eq:wo3}\\
-\Theta^{n+1}&=\Theta^n-\frac hJ\,\partial_x(J\theta_f\hat U)-\frac hJ\,\partial_\eta(\theta_f\Omega^\beta)+hf_\Theta,\label{eq:wo4}\\
-\Omega^{n+1}&=\hat\Omega-h\,(1+z_x^2)\,G_\eta p^\beta-h\,g\rho^\beta,\label{eq:wo5}\\
-U^{n+1}&=\hat U+\beta h\,z_xG_\eta\big(p^{n+1}-p^n\big),\label{eq:wo6}\\
-W^{n+1}&=\Omega^{n+1}+z_xU^{n+1}.\label{eq:wo7}
-\end{align}
-$\hat U$ is the predictor with the metric term at the old pressure; \eqref{eq:wo6} completes it to
-$U^{n+1}=U^n+hG_x\tilde p+hz_xG_\eta p^\beta+hf_U$, so that the vertical pressure derivative in the $U$ equation is
-$\beta$-weighted like the one in the $\Omega$ equation. The horizontal mass flux in \eqref{eq:wo3}--\eqref{eq:wo4} uses $\hat U$
-instead of $U^{n+1}$; the difference $\beta hz_xG_\eta(p^{n+1}-p^n)$ enters the thermodynamic variables in the
-\emph{next} small step. This lag is what keeps the implicit system column-local (point (b) below).
+\subsection{The WRF step}
+\paragraph{1. Explicit part.} Extrapolated pressure and explicit momenta:
+\begin{align*}
+\tilde p&=p^n+\gamma_d\,(p^n-p^{n-1}),\\
+\hat M&=M^n+h\begin{pmatrix}G_x\tilde p\\ 0\end{pmatrix}-(1-\beta)h\,b\,G_\eta p^n-(1-\beta)h\begin{pmatrix}0\\ g\rho^n\end{pmatrix}+hf_M .
+\end{align*}
+$\hat M=(\hat U,\hat W)$ contains the horizontal pressure force and the old-time part of the implicit terms.
 
-\paragraph{Elimination.} As in the Cartesian case,
+\paragraph{2. The implicit step in $U$ and $W$.}
+\begin{align}
+\rho^{n+1}&=\rho^n-\frac hJ\,\partial_x(J\hat U)-\frac hJ\,\partial_\eta\Omega^\beta+hf_\rho,\label{eq:wo1}\\
+\Theta^{n+1}&=\Theta^n-\frac hJ\,\partial_x(J\theta_f\hat U)-\frac hJ\,\partial_\eta(\theta_f\Omega^\beta)+hf_\Theta,\label{eq:wo2}\\
+M^{n+1}&=\hat M-\beta h\,b\,G_\eta p^{n+1}-\beta h\begin{pmatrix}0\\ g\rho^{n+1}\end{pmatrix},\label{eq:wo3}
+\end{align}
+with $\Omega^\beta=(1-\beta)\Omega^n+\beta\Omega^{n+1}$ and $\Omega=b^TM$. The horizontal mass flux uses $\hat U$ (point (b) below).
+
+\paragraph{3. Multiply by the metric row.} $b^T$ from the left on \eqref{eq:wo3}, with $b^Tb=1+z_x^2$ and $b^T(0,1)^T=1$:
+\[
+\Omega^{n+1}=\hat\Omega-\beta h\,(1+z_x^2)\,G_\eta p^{n+1}-\beta h\,g\rho^{n+1},
+\]
+\[
+\hat\Omega=b^T\hat M=\hat W-z_x\hat U .
+\]
+Together with \eqref{eq:wo1}--\eqref{eq:wo2} this is a closed system for $(\rho,\Theta,\Omega)$ in each column.
+
+\paragraph{4. Solve in $\Omega$.} With the known parts
 \begin{align*}
 \hat\rho&=\rho^n-\frac hJ\,\partial_x(J\hat U)-(1-\beta)\frac hJ\,\partial_\eta\Omega^n+hf_\rho,\\
-\hat\Theta&=\Theta^n-\frac hJ\,\partial_x(J\theta_f\hat U)-(1-\beta)\frac hJ\,\partial_\eta(\theta_f\Omega^n)+hf_\Theta,\\
-\rho^{n+1}&=\hat\rho-\beta\frac hJ\,\partial_\eta\Omega^{n+1},\\
-\Theta^{n+1}&=\hat\Theta-\beta\frac hJ\,\partial_\eta(\theta_f\Omega^{n+1}),
+\hat\Theta&=\Theta^n-\frac hJ\,\partial_x(J\theta_f\hat U)-(1-\beta)\frac hJ\,\partial_\eta(\theta_f\Omega^n)+hf_\Theta,
 \end{align*}
-and \eqref{eq:wo5} becomes the tridiagonal system per column
+the thermodynamic variables are
+\begin{align}
+\rho^{n+1}&=\hat\rho-\beta\frac hJ\,\partial_\eta\Omega^{n+1},\label{eq:wo4}\\
+\Theta^{n+1}&=\hat\Theta-\beta\frac hJ\,\partial_\eta(\theta_f\Omega^{n+1}),\label{eq:wo5}
+\end{align}
+and inserting them into the $\Omega$ equation gives the tridiagonal system per column
 \[
 \Omega^{n+1}-\beta^2h^2\,\frac{1+z_x^2}{J}\,\partial_\eta\Big(\frac PJ\,\partial_\eta(\theta_f\Omega^{n+1})\Big)-\beta^2h^2\,\frac gJ\,\partial_\eta\Omega^{n+1}=R_\Omega,
 \]
 \[
-R_\Omega=\hat\Omega-h\,(1+z_x^2)\,G_\eta\big[(1-\beta)p^n+\beta P\hat\Theta\big]-hg\big[(1-\beta)\rho^n+\beta\hat\rho\big] .
+R_\Omega=\hat\Omega-\beta h\,(1+z_x^2)\,G_\eta\big(P\hat\Theta\big)-\beta h\,g\hat\rho ,
 \]
-Compared with the Cartesian $W$ system: $\partial_z\to J^{-1}\partial_\eta$ and the factor $1+z_x^2$ on the pressure part. The
-boundary conditions are the natural ones, $\Omega=0$ at the ground and at the top (no flux through the lower
-boundary is $\Omega=0$, not $W=0$).
+with $\Omega=0$ at the ground and at the top. Compared with the Cartesian $W$ system: $\partial_z\to J^{-1}\partial_\eta$ and the
+factor $1+z_x^2$ on the pressure part.
 
-\subsection{The EI step for $\Omega$}
-The same splitting in the Verlet structure: with $H$ the implicit part of the table (rows $\tv$, $U$, $\Omega$) and $K$
-the explicit kick ($U$ and $\Omega$ by $hG_x\tilde p$ and $-hz_xG_x\tilde p$),
+\paragraph{5. Back substitution, then $U$ and $W$ from the pressure.} $\rho^{n+1}$ and $\Theta^{n+1}$ from \eqref{eq:wo4}--\eqref{eq:wo5},
+\[
+p^{n+1}=P\,\Theta^{n+1},
+\]
+and then both momenta from \eqref{eq:wo3} with the known $p^{n+1}$ and $\rho^{n+1}$:
 \begin{align*}
-z^{n+1/2}&=z^n+(1-\beta)h\,\big[H(z^n)+f\big],\\
-z'&=z^{n+1/2}+h\,K\big(\tilde\tv^{\,n+1/2}\big),\\
-z^{n+1}&=z'+\beta h\,\big[H(z^{n+1})+f\big],
+U^{n+1}&=\hat U+\beta h\,z_x\,G_\eta p^{n+1},\\
+W^{n+1}&=\hat W-\beta h\,G_\eta p^{n+1}-\beta h\,g\rho^{n+1}.
 \end{align*}
-$z=(\tv,U,\Omega)$. The last line is the $\Omega$ system above, with the horizontal divergence of the $U$ before the
-metric increment of this line (again point (b)), followed by $U^{n+1}=U'+\beta hz_xG_\eta p^{n+1}$.
+$U$ and $W$ are not recovered from $\Omega$; they are computed from the pressure, and $b^TM^{n+1}=\Omega^{n+1}$ holds
+because step 3 is the same equation multiplied by $b^T$. The momenta are the prognostic variables, $\Omega$ is
+the variable of the solve.
+
+\subsection{The EI step}
+The same in the Verlet structure, $\text{EI}=I_{\beta h}\circ K_h\circ E_{(1-\beta)h}$ (Section~\ref{sec:la}) with the implicit part of the
+table as $H$:
+\begin{itemize}
+\item $E_{(1-\beta)h}$: explicit, $\tv\leftarrow\tv+(1-\beta)h\,[\text{implicit column of }\tv]$ (with the old $\Omega$) and
+$M\leftarrow M-(1-\beta)h\,[b\,G_\eta p+(0,g\rho)^T]$;
+\item $K_h$: $U\leftarrow U+h\,G_x\tilde p^{\,n+1/2}$ (the extrapolated pressure of the half step);
+\item $I_{\beta h}$: steps 2--5 above with $(1-\beta)$ replaced by $0$ in $\hat M$, $\hat\rho$, $\hat\Theta$ (the old-time parts are already in
+$E$), $\hat M$ the momenta after $K_h$, and the horizontal divergence $\beta h\,J^{-1}\partial_x(JU)$ of the $U$ after $K_h$.
+\end{itemize}
+The column solve is the same $\Omega$ system.
 
 \subsection{Column-locality on the C-grid}
-On the C-grid $U$ lives at the $x$-faces, $\Omega$ and $W$ at the $\eta$-faces of the columns. Two couplings between
-neighbouring columns appear and are handled as follows:
+On the C-grid $U$ lives at the $x$-faces, $W$ and $\Omega$ at the $\eta$-faces of the columns, and $b$, $b^T$ contain four-point
+means: $\Omega=W-z_x\bar U$, and the metric term of $U$ is $z_x\overline{G_\eta p}$ (mean over the four $\eta$-faces around the
+$x$-face). Then $b^Tb\,G_\eta p=G_\eta p+z_x\overline{z_x\overline{G_\eta p}}$ contains the pressure of the neighbouring columns. Two
+couplings, treated as follows:
 \begin{enumerate}
-\item[(a)] The discrete $\Omega$ rate is the $W$ rate minus $z_x$ times the four-point mean of the $U$ rates; its
-metric part $z_x\,\overline{z_xG_\eta p}$ contains the vertical pressure differences of the two neighbouring columns.
-The implicit part uses the column-local $z_x^2G_\eta p$ of the own column, the remainder
-$z_x\overline{z_xG_\eta p}-z_x^2G_\eta p$ (a horizontal second difference, of the size of the horizontal Courant number
-times $z_x$) is explicit.
-\item[(b)] The horizontal mass flux of the metric increment of $U$ would couple the columns through
-$\partial_x(Jz_xG_\eta p^{n+1})$; it is lagged by one small step. The lag is explicit only in the horizontal direction
-and of horizontal-Courant size, $c_sh|z_x|/\Delta x$, not $c_sh|z_x|/\Delta z$.
+\item[(a)] Approximate Jacobian: the right-hand side of the linearly implicit step contains the exact
+discrete operator at the current state; only the matrix of the $\Omega$ system is column-local, with
+$1+z_x^2$ of the own column. The remainder $z_x\overline{z_x\overline{G_\eta p}}-z_x^2G_\eta p$ (a horizontal second difference) enters only
+through the increment of the step. Step 5 uses the exact discrete $b$, so $U^{n+1}$ and $W^{n+1}$ are consistent
+with $p^{n+1}$; the next step computes $\Omega=W-z_x\bar U$ from them.
+\item[(b)] The horizontal mass flux uses the predictor $\hat U$, i.e.\ $U$ with the metric increment of the implicit
+step at the old pressure, not $U^{n+1}$; the difference $\beta hz_xG_\eta(p^{n+1}-p^n)$ would couple the columns through
+$\partial_x(Jz_xG_\eta p^{n+1})$ and enters in the next small step. It is $O(h\,\Delta p)$, so the order is kept. Without the predictor
+(horizontal flux with $U$ before the metric increment) the lag is $O(h)$ and EI drops to first order with 20 times
+larger errors (measured).
 \end{enumerate}
-With (a) and (b) the system is tridiagonal per column, like the $W$ system. Without them it is
-two-dimensional ($\mathcal M=I-\tfrac14\dtau^2M^I_{up}M_{pu}$ in the notation of the Imex note). The lag in (b) makes the
-EI step for $\Omega$ not exactly symmetric; its order and stability have to be checked.
+With (a) and (b) the system is tridiagonal per column, like the Cartesian $W$ system; without them it is
+two-dimensional ($\mathcal M=I-\tfrac14\dtau^2M^I_{up}M_{pu}$ in the notation of the Imex note). The lag in (b) makes EI on
+terrain not exactly symmetric and the conjugacy with WRF only approximate; order and stability are to
+be checked for constant slope.
 
-\subsection{Explicit metric term: the present code}
-The present implementation keeps the metric term $z_xG_\eta p$ in the explicit $U$ equation, as WRF does. Then
-$U^{n+1}$ is known before the column solve, $\Omega^{n+1}=W^{n+1}-z_x\bar U^{n+1}$ is an affine shift of $W^{n+1}$,
-and the $\Omega$ system and the $W$ system (Sections~\ref{sec:wrf}, \ref{sec:ei}, without the factor $1+z_x^2$) are equivalent. This is
-sufficient as long as $c_s\dtau|z_x|/(J\Delta\eta)\lesssim1$ (Agnesi: 0.2).
+\subsection{Implementation and tests}\label{sec:omegaimpl}
+Both treatments of the metric term are implemented; the switch \code{FV.FV\_METRIC\_IMPLICIT[]} (default
+\code{false}) selects the implicit one for the frozen \code{ExnerModel} (Exner pressure or pressure,
+\code{pvar = :pi}, \code{:p}) and \code{MoistExnerModel} on terrain-following grids; for \code{FVModel} it is an error. In the
+example: \code{METRIC=implicit}.
+\begin{itemize}
+\item \emph{Explicit} (default, as WRF): the metric term is part of the horizontal momentum part; $U^{n+1}$ is known
+before the column solve, $\Omega^{n+1}=W^{n+1}-z_x\bar U^{n+1}$ is an affine shift of $W^{n+1}$, and the column system is the
+$W$ system. Sufficient as long as $c_s\dtau|z_x|/(J\Delta\eta)\lesssim1$ (Agnesi: 0.2).
+\item \emph{Implicit}: the discrete metric term of $\partial_xp|_z$ at the $x$-face, $-(z_tc_t-z_bc_b)/(J_x\Delta\eta)$ with $c$ the face
+means of the two columns, splits exactly into
+\[
+z_tc_t-z_bc_b=\bar z_x\,(c_t-c_b)+\bar c\,(z_t-z_b),
+\]
+the vertical difference (\code{mvert}) and a remainder without vertical pressure derivative. \code{mvert} and the
+horizontal part $-z_x\bar U$ of $\Omega$ move from the horizontal parts (\code{:hmomentum}, \code{:hthermo}) to the vertical part
+(\code{:vertical}); the sum of the parts, i.e.\ the operator, is unchanged (tested to $10^{-16}$). The column solve
+(\code{exner\_column\_solve!}, \code{moist\_column\_solve!}) is the $\Omega$ system with $1+z_x^2$ and right-hand side
+$R_W-z_x\bar R_U$; after the back substitution \code{\_momenta\_from\_pressure!} computes $U$ and $W$ from the new
+pressure. The predictor of (b) is the hook \code{frozen\_hthermo!} (weight $\beta h$ in EI, $h$ in WRF). The option acts
+in every fast integrator with a column solve (\code{:hevi}, \code{:ei}, \code{:wrf}) and with both options $\varepsilon$, $\gamma_d$.
+\end{itemize}
+\paragraph{Order} (one frozen stage, hill grid, $T=8$\,s, against RK4, implicit metric term): EI 2.0, HEVI 2.0, WRF 1.0,
+EI with $\varepsilon=0.1$ 1.0, in the Exner, pressure and moist forms; the errors of EI equal those with the explicit metric
+term ($8.0\cdot10^{-5}$ against $7.3\cdot10^{-5}$ with 8 steps).
+
+\paragraph{Steep terrain.} Agnesi hill $h_0=2$\,km, $a=2$\,km (max $|z_x|=0.6$), $\Delta x=1$\,km, $\Delta\eta=100$\,m, $\dtau=2.15$\,s,
+$c_s\dtau|z_x|/\Delta z=5.8$; pressure form, frozen fast loop from rest; growth $\|\delta z^n\|/\|\delta z^0\|$ of a perturbation:
+\begin{center}\small
+\begin{tabular}{llcc}\toprule
+metric term & fast integrator & 250 steps & 1000 steps\\\midrule
+explicit & EI, WRF, $\varepsilon=\gamma_d=0.1$ & $10^{77}$ & overflow\\
+explicit & EI, $\varepsilon=0.1$ & $7\cdot10^{69}$ & $2\cdot10^{270}$\\
+implicit & EI, $\varepsilon=\gamma_d=0.1$ & $1.1\cdot10^3$ & $2.7\cdot10^3$\\
+implicit & WRF, $\varepsilon=\gamma_d=0.1$ & $1.1\cdot10^3$ & $1.2\cdot10^3$\\
+implicit & EI, $\varepsilon=0.1$ & $1.1\cdot10^3$ & $1.4\cdot10^3$\\
+implicit & EI, $\varepsilon=0.05$ & $3\cdot10^6$ & $5\cdot10^{17}$\\\bottomrule
+\end{tabular}
+\end{center}
+(The bounded value $\approx10^3$ is the response to the perturbation, not growth: it does not increase.) With the
+implicit metric term the instability of the explicit one disappears, but off-centring is still needed:
+without it (EI, HEVI) a slower growth remains ($10^{14}$--$10^{20}$ after 300 steps), with $\varepsilon=0.05$ at this slope as
+well; at $c_s\dtau|z_x|/\Delta z=2.3$ (grid $32\times40$) $\varepsilon=0.05$ suffices. The remaining growth is attributed to the
+column-local matrix (a): on this hill $z_x$ changes strongly between neighbouring columns. Test
+(\code{test/runtests.jl}, ``implicit metric term''): operator unchanged, parts sum to the operator, orders,
+and on the $32\times40$ steep grid explicit unstable, implicit bounded for EI and WRF with $\varepsilon=\gamma_d=0.1$.
+
+\paragraph{Agnesi, pressure form} (Section~\ref{sec:agnesi}, $\max|z_x|=0.026$, so the explicit metric term is sufficient):
+\begin{table}[ht]\centering\footnotesize
+\caption{Pressure form, metric term explicit and implicit: relative $L^2$ error of $\theta'$ against $\Delta t$ (s).}\label{tab:mi}
+\begin{tabular}{llcccccccc}\toprule
+&fast integrator, metric term & 10 & 20 & 40 & 60 & 90 & 120 & 180 & 240\\\midrule
+\input{tab_theta_pres_mi.tex}
+\bottomrule\end{tabular}
+\end{table}
+With EI and $\varepsilon=\gamma_d=0.1$ the implicit metric term changes the $\theta'$ errors by less than 10\,\%; without
+options also, except MIS3C at 20\,s (0.0016 $\to$ 0.0063) and the weakly unstable MIS4a cases at 60--120\,s. On a
+frozen stage the two treatments differ by $O(\dtau^2)$ (on one frozen stage of the Agnesi grid: $6.7\cdot10^{-6}$ and $6.5\cdot10^{-8}$ in $U$ for 5 and 50
+small steps). With WRF the $\theta'$ error rises to $0.02$--$0.046$, nearly independent of $\Delta t$ (the small step $h\approx\dtau_{\rm ac}$
+is the same): implicit and explicit WRF differ at first order in $h$ ($5.2\cdot10^{-3}$ and $4.7\cdot10^{-4}$ in $U$ on the same
+stage), concentrated at the lowest levels over the hill. With the implicit metric term the pressure gradient
+of the $U$ equation is split into the horizontal part $G_xp$ and the metric part $z_xG_\eta p$, each of them large
+(hydrostatic, $\approx z_x\rho g$) and cancelling in the sum. EI treats both symmetrically ($E$ and $I$), WRF applies the
+first in the forward kick and the second $\beta$-weighted in the column solve; the resulting first-order
+imbalance is larger than WRF's own error. Two variants that were tried do not remove it: the predictor
+weight $\beta h$ instead of $h$ (makes WRF conjugate to EI, but the change of variables $E$ then carries
+$(1-\beta)hz_xG_\eta p$, and the stage-boundary defect grows a hundredfold), and the sum
+$\beta h\,z_xG_\eta(p_{\rm end}-p_{\rm start})$ of the per-step differences explains only a tenth of the difference.
+\emph{Recommendation: the implicit metric term with EI.} For WRF a $\delta$-form (metric force at the old
+pressure in the kick, only the increment $\beta hz_xG_\eta\delta p$ in the column solve) is an open item.
+
 
 %======================================================================
 \section{Linear algebra}\label{sec:la}
@@ -381,7 +496,7 @@ Y_{\phi,k}=R_{\phi,k}-\frac{c_\tv}{\Delta z}\big(\phi_{f,k+1}Y_{W,k+1}-\phi_{f,k
 \]
 $U$ rows: $Y_U=R_U$. Moisture enters $B_v$ only through $\rho$ and $\pi$, so the moist variables are back
 substitution only. For the $\Omega$ system of Section~\ref{sec:omega} the same algebra holds with $W\to\Omega$, $c_w\to c_w(1+z_x^2)$
-in the pressure part of $B_v$ and $\Omega=0$ at the ground. The matrix depends on $c_\tv$ and $c_w$ only through
+in the pressure part of $B_v$ and $\Omega=0$ at the ground; $U$ and $W$ then follow from the pressure. The matrix depends on $c_\tv$ and $c_w$ only through
 the product:
 \begin{center}\small
 \begin{tabular}{lccc}\toprule
@@ -711,9 +826,10 @@ Agnesi; to be checked on the moist cases (\code{MoistExnerModel}, \code{pvar = :
 \item The remaining gaps (Exner form; MIS4a without options): linear stability analysis of the coupled
 MIS--EI/WRF step.
 \item Rerun of the MIS study (\code{docs/mis\_agnesi}) with the corrected number of small steps.
-\item Orography: implement the $\Omega$ system with all vertical pressure derivatives implicit
-(Section~\ref{sec:omega}) for steep terrain ($c_s\dtau|z_x|/(J\Delta\eta)\gtrsim1$), with the column-local treatment (a), (b);
-check order, symmetry (EI) and stability of the lag (b) for constant slope.
+\item Orography: the implicit metric term (\code{FV\_METRIC\_IMPLICIT}, Section~\ref{sec:omegaimpl}) is implemented and
+works with EI; full MIS runs on steep terrain (beyond $c_s\dtau|z_x|/\Delta z\approx1$) are still to be done; the
+remaining growth without off-centring on steep terrain (column-local matrix (a)); WRF with the implicit
+metric term needs a $\delta$-form.
 \end{enumerate}
 
 %======================================================================

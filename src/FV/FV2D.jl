@@ -44,7 +44,7 @@ import ..TimeStepping: rhs_nonlinear!, fast_operator, fast_apply!, fast_rhs_ther
                        fast_rhs_horizontal!, vertical_apply!, vertical_factor, vertical_solve!,
                        fast_rhs_hmomentum!, fast_rhs_hthermo!, hevi_loop!, fast_forcing, fast_mass,
                        fast_workspace, fast_rosenbrock_amf!, fast_hevi_amf!, frozen_ncoef, frozen_data!, frozen_fast!, frozen_stage_begin!, frozen_vertical_step!, frozen_step_end!,
-                       frozen_vertical_rhs!, frozen_vertical_implicit!, frozen_vertical_solve!, ei_vertical!, ei_vertical_solve!
+                       frozen_vertical_rhs!, frozen_vertical_implicit!, frozen_vertical_solve!, frozen_hthermo!, ei_vertical!, ei_vertical_solve!
 
 export ExnerModel, exner_state, base_state, exner, MoistGas, MoistExnerModel, moist_exner_state, moist_state, moist_exner, theta_e, fischer_burmeister, FV_HYDRO_REFERENCE, FV_PRESSURE_FORM, FVGrid, CutCellFVGrid, FVModel, FVFast, CutCellFVAMF, with_sponge, project2d, total2d, output_fields, sound_speed_max,
        rhs_nonlinear, rhs_nonlinear!, fast_operator, fast_matrix, stratified_reference,

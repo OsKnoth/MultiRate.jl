@@ -31,6 +31,9 @@ function frozen_vertical_step! end
 function frozen_vertical_rhs! end
 function frozen_vertical_implicit! end
 function frozen_vertical_solve! end
+"""out = :hthermo of the implicit step, the horizontal mass flux with the predictor U + w (metric
+increment at the old pressure) for models with an implicit metric term; default: plain :hthermo."""
+frozen_hthermo!(out, model, C, z, F, w) = frozen_fast!(out, model, C, z, :hthermo, F)
 #   frozen_step_end!(model, q)                   optional: after every MIS step (e.g. recompute a
 #                                                redundant variable from the others)
 frozen_step_end!(model, q) = nothing
@@ -129,13 +132,14 @@ function frozen_fast_solve!(Z, model, C, F, dt, nsteps, k; method::Symbol = :ver
             damp && first && (tmp[2] .= Z)                            # extrapolation starts at t½
             first = false
             momentum!(:hmomentum); @. Z += h * k                      # K: U⁺ from t½
-            frozen_fast!(k, model, C, Z, :hthermo, F); @. Z += it * k # I: implicit step, weights (it, iw)
+            frozen_hthermo!(k, model, C, Z, F, iw); @. Z += it * k    # I: implicit step, weights (it, iw)
             frozen_vertical_implicit!(Z, model, C, it, iw, k, y)      #    t⁺, W⁺
         elseif base == :wrf
             y = tmp === nothing ? error(":wrf needs a work vector") : tmp[1]
             β = (1 + offcenter) / 2
             momentum!(:hmomentum); @. Z += h * k                      # U⁺ (extrapolated t if smdiv)
-            frozen_fast!(k, model, C, Z, :hthermo, F)                 # A_h U⁺ + f_t, f_W, sponge
+            frozen_hthermo!(k, model, C, Z, F, h)                     # A_h U⁺ + f_t, f_W, sponge (metric
+                                                                      # predictor h: Û = U + h metric(pⁿ))
             frozen_vertical_rhs!(y, model, C, Z, 1.0, 1.0)            # G_v(Z)
             @. k = h * (k + y)
             frozen_vertical_solve!(y, model, C, β * h, β * h, k)      # (I - βh J_v) Δ = h (H + G_v)
@@ -200,7 +204,7 @@ function _ei_merged!(Z, model, C, F, h, nsteps, k, tmp, zl, ε, momentum!)
     for j in 1:nsteps
         momentum!(:hmomentum); @. Z += h * k                  # K: U⁺ from t½
         zs .= Z
-        frozen_fast!(k, model, C, Z, :hthermo, F); @. Z += it * k
+        frozen_hthermo!(k, model, C, Z, F, iw); @. Z += it * k
         frozen_vertical_implicit!(Z, model, C, it, iw, k, y)  # I: t⁺, W⁺
         if j < nsteps                                         # I of step j and E of step j+1 combined
             if abs(corr) > 1e-14 * h

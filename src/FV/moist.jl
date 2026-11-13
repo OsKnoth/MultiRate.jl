@@ -190,7 +190,7 @@ function MoistExnerModel(base::FVModel; mgas::MoistGas = MoistGas(), pvar::Symbo
     τv = τ !== nothing ? Float64(τ) : wτ !== nothing ? h / wτ : τfac * 0.85 * 0.92 * g.dx / cs   # HEVI: horizontal acoustic step
     return MoistExnerModel(base, mgas, pvar, micro, τv, base.nq + 3N, zeros(8N + 6Nz), zeros(base.nq + 3N),
                            zeros(g.nx, g.nz), zeros(g.nx, g.nz), zeros(4, g.nx, g.nz),
-                           ExnerColumn(z1(), z1(), z1(), z1(), Dict{Float64,NTuple{3,Matrix{Float64}}}(), zeros(g.nz + 1)), z1(), z1())
+                           ExnerColumn(z1(), z1(), z1(), z1(), Dict{Float64,NTuple{3,Matrix{Float64}}}(), zeros(g.nz + 1), zeros(g.nx, g.nz), zeros(base.nq + 3N)), z1(), z1())
 end
 
 @inline _cell(g, i, k) = ip(g, i) + (k - 1) * g.nx
@@ -298,7 +298,7 @@ function mthermo_h!(out, m::MoistExnerModel, C, z)
         out[iV(m, i, k)] -= s * (mqx(C, g, i + 1, k) * Ur - mqx(C, g, i, k) * Ul) / g.dx
         out[iC(m, i, k)] -= s * (mcx(C, g, i + 1, k) * Ur - mcx(C, g, i, k) * Ul) / g.dx
         out[iπ(m, i, k)] -= s * (mκxL(C, g, i + 1, k) * Ur - mκxR(C, g, i, k) * Ul) / g.dx
-        if g.terrain                             # horizontal part -z_x Ū of Ω
+        if g.terrain && !_metric_implicit(g)     # horizontal part -z_x Ū of Ω
             Hb, Ht = Ωh(g, z, i, k), Ωh(g, z, i, k + 1)
             out[iρ(g, i, k)] -= s * (Ht - Hb) / g.dz
             out[iΘ(g, i, k)] -= s * (mθz(C, g, i, k + 1) * Ht - mθz(C, g, i, k) * Hb) / g.dz
@@ -311,8 +311,9 @@ function mthermo_h!(out, m::MoistExnerModel, C, z)
 end
 function mthermo_v!(out, m::MoistExnerModel, C, z)
     g = m.base.grid
+    imp = _metric_implicit(g)                    # FV_METRIC_IMPLICIT: all of Ω
     @inbounds for k in 1:g.nz, i in 1:g.nx
-        Wb, Wt = Wface(g, z, i, k), Wface(g, z, i, k + 1)
+        Wb, Wt = imp ? (Ωface(g, z, i, k), Ωface(g, z, i, k + 1)) : (Wface(g, z, i, k), Wface(g, z, i, k + 1))
         h = dzc(g, i)
         out[iρ(g, i, k)] -= (Wt - Wb) / h
         out[iΘ(g, i, k)] -= (mθz(C, g, i, k + 1) * Wt - mθz(C, g, i, k) * Wb) / h
@@ -325,8 +326,19 @@ end
 function mmomentum_h!(out, m::MoistExnerModel, C, z)
     g = m.base.grid
     f(i, k) = z[iπ(m, i, k)]
+    imp = _metric_implicit(g)
     @inbounds for k in 1:g.nz, i in 1:g.nx
-        out[iU(g, i, k)] -= mPx(C, g, i, k) * gradx_z(f, g, i, k)
+        out[iU(g, i, k)] -= mPx(C, g, i, k) * (imp ? gradx_rest(f, g, i, k) : gradx_z(f, g, i, k))
+    end
+    return out
+end
+"""Vertical-derivative part of the metric term (U rows, FV_METRIC_IMPLICIT only), as `emetric!`."""
+function mmetric!(out, m::MoistExnerModel, C, z)
+    g = m.base.grid
+    _metric_implicit(g) || return out
+    f(i, k) = z[iπ(m, i, k)]
+    @inbounds for k in 1:g.nz, i in 1:g.nx
+        out[iU(g, i, k)] += mPx(C, g, i, k) * mvert(f, g, i, k)
     end
     return out
 end
@@ -358,15 +370,15 @@ function mphase!(out, m::MoistExnerModel, C, z)
 end
 
 _mfast!(::Val{:all}, out, m, C, z, F) = (mthermo_h!(out, m, C, z); mthermo_v!(out, m, C, z); mphase!(out, m, C, z);
-    mmomentum_h!(out, m, C, z); mmomentum_v!(out, m, C, z);
+    mmomentum_h!(out, m, C, z); mmomentum_v!(out, m, C, z); mmetric!(out, m, C, z);
     mforcing_thermo!(out, m, F); forcing_U!(out, m.base, F); forcing_W!(out, m.base, F); sponge!(out, m.base, z))
 _mfast!(::Val{:thermo}, out, m, C, z, F) = (mthermo_h!(out, m, C, z); mthermo_v!(out, m, C, z); mphase!(out, m, C, z); mforcing_thermo!(out, m, F))
-_mfast!(::Val{:momentum}, out, m, C, z, F) = (mmomentum_h!(out, m, C, z); mmomentum_v!(out, m, C, z);
+_mfast!(::Val{:momentum}, out, m, C, z, F) = (mmomentum_h!(out, m, C, z); mmomentum_v!(out, m, C, z); mmetric!(out, m, C, z);
     forcing_U!(out, m.base, F); forcing_W!(out, m.base, F); sponge!(out, m.base, z))
 _mfast!(::Val{:hthermo}, out, m, C, z, F) = (mthermo_h!(out, m, C, z); mphase!(out, m, C, z); mforcing_thermo!(out, m, F);
     forcing_W!(out, m.base, F); sponge!(out, m.base, z))
 _mfast!(::Val{:hmomentum}, out, m, C, z, F) = (mmomentum_h!(out, m, C, z); forcing_U!(out, m.base, F))
-_mfast!(::Val{:vertical}, out, m, C, z, F) = (mthermo_v!(out, m, C, z); mmomentum_v!(out, m, C, z))
+_mfast!(::Val{:vertical}, out, m, C, z, F) = (mthermo_v!(out, m, C, z); mmomentum_v!(out, m, C, z); mmetric!(out, m, C, z))
 _mfast!(::Val{P}, out, m, C, z, F) where {P} = error("frozen_fast!: unknown part $P")
 
 function frozen_fast!(out, m::MoistExnerModel, C, z, part::Symbol, F)
@@ -395,6 +407,7 @@ function frozen_stage_begin!(m::MoistExnerModel, C, z)
     @inbounds for k in 1:g.nz+1, i in 1:g.nx
         s.P[i, k] = mPz(C, g, i, k); s.cB[i, k] = mκzB(C, g, i, k); s.cT[i, k] = mκzT(C, g, i, k)
         s.θz[i, k] = mθz(C, g, i, k); m.θq[i, k] = mqz(C, g, i, k); m.θc[i, k] = mcz(C, g, i, k)
+        k <= g.nz && (s.Px[i, k] = mPx(C, g, i, k))
     end
     empty!(s.factors)
     return s
@@ -403,12 +416,15 @@ end
 function moist_column_solve!(Y, m::MoistExnerModel, c, R, cw = c)
     s = m.column; g = m.base.grid
     nz, grav = g.nz, m.base.gas.g
+    imp = _metric_implicit(g)                    # FV_METRIC_IMPLICIT: Ω solve, as exner_column_solve!
     sub, cpr, iden = _exner_factor(s, m, c, cw)
     W = s.W
     @inbounds for i in 1:g.nx
         dz = dzc(g, i)
         for k in 2:nz
-            rhs = R[iW(g, i, k)] - (cw / dz) * s.P[i, k] * (R[iπ(m, i, k)] - R[iπ(m, i, k - 1)]) -
+            mk = imp ? 1 + g.zx_f[i, k]^2 : 1.0
+            RW = imp ? R[iW(g, i, k)] + Ωh(g, R, i, k) : R[iW(g, i, k)]
+            rhs = RW - mk * (cw / dz) * s.P[i, k] * (R[iπ(m, i, k)] - R[iπ(m, i, k - 1)]) -
                   (cw * grav / 2) * (R[iρ(g, i, k - 1)] + R[iρ(g, i, k)])
             W[k] = k == 2 ? rhs * iden[k, i] : (rhs - sub[k, i] * W[k-1]) * iden[k, i]
         end
@@ -428,6 +444,7 @@ function moist_column_solve!(Y, m::MoistExnerModel, c, R, cw = c)
             Y[iW(g, i, k)] = W[k]
         end
     end
+    imp && _momenta_from_pressure!(Y, m, s, R, cw)
     return Y
 end
 

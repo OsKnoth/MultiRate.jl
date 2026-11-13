@@ -952,6 +952,59 @@ end
     end
 end
 
+@testset "FV2D: implicit metric term, Ω column solve (FV_METRIC_IMPLICIT)" begin
+    mg = FV.MoistGas()
+    gm = CM.Gas(R = mg.Rd, γ = mg.Cpd / (mg.Cpd - mg.Rd), p00 = mg.p0)
+    ρr, Θr, θr = CM.stratified_reference(gm; θ0 = 300.0, N = 0.01)
+    g = FV.FVGrid(16, 10, 40e3, 10e3; zs = x -> 800 / (1 + ((x - 20e3) / 4e3)^2))
+    b = FV.FVModel(g, gm, ρr, Θr)
+    q = CM.project2d(b, (x, z) -> (ρ = ρr(z) * (1 + 1e-3 * sin(2π * x / 40e3)); (ρ, 10ρ + sin(x / 5e3), 0.3 * sin(π * z / 10e3) * cos(x / 7e3), Θr(z) * (1 + 1e-3 * cos(x / 6e3)))))
+    try
+        FV.FV_TERRAIN_FORM[] = :flux; FV.FV_PRESSURE_FORM[] = :gradp
+        for form in (:exner, :pres, :moist)
+            m = form === :exner ? FV.ExnerModel(b; pvar = :pi) : form === :pres ? FV.ExnerModel(b; pvar = :p) :
+                FV.MoistExnerModel(b; mgas = mg, pvar = :pi, micro = :slow)
+            x = form === :moist ? FV.moist_exner_state(m, q, [0.012 * q[FV.iρ(g, i, k)] for i in 1:16, k in 1:10]) : FV.exner_state(m, q)
+            n = length(x); C = zeros(TS.frozen_ncoef(m)); S = zeros(n); TS.frozen_data!(C, S, m, x)
+            FV.FV_METRIC_IMPLICIT[] = false
+            a0 = TS.frozen_fast!(zeros(n), m, C, x, :all, S)
+            FV.FV_METRIC_IMPLICIT[] = true
+            # the operator is unchanged, only its split into parts
+            @test maximum(abs, TS.frozen_fast!(zeros(n), m, C, x, :all, S) - a0) < 1e-13 * maximum(abs, a0)
+            Z0 = zeros(n)
+            parts = sum(TS.frozen_fast!(zeros(n), m, C, x, p, Z0) for p in (:hthermo, :hmomentum, :vertical))
+            @test maximum(abs, parts - TS.frozen_fast!(zeros(n), m, C, x, :all, Z0)) < 1e-13 * maximum(abs, a0)
+            # EI with the metric predictor: second order; WRF first order
+            TS.frozen_stage_begin!(m, C, x)
+            run(meth, ns) = TS.frozen_fast_solve!(copy(x), m, C, S, 8.0 / ns, ns, zeros(n); method = meth, tmp = ntuple(_ -> zeros(n), 4))
+            xr = run(:rk4, 400)
+            e1, e2 = maximum(abs, run(:ei, 16) - xr), maximum(abs, run(:ei, 32) - xr)
+            @test log2(e1 / e2) > 1.9
+            e1, e2 = maximum(abs, run(:wrf, 16) - xr), maximum(abs, run(:wrf, 32) - xr)
+            @test 0.9 < log2(e1 / e2) < 1.2
+        end
+        @test_throws ErrorException TS.frozen_fast!(zeros(b.nq), b, zeros(TS.frozen_ncoef(b)), copy(q), :all, zeros(b.nq))
+        # steep terrain (max |z_x| = 0.6, c Δτ |z_x|/Δz = 2.3): explicit metric term unstable, implicit bounded
+        gs = FV.FVGrid(32, 40, 32e3, 10e3; zs = x -> 2000 / (1 + ((x - 16e3) / 2e3)^2))
+        bs = FV.FVModel(gs, gm, ρr, Θr)
+        qs = CM.project2d(bs, (x, z) -> (ρ = ρr(z); (ρ, 10ρ, 0.0, Θr(z))))
+        ms = FV.ExnerModel(bs; pvar = :p); xs = FV.exner_state(ms, qs)
+        ns = length(xs); Cs = zeros(TS.frozen_ncoef(ms)); Ss = zeros(ns); TS.frozen_data!(Cs, Ss, ms, xs)
+        dτ = 0.85 * 0.92 * gs.dx / (1.05 * FV.sound_speed_max(bs, qs))
+        δ = 1e-6 .* maximum(abs, xs) .* sin.(0.37 .* (1:ns))
+        for imp in (false, true), meth in (:ei, :wrf)
+            FV.FV_METRIC_IMPLICIT[] = imp
+            TS.frozen_stage_begin!(ms, Cs, xs)
+            runs(z0) = TS.frozen_fast_solve!(copy(z0), ms, Cs, Ss, dτ, 200, zeros(ns); method = meth, tmp = ntuple(_ -> zeros(ns), 4),
+                                              offcenter = 0.1, smdiv = 0.1)
+            growth = maximum(abs, runs(xs .+ δ) .- runs(xs)) / maximum(abs, δ)
+            @test imp ? growth < 1e4 : !(growth < 1e10)
+        end
+    finally
+        FV.FV_METRIC_IMPLICIT[] = false; FV.FV_PRESSURE_FORM[] = :gradp
+    end
+end
+
 @testset "FV3D: 3D C-grid, cut cells, frozen split" begin
     F3 = MultiRate.FV3D
     gas = CM.Gas()

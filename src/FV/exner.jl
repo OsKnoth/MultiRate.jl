@@ -37,6 +37,8 @@ mutable struct ExnerColumn
     θz::Matrix{Float64}
     factors::Dict{Float64,NTuple{3,Matrix{Float64}}}
     W::Vector{Float64}
+    Px::Matrix{Float64}       # momentum coefficient at the x-faces (FV_METRIC_IMPLICIT)
+    zp::Vector{Float64}       # work state of the metric predictor (`frozen_hthermo!`)
 end
 
 """
@@ -61,7 +63,7 @@ function ExnerModel(base::FVModel; pvar::Symbol = :pi)
     nq = base.nq + g.nx * g.nz
     z1() = zeros(g.nx, g.nz + 1)
     m = ExnerModel(base, pvar, nq, zeros(4 * (g.nx * g.nz + g.nx * (g.nz + 1))), zeros(nq),
-                   ExnerColumn(z1(), z1(), z1(), z1(), Dict{Float64,NTuple{3,Matrix{Float64}}}(), zeros(g.nz + 1)))
+                   ExnerColumn(z1(), z1(), z1(), z1(), Dict{Float64,NTuple{3,Matrix{Float64}}}(), zeros(g.nz + 1), zeros(g.nx, g.nz), zeros(nq)))
     return m
 end
 
@@ -105,6 +107,34 @@ end
     d -= (g.zx_xf[ii, k+1] * cor(k + 1) - g.zx_xf[ii, k] * cor(k)) / g.dz
     return d / g.Jx[ii]
 end
+
+# ------------------------------------------------------------------ implicit metric term (Ω column solve)
+"""
+Vertical pressure derivatives of the metric term implicit (docs/verlet_ei, Section 5), for the
+frozen `ExnerModel` and `MoistExnerModel` on terrain-following grids (default false: explicit, as WRF).
+The metric term of ∂x f|_z splits exactly, z_t c_t - z_b c_b = z̄ (c_t - c_b) + c̄ (z_t - z_b) (c the face
+means of the two columns, `gradx_z`): the vertical-derivative part `mvert` moves from the horizontal
+momentum part (:hmomentum, `gradx_rest`) to the vertical part (:vertical), and so does the
+horizontal part -z_x Ū of Ω (thermodynamic rows: δη Ω instead of δη W). The column solve is then
+in Ω = W - z_x Ū with the factor 1 + z_x² on the vertical pressure difference (column-local), and U, W
+follow from the new pressure with the exact discrete metric term. The sum of the parts is unchanged.
+"""
+const FV_METRIC_IMPLICIT = Ref(false)
+@inline _metric_implicit(g::FVGrid) = FV_METRIC_IMPLICIT[] && g.terrain
+
+"""Vertical-derivative part of the metric term of ∂x f|_z at the x-face (i, k):
+z̄_x (c_t - c_b)/(Jx Δη), so that ∂x f|_z = `gradx_rest` - `mvert`."""
+@inline function mvert(f, g::FVGrid, i, k)
+    g.terrain || return 0.0
+    im = ip(g, i - 1); ii = ip(g, i)
+    cor(kf) = 0.5 * (fσ(f, g, im, kf) + fσ(f, g, ii, kf))
+    zb = 0.5 * (g.zx_xf[ii, k+1] + g.zx_xf[ii, k])
+    return zb * (cor(k + 1) - cor(k)) / (g.dz * g.Jx[ii])
+end
+"""∂x f|_z without the vertical-derivative part of the metric term (explicit with FV_METRIC_IMPLICIT)."""
+@inline gradx_rest(f, g::FVGrid, i, k) = gradx_z(f, g, i, k) + mvert(f, g, i, k)
+"""Ω = W - z_x Ū at the η-face k of column i (zero at the walls)."""
+@inline Ωface(g::FVGrid, z, i, k) = Wface(g, z, i, k) + Ωh(g, z, i, k)
 
 # ------------------------------------------------------------------ coefficient vector
 # C = [θx (N); θz (Nz); Θx (N); Θz (Nz); cxL (N); cxR (N); czB (Nz); czT (Nz)], N = nx nz, Nz = nx (nz+1);
@@ -165,7 +195,7 @@ function ethermo_h!(out, m::ExnerModel, C, z)
         out[iρ(g, i, k)] -= s * (Ur - Ul) / g.dx
         out[iΘ(g, i, k)] -= s * (eθx(C, g, i + 1, k) * Ur - eθx(C, g, i, k) * Ul) / g.dx
         out[iπ(m, i, k)] -= s * (ecxL(C, g, i + 1, k) * Ur - ecxR(C, g, i, k) * Ul) / g.dx
-        if g.terrain
+        if g.terrain && !_metric_implicit(g)
             Hb, Ht = Ωh(g, z, i, k), Ωh(g, z, i, k + 1)
             out[iρ(g, i, k)] -= s * (Ht - Hb) / g.dz
             out[iΘ(g, i, k)] -= s * (eθz(C, g, i, k + 1) * Ht - eθz(C, g, i, k) * Hb) / g.dz
@@ -175,11 +205,12 @@ function ethermo_h!(out, m::ExnerModel, C, z)
     return out
 end
 
-"""Thermodynamic part, vertical (ρ, Θ, π rows): the W part of Ω."""
+"""Thermodynamic part, vertical (ρ, Θ, π rows): the W part of Ω (FV_METRIC_IMPLICIT: all of Ω)."""
 function ethermo_v!(out, m::ExnerModel, C, z)
     g = m.base.grid
+    imp = _metric_implicit(g)
     @inbounds for k in 1:g.nz, i in 1:g.nx
-        Wb, Wt = Wface(g, z, i, k), Wface(g, z, i, k + 1)
+        Wb, Wt = imp ? (Ωface(g, z, i, k), Ωface(g, z, i, k + 1)) : (Wface(g, z, i, k), Wface(g, z, i, k + 1))
         h = dzc(g, i)
         out[iρ(g, i, k)] -= (Wt - Wb) / h
         out[iΘ(g, i, k)] -= (eθz(C, g, i, k + 1) * Wt - eθz(C, g, i, k) * Wb) / h
@@ -188,12 +219,25 @@ function ethermo_v!(out, m::ExnerModel, C, z)
     return out
 end
 
-"""Momentum part, horizontal (U rows): -P_x ∂x π|_z, P_x = cp Θx (or -∂x p|_z)."""
+"""Momentum part, horizontal (U rows): -P_x ∂x π|_z, P_x = cp Θx (or -∂x p|_z); with
+FV_METRIC_IMPLICIT without the vertical-derivative part of the metric term (`emetric!`)."""
 function emomentum_h!(out, m::ExnerModel, C, z)
     g = m.base.grid
     f(i, k) = z[iπ(m, i, k)]
+    imp = _metric_implicit(g)
     @inbounds for k in 1:g.nz, i in 1:g.nx
-        out[iU(g, i, k)] -= eΘx(C, g, i, k) * gradx_z(f, g, i, k)
+        out[iU(g, i, k)] -= eΘx(C, g, i, k) * (imp ? gradx_rest(f, g, i, k) : gradx_z(f, g, i, k))
+    end
+    return out
+end
+
+"""Vertical-derivative part of the metric term (U rows, FV_METRIC_IMPLICIT only): +P_x `mvert`(π)."""
+function emetric!(out, m::ExnerModel, C, z)
+    g = m.base.grid
+    _metric_implicit(g) || return out
+    f(i, k) = z[iπ(m, i, k)]
+    @inbounds for k in 1:g.nz, i in 1:g.nx
+        out[iU(g, i, k)] += eΘx(C, g, i, k) * mvert(f, g, i, k)
     end
     return out
 end
@@ -220,15 +264,15 @@ end
 
 # parts as in frozen.jl (table there); the thermodynamic rows include π
 _efast!(::Val{:all}, out, m, C, z, F) = (ethermo_h!(out, m, C, z); ethermo_v!(out, m, C, z);
-    emomentum_h!(out, m, C, z); emomentum_v!(out, m, C, z);
+    emomentum_h!(out, m, C, z); emomentum_v!(out, m, C, z); emetric!(out, m, C, z);
     eforcing_thermo!(out, m, F); forcing_U!(out, m.base, F); forcing_W!(out, m.base, F); sponge!(out, m.base, z))
 _efast!(::Val{:thermo}, out, m, C, z, F) = (ethermo_h!(out, m, C, z); ethermo_v!(out, m, C, z); eforcing_thermo!(out, m, F))
-_efast!(::Val{:momentum}, out, m, C, z, F) = (emomentum_h!(out, m, C, z); emomentum_v!(out, m, C, z);
+_efast!(::Val{:momentum}, out, m, C, z, F) = (emomentum_h!(out, m, C, z); emomentum_v!(out, m, C, z); emetric!(out, m, C, z);
     forcing_U!(out, m.base, F); forcing_W!(out, m.base, F); sponge!(out, m.base, z))
 _efast!(::Val{:hthermo}, out, m, C, z, F) = (ethermo_h!(out, m, C, z); eforcing_thermo!(out, m, F);
     forcing_W!(out, m.base, F); sponge!(out, m.base, z))
 _efast!(::Val{:hmomentum}, out, m, C, z, F) = (emomentum_h!(out, m, C, z); forcing_U!(out, m.base, F))
-_efast!(::Val{:vertical}, out, m, C, z, F) = (ethermo_v!(out, m, C, z); emomentum_v!(out, m, C, z))
+_efast!(::Val{:vertical}, out, m, C, z, F) = (ethermo_v!(out, m, C, z); emomentum_v!(out, m, C, z); emetric!(out, m, C, z))
 _efast!(::Val{P}, out, m, C, z, F) where {P} = error("frozen_fast!: unknown part $P")
 
 """Fast part F_f(C, z) + F (and the sponge) on the rows of `part`."""
@@ -264,19 +308,21 @@ function frozen_stage_begin!(m::ExnerModel, C, z)
     @inbounds for k in 1:g.nz+1, i in 1:g.nx
         s.P[i, k] = eΘz(C, g, i, k); s.cB[i, k] = eczB(C, g, i, k); s.cT[i, k] = eczT(C, g, i, k)
         s.θz[i, k] = eθz(C, g, i, k)
+        k <= g.nz && (s.Px[i, k] = eΘx(C, g, i, k))
     end
     empty!(s.factors)
     return s
 end
 
 function _exner_factor(s::ExnerColumn, m, c, cw = c)
-    get!(s.factors, Float64(c * cw)) do
-        g = m.base.grid
+    g = m.base.grid
+    imp = _metric_implicit(g)
+    get!(s.factors, imp ? -Float64(c * cw) : Float64(c * cw)) do
         nz = g.nz
         sub = zeros(nz + 1, g.nx); cpr = zeros(nz + 1, g.nx); iden = zeros(nz + 1, g.nx)
         @inbounds for i in 1:g.nx, k in 2:nz
             dz = dzc(g, i)                       # J Δη of the column
-            r = c * cw / dz^2
+            r = c * cw / dz^2 * (imp ? 1 + g.zx_f[i, k]^2 : 1.0)   # Ω system: 1 + z_x² on the pressure part
             gg = c * cw * m.base.gas.g / (2dz)
             a = k > 2 ? -r * s.P[i, k] * s.cT[i, k-1] + gg : 0.0
             d = 1 + r * s.P[i, k] * (s.cT[i, k] + s.cB[i, k])
@@ -288,16 +334,21 @@ function _exner_factor(s::ExnerColumn, m, c, cw = c)
     end
 end
 
-"""Y = (I - D J_v)⁻¹ R, D = c on the thermodynamic rows and cw on the W rows (U rows: identity)."""
+"""Y = (I - D J_v)⁻¹ R, D = c on the thermodynamic rows and cw on the momentum rows (U rows: identity).
+FV_METRIC_IMPLICIT: solve in Ω = W - z_x Ū (column-local 1 + z_x², right-hand side R_W - z_x R̄_U), back
+substitution of the thermodynamic rows with Ω, then U and W from the new pressure (`_momenta_from_pressure!`)."""
 function exner_column_solve!(Y, m::ExnerModel, c, R, cw = c)
     s = m.column; g = m.base.grid
     nz, grav = g.nz, m.base.gas.g
+    imp = _metric_implicit(g)
     sub, cpr, iden = _exner_factor(s, m, c, cw)
     W = s.W
     @inbounds for i in 1:g.nx
         dz = dzc(g, i)
         for k in 2:nz
-            rhs = R[iW(g, i, k)] - (cw / dz) * s.P[i, k] * (R[iπ(m, i, k)] - R[iπ(m, i, k - 1)]) -
+            mk = imp ? 1 + g.zx_f[i, k]^2 : 1.0
+            RW = imp ? R[iW(g, i, k)] + Ωh(g, R, i, k) : R[iW(g, i, k)]
+            rhs = RW - mk * (cw / dz) * s.P[i, k] * (R[iπ(m, i, k)] - R[iπ(m, i, k - 1)]) -
                   (cw * grav / 2) * (R[iρ(g, i, k - 1)] + R[iρ(g, i, k)])
             W[k] = k == 2 ? rhs * iden[k, i] : (rhs - sub[k, i] * W[k-1]) * iden[k, i]
         end
@@ -314,6 +365,22 @@ function exner_column_solve!(Y, m::ExnerModel, c, R, cw = c)
         for k in 2:nz
             Y[iW(g, i, k)] = W[k]
         end
+    end
+    imp && _momenta_from_pressure!(Y, m, s, R, cw)
+    return Y
+end
+
+"""U and W from the new pressure (FV_METRIC_IMPLICIT, after the Ω solve and the back substitution):
+Y_W = R_W + cw (-P_z δη Y_π/(J Δη) - g Ȳ_ρ), Y_U = R_U + cw P_x `mvert`(Y_π) (exact discrete metric term)."""
+function _momenta_from_pressure!(Y, m, s, R, cw)
+    g = m.base.grid; grav = m.base.gas.g
+    f(i, k) = Y[iπ(m, i, k)]
+    @inbounds for k in 2:g.nz, i in 1:g.nx
+        Y[iW(g, i, k)] = R[iW(g, i, k)] - cw * (s.P[i, k] * (Y[iπ(m, i, k)] - Y[iπ(m, i, k - 1)]) / dzc(g, i) +
+                                                grav * 0.5 * (Y[iρ(g, i, k - 1)] + Y[iρ(g, i, k)]))
+    end
+    @inbounds for k in 1:g.nz, i in 1:g.nx
+        Y[iU(g, i, k)] = R[iU(g, i, k)] + cw * s.Px[i, k] * mvert(f, g, i, k)
     end
     return Y
 end

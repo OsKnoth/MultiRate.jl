@@ -11,12 +11,13 @@
 #
 #     FORM=exner MODE=ref julia --project=examples examples/frozen_agnesi.jl          # RK4 reference (stored)
 #     [METHODS=MIS2,MIS3C,MIS4a,MIS54,WSRK3,ETD3,EB4,LRK4] [DTS=10,20,40,60,90,120] [NSUBFAC=1] \
-#     [FAST=hevi|ei|wrf] [SMDIV=0] [OFFCENTER=0] [EIGAMMA=0.5] \
+#     [FAST=hevi|ei|wrf] [SMDIV=0] [OFFCENTER=0] [EIGAMMA=0.5] [METRIC=explicit|implicit] \
 #         julia --project=examples examples/frozen_agnesi.jl                 # scan, table lines "RES …"
 # FAST: fast integrator of the frozen loop (`frozen_fast_solve!`): hevi (default), ei (Verlet EI), wrf
 # (WRF forward-backward, vertically implicit); both with the options SMDIV (divergence damping by
 # extrapolation of the thermodynamic variables, WRF γd) and OFFCENTER (ε, β = (1+ε)/2, WRF epssm);
-# EIGAMMA: Imex version III (W rows only, ei with OFFCENTER = 0).
+# EIGAMMA: Imex version III (W rows only, ei with OFFCENTER = 0); METRIC=implicit: vertical pressure
+# derivatives of the metric term implicit, Ω column solve (`FV.FV_METRIC_IMPLICIT`, exner and pres forms).
 #
 # h(x) = h0/(1 + (x - xm)²/a²), h0 = 400 m, a = 10 km, U = 10 m/s, N = 0.01 1/s, θ0 = 300 K; periodic
 # channel 40 a = 400 km, top 15.6 km, Rayleigh damping of W above 9 km (rate 5 c_gz/(H - z_D));
@@ -132,10 +133,11 @@ facs = parse.(Int, split(get(ENV, "NSUBFAC", "1"), ","))
 const FAST = Symbol(get(ENV, "FAST", "hevi"))
 const SMDIV = parse(Float64, get(ENV, "SMDIV", "0"))
 const OFFC = parse(Float64, get(ENV, "OFFCENTER", "0"))
+FV.FV_METRIC_IMPLICIT[] = get(ENV, "METRIC", "explicit") == "implicit"
 TS.EI_GAMMA[] = parse(Float64, get(ENV, "EIGAMMA", "0.5"))
 const FTAG = FAST === :hevi && SMDIV == 0 ? "" :
     "_" * string(FAST) * (SMDIV != 0 ? "sd$(SMDIV)" : "") * (OFFC != 0 ? "e$(OFFC)" : "") *
-    (FAST === :ei && TS.EI_GAMMA[] != 0.5 ? "g$(TS.EI_GAMMA[])" : "")
+    (FAST === :ei && TS.EI_GAMMA[] != 0.5 ? "g$(TS.EI_GAMMA[])" : "") * (FV.FV_METRIC_IMPLICIT[] ? "_mi" : "")
 @printf("Agnesi FORM = %s, a = 10 km, %d × %d, Δx = %.0f m, Δη = %.0f m, T = %.0f s, Δτ_ac = %.2f s, reference max|w| = %.4f m/s\n",
         FORM, nx, nz, grid.dx, grid.dz, TEND, dτ, wmax_r)
 for meth in methods, Δt in dts, fac in facs

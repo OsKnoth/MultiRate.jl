@@ -213,6 +213,7 @@ _fast!(::Val{P}, out, m, C, z, F, pf) where {P} = error("frozen_fast!: unknown p
 
 """Fast part F_f(C, z) + F (and the sponge) on the rows of `part` (table above)."""
 function frozen_fast!(out, m::FVModel, C, z, part::Symbol, F)
+    _metric_implicit(m.grid) && error("FV_METRIC_IMPLICIT: ExnerModel or MoistExnerModel (pvar = :pi or :p)")
     fill!(out, 0.0)
     _fast!(Val(part), out, m, C, z, F, pressure_form())
     return out
