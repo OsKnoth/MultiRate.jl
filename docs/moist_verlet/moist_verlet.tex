@@ -754,111 +754,115 @@ relative humidity $RH_0=0.85$ below 7\,km, decreasing to 20\,\% at 9\,km; period
 model top 12\,km, Rayleigh damping of $W$ above 8\,km; terrain-following grid with $200\times48$ cells
 ($\Delta x=2$\,km, $\Delta\eta=250$\,m, $\max|z_x|=0.026$); every column in discrete hydrostatic balance with its own
 $J\Delta\eta$; impulsive start; $T=6$\,h. $\dt=30$\,s, $n_{\rm sub}=7$ ($\dtau=4.29$\,s, vertical acoustic Courant
-number $c_s\dtau/\Delta z\approx6$), Verlet EI (Section~\ref{sec:conj}; the runs with the small step \eqref{eq:CS} are still to be done) with $\varepsilon=0.1$, implicit metric term (column system for
-$\Omega$), $\tau_{\rm fac}=0.5$ ($\tau=2.2$\,s, $h/\tau=1.9$). With $\tau_{\rm fac}=0.25$ ($h/\tau=3.8$) the run breaks down after
-40--50\,min, with $\tau_{\rm fac}=0.3$ the solution is wrong; between $\tau_{\rm fac}=0.4$ and 2 the solution after 1.5\,h changes by
-less than 2\,\% in $\max|w|$ and 8\,\% in $\max q_c$ (Section~\ref{sec:fbstab}).
+number $c_s\dtau/\Delta z\approx6$). Small step \eqref{eq:CS} with $\varepsilon=0.1$ and $\gamma_d=0.1$, implicit metric term
+(column system for $\Omega$), $\tau_{\rm fac}=0.5$ ($\tau=2.2$\,s, $h/(2\tau)=1$). With $\tau_{\rm fac}=0.25$ ($h/(2\tau)=1.9$) the run is
+stable but wrong ($\max|w|=1.5$\,m/s, a cap cloud with 2.3 times the condensate).
 
 \subsection{Results}
-All runs with MIS54 and EB4 are stable; mass and total water are conserved to $\le2\cdot10^{-14}$. The moist
-runs have a shallow cap cloud over the crest and a wave cloud at 5.5--7.8\,km above and just downstream
-of the hill (maximum at $x-x_m=1$--3\,km, $z=6.55$\,km), plus a small cloud at 4.7\,km, 25\,km downstream
-(Figure~\ref{fig:hill_thvar}). The latent heating increases $\max|w|$ from 0.71\,m/s (dry) to 0.98\,m/s.
+All runs are stable; mass and total water are conserved to $\le2\cdot10^{-14}$. The moist runs have a shallow
+cap cloud over the crest and a wave cloud at 5.5--7.8\,km above and just downstream of the hill (maximum
+at $x-x_m=3$\,km, $z=6.55$\,km), plus a small cloud at 4.7\,km, 25\,km downstream (Figure~\ref{fig:hill_thvar}). The
+latent heating increases $\max|w|$ from 0.715\,m/s (dry) to 0.98\,m/s.
 \begin{table}[htbp]\centering\small
-\caption{Moist mountain wave after 6\,h. Times: serial runs, 16 in parallel on 16 cores, only the
-ratios within one block are meaningful.}\label{tab:hill}
-\begin{tabular}{lllllccc}\toprule
-$X$ & $\pv$ & method & $\dt$ [s] & options & $\max|w|$ [m/s] & $\max q_c$ [g/kg] & time [s]\\\midrule
-$\rho\theta_\rho$ & $\pi$ & MIS54 & 30 & & 0.980 & 0.168 & 983\\
-$\rho\theta_\rho$ & $p$ & MIS54 & 30 & & 0.967 & 0.165 & 953\\
-$\rho e$ & $\pi$ & MIS54 & 30 & & 0.933 & 0.165 & 943\\
-$\rho e$ & $p$ & MIS54 & 30 & & 0.920 & 0.162 & 902\\
-$\rho\theta_\rho$ & $\pi$ & EB4 & 30 & & 0.980 & 0.168 & 1394\\
-$\rho\theta_\rho$ & $p$ & EB4 & 30 & & 0.969 & 0.165 & 1379\\
-$\rho\theta_\rho$ & $\pi$ & RK3 & 30 & & \multicolumn{3}{c}{unstable after 4\,h}\\
-$\rho\theta_\rho$ & $p$ & RK3 & 30 & & 0.835 & 0.207 & 770\\
-$\rho\theta_\rho$ & $p$ & MIS54 & 60 & & 0.927 & 0.160 & 775\\
-$\rho e$ & $p$ & MIS54 & 60 & & 0.883 & 0.159 & 743\\
-$\rho\theta_\rho$ & $p$ & RK3 & 60 & & 0.910 & 0.219 & 664\\
-$\rho\theta_\rho$ & $\pi$ & MIS54 & 30 & $\varepsilon=0$ & 0.974 & 0.167 & 983\\
-dry & $\pi$ & MIS54 & 30 & & 0.714 & -- & 984\\\midrule
-$\rho\theta_\rho$ & $\pi$ & MIS54 & 30 & explicit metric & 0.980 & 0.168 & \\
-$\rho\theta_\rho$ & $\pi$ & RK3 & 30 & explicit metric & \multicolumn{3}{c}{unstable after 4\,h}\\
-$\rho\theta_\rho$ & $\pi$ & RK3 & 30 & $\gamma_d=0.1$ & 0.803 & 0.226 & \\
-$\rho\theta_\rho$ & $\pi$ & RK3 & 30 & $\varepsilon=0.2$ & 0.939 & 0.210 & \\
-$\rho\theta_\rho$ & $\pi$ & RK3 & 15 & & 0.980 & 0.168 & \\\bottomrule
+\caption{Moist mountain wave after 6\,h, small step \eqref{eq:CS}, $\varepsilon=\gamma_d=0.1$ unless stated.}\label{tab:hill}
+\begin{tabular}{lllllcc}\toprule
+$X$ & $\pv$ & method & $\dt$ [s] & options & $\max|w|$ [m/s] & $\max q_c$ [g/kg]\\\midrule
+$\rho\theta_\rho$ & $\pi$ & MIS54 & 30 & & 0.979 & 0.168\\
+$\rho\theta_\rho$ & $p$ & MIS54 & 30 & & 0.967 & 0.164\\
+$\rho e$ & $\pi$ & MIS54 & 30 & & 0.933 & 0.165\\
+$\rho e$ & $p$ & MIS54 & 30 & & 0.919 & 0.162\\
+$\rho\theta_\rho$ & $\pi$ & EB4 & 30 & & 0.980 & 0.168\\
+$\rho\theta_\rho$ & $p$ & EB4 & 30 & & 0.969 & 0.165\\
+$\rho\theta_\rho$ & $\pi$ & RK3 & 30 & & 0.980 & 0.168\\
+$\rho\theta_\rho$ & $p$ & RK3 & 30 & & 0.968 & 0.165\\
+$\rho\theta_\rho$ & $\pi$ & RK3 & 15 & & 0.979 & 0.168\\
+$\rho\theta_\rho$ & $\pi$ & MIS54 & 60 & & 0.980 & 0.168\\
+$\rho\theta_\rho$ & $p$ & MIS54 & 60 & & 0.968 & 0.165\\
+$\rho e$ & $p$ & MIS54 & 60 & & 0.921 & 0.162\\
+$\rho\theta_\rho$ & $\pi$ & RK3 & 60 & & 0.973 & 0.167\\
+$\rho\theta_\rho$ & $p$ & RK3 & 60 & & 0.966 & 0.165\\\midrule
+$\rho\theta_\rho$ & $\pi$ & MIS54 & 30 & $\varepsilon=0$ & 0.977 & 0.168\\
+$\rho\theta_\rho$ & $\pi$ & MIS54 & 30 & $\varepsilon=0.2$ & 0.979 & 0.168\\
+$\rho\theta_\rho$ & $\pi$ & MIS54 & 30 & $\gamma_d=0$ & 0.980 & 0.168\\
+$\rho\theta_\rho$ & $\pi$ & MIS54 & 30 & explicit metric & 0.979 & 0.168\\
+$\rho\theta_\rho$ & $\pi$ & RK3 & 30 & explicit metric & 0.980 & 0.168\\
+$\rho\theta_\rho$ & $\pi$ & MIS54 & 30 & Verlet EI, $\varepsilon=0.1$, $\gamma_d=0$ & 0.980 & 0.168\\
+dry & $\pi$ & MIS54 & 30 & & 0.715 & --\\\bottomrule
 \end{tabular}
 \end{table}
 There is no reference solution. Table~\ref{tab:hilldiff} gives the maximum differences of the fields at
-6\,h ($|x-x_m|\le60$\,km) relative to $\max|w|=0.98$\,m/s and $\max q_c=0.168$\,g/kg.
+6\,h ($|x-x_m|\le60$\,km) relative to $\max|w|$ and $\max q_c$.
 \begin{table}[htbp]\centering\small
 \caption{Moist mountain wave: differences between runs after 6\,h.}\label{tab:hilldiff}
 \begin{tabular}{lccc}\toprule
 comparison & $\Delta w/\max|w|$ & $\Delta q_c/\max q_c$ & $\max|\Delta RH|$\\\midrule
-metric term implicit / explicit (MIS54) & 0.04\,\% & 0.09\,\% & 0.0002\\
-MIS54 / EB4 ($\pi$) & 0.5\,\% & 0.8\,\% & 0.001\\
-MIS54 / EB4 ($p$) & 0.3\,\% & 0.4\,\% & 0.001\\
-MIS54, 30\,s / RK3, 15\,s ($\pi$) & 0.3\,\% & 0.8\,\% & 0.0003\\
-$\pi$ / $p$ ($\rho\theta_\rho$) & 1.6\,\% & 2.5\,\% & 0.005\\
-$\dt=30$ / 60\,s (MIS54, $\rho\theta_\rho$, $p$) & 5.3\,\% & 22\,\% & 0.014\\
-$\dt=30$ / 60\,s (MIS54, $\rho e$, $p$) & 5.4\,\% & 20\,\% & 0.013\\
-$\rho\theta_\rho$ / $\rho e$ ($\pi$) & 9.1\,\% & 6.6\,\% & 0.015\\
-$\rho\theta_\rho,\pi$ / $\rho e,p$ & 9.4\,\% & 7.5\,\% & 0.017\\
-$\varepsilon=0.1$ / $\varepsilon=0$ & 21\,\% & 4.4\,\% & 0.004\\
-MIS54 / RK3 ($p$, 30\,s) & 17\,\% & 51\,\% & 0.043\\
-MIS54 / RK3 ($\pi$, 30\,s, $\gamma_d=0.1$) & 18\,\% & 61\,\% & 0.053\\\bottomrule
+MIS54, 30\,s / RK3, 15\,s ($\pi$) & 0.08\,\% & 0.09\,\% & 0.0003\\
+$\varepsilon=0.1$ / $\varepsilon=0.2$ & 0.03\,\% & 0.04\,\% & 0.0002\\
+$\dt=30$ / 60\,s (MIS54, $\rho\theta_\rho$, $p$) & 0.24\,\% & 0.35\,\% & 0.0016\\
+$\dt=30$ / 60\,s (MIS54, $\rho e$, $p$) & 0.25\,\% & 0.35\,\% & 0.0014\\
+$\dt=30$ / 60\,s (MIS54, $\rho\theta_\rho$, $\pi$) & 1.0\,\% & 0.41\,\% & 0.0024\\
+\eqref{eq:CS} / Verlet EI ($\varepsilon=0.1$, $\gamma_d=0$) & 0.26\,\% & 0.64\,\% & 0.0004\\
+$\gamma_d=0.1$ / $\gamma_d=0$ & 0.29\,\% & 0.69\,\% & 0.0005\\
+metric term implicit / explicit (MIS54) & 0.33\,\% & 0.84\,\% & 0.0005\\
+MIS54 / EB4 ($\pi$) & 0.38\,\% & 0.39\,\% & 0.0015\\
+MIS54 / EB4 ($p$) & 0.41\,\% & 0.46\,\% & 0.0013\\
+MIS54 / RK3, 30\,s ($p$) & 0.44\,\% & 0.41\,\% & 0.0014\\
+MIS54 / RK3, 30\,s ($\pi$) & 0.61\,\% & 1.0\,\% & 0.0019\\
+$\pi$ / $p$ ($\rho\theta_\rho$) & 1.6\,\% & 2.2\,\% & 0.0054\\
+RK3, $\dt=30$ / 60\,s ($\pi$) & 7.7\,\% & 1.6\,\% & 0.0054\\
+$\varepsilon=0.1$ / $\varepsilon=0$ & 8.1\,\% & 0.51\,\% & 0.0012\\
+$\rho\theta_\rho$ / $\rho e$ ($\pi$) & 9.2\,\% & 6.9\,\% & 0.015\\
+$\rho\theta_\rho,\pi$ / $\rho e,p$ & 9.4\,\% & 7.8\,\% & 0.017\\\bottomrule
 \end{tabular}
 \end{table}
 \begin{itemize}
-\item \emph{Metric term.} On this gentle hill ($c_s\dtau|z_x|/\Delta z\approx0.2$) the implicit and the explicit
-treatment of the vertical-derivative part of the metric term give the same solution (0.04\,\%); the
-implicit treatment costs nothing extra and removes the steep-terrain instability \cite{verletei}.
-\item \emph{MIS54 and EB4} agree to 0.5\,\% (Figure~\ref{fig:hill_eb4}); EB4 costs 40\,\% more, because its stages
-add up to $3\dt$ instead of $1.88\dt$ and its small steps are not combined.
-\item \emph{RK3.} At $\dt=30$\,s with $\pi$, RK3 becomes unstable after about 3\,h, with the explicit as with the
-implicit metric term; the instability starts in the cloud. It is stable with the divergence damping
-$\gamma_d=0.1$ or the off-centring $\varepsilon=0.2$, and with $p$ as the pressure variable. These stable 30\,s runs
-have a cap cloud over the crest with 25--35\,\% more condensate (the maximum of $q_c$ is at 0.5\,km instead of
-6.5\,km) and a wave that differs by 17--24\,\% from MIS54 (Figure~\ref{fig:hill_rk3}). At $\dt=15$\,s RK3 agrees
-with MIS54 at 30\,s to 0.3\,\% (at twice the cost). RK3 at
-30\,s is therefore not a converged solution: the third stage uses the coefficients ($Q_X$, $Q_\pv$, face
-values) and the slow tendency of one stage over the whole step, and the cap cloud, which forms within
-a few large steps as the air crosses the crest, is sensitive to this. MIS54, which uses combinations of
-all stages, has the same cost as RK3 per step and does not show the effect at 30\,s.
+\item \emph{Time step.} With the small step \eqref{eq:CS} the solution hardly depends on the slow integrator and on
+$\dt$: MIS54, EB4 and RK3 at 30\,s agree to 0.4--1\,\%, RK3 at 15\,s and MIS54 at 30\,s to 0.1\,\%, and MIS54 at 60\,s
+($n_{\rm sub}=14$) differs from 30\,s by 0.24--1\,\% (Figure~\ref{fig:hill_dt60}). RK3 at 60\,s is stable and differs by 7.7\,\% in
+$w$. With Verlet EI ($\varepsilon=0.1$, $\gamma_d=0$, previous version of this note) RK3 at 30\,s was unstable after 4\,h with $\pi$ and
+had a cap cloud with 25--35\,\% more condensate with $p$, and MIS54 at 60\,s changed $q_c$ by 20\,\%. The two
+fast steps give the same solution for MIS54 at 30\,s (0.26\,\%); the difference is in the robustness at large
+$\dt$. The probable reason is the phase change, which \eqref{eq:CS} evaluates twice per small step with the
+weight $h/2$ instead of once with $h$; this was not isolated.
+\item \emph{Off-centring and extrapolation.} Without off-centring a deep mode with a horizontal wavelength of
+about 80\,km remains from the impulsive start (Figure~\ref{fig:hill_ei0}); it is 8\,\% of $\max|w|$ with $\gamma_d=0.1$ (21\,\% with
+Verlet EI without off-centring and extrapolation). $\varepsilon=0.1$ in the middle line removes it; $\varepsilon=0.2$ changes the
+solution by only 0.03\,\%. The extrapolation $\gamma_d=0.1$ changes the solution by 0.3--0.7\,\%.
+\item \emph{Metric term.} On this gentle hill ($c_s\dtau|z_x|/\Delta z\approx0.16$) the implicit and the explicit
+treatment of the vertical-derivative part of the metric term agree to 0.3--0.8\,\%, also with RK3.
+\item \emph{MIS54 and EB4} agree to 0.4\,\% (Figure~\ref{fig:hill_eb4}). In EB4 every small step is a separate fast
+integration (the polynomial forcing is evaluated at the midpoint of each small step), so the extrapolation
+does not act.
 \item \emph{Thermodynamic variable.} $\rho\theta_\rho$ and $\rho e$ give the same wave and the same clouds
 (Figure~\ref{fig:hill_thvar}); the difference, 9\,\% in $w$, is a short wave pattern in the lee (10--20\,km
 downstream, all heights), of the size of the difference of the two spatial discretisations seen in the
 bubble. The pressure variable matters less (1.6\,\%).
-\item \emph{Large step.} $\dt=60$\,s ($n_{\rm sub}=14$) is stable for both thermodynamic variables and changes the cloud
-water by 20\,\% (Figure~\ref{fig:hill_dt60}): the cloud edges are sharp and the advective time scale of the cloud
-($\Delta x/U=200$\,s) is only three to four large steps.
-\item \emph{Off-centring.} Without it ($\varepsilon=0$) the run is stable, but a deep mode with a horizontal wavelength
-of about 80\,km and amplitude 0.2\,m/s remains from the impulsive start (Figure~\ref{fig:hill_ei0}); $\varepsilon=0.1$
-removes it. Near the hill and in the cloud the two agree within 4\,\% ($q_c$).
 \end{itemize}
 
 \begin{figure}[htbp]\centering
 \includegraphics[width=\textwidth]{hill_thvar.png}
-\caption{Moist mountain wave after 6\,h, MIS54, Verlet EI with $\varepsilon=0.1$, $\dt=30$\,s, implicit metric term:
-$w$, $q_c$ and RH with $X=\rho\theta_\rho$, $\pv=\pi$ (top) and $X=\rho e$, $\pv=p$ (middle), and their difference
+\caption{Moist mountain wave after 6\,h, MIS54, small step \eqref{eq:CS} with $\varepsilon=\gamma_d=0.1$, $\dt=30$\,s, implicit metric
+term: $w$, $q_c$ and RH with $X=\rho\theta_\rho$, $\pv=\pi$ (top) and $X=\rho e$, $\pv=p$ (middle), and their difference
 (bottom).}\label{fig:hill_thvar}
 \end{figure}
 \begin{figure}[htbp]\centering
 \includegraphics[width=\textwidth]{hill_eb4.png}
-\caption{As Figure~\ref{fig:hill_thvar}, $X=\rho\theta_\rho$, $\pv=\pi$: MIS54 (top) and the ETD method EB4 (middle).}\label{fig:hill_eb4}
+\caption{As Figure~\ref{fig:hill_thvar}, $X=\rho\theta_\rho$, $\pv=\pi$: MIS54 (top), the ETD method EB4 (middle) and their
+difference (bottom).}\label{fig:hill_eb4}
 \end{figure}
 \begin{figure}[htbp]\centering
 \includegraphics[width=\textwidth]{hill_rk3.png}
-\caption{$X=\rho\theta_\rho$, $\pv=\pi$: MIS54 with $\dt=30$\,s (first row), RK3 with $\dt=30$\,s and $\gamma_d=0.1$ (second row),
-RK3 with $\dt=15$\,s (third row), and the difference of the first two (bottom).}\label{fig:hill_rk3}
+\caption{$X=\rho\theta_\rho$, $\pv=\pi$, $\dt=30$\,s: MIS54 (top), RK3 (middle) and their difference (bottom).}\label{fig:hill_rk3}
 \end{figure}
 \begin{figure}[htbp]\centering
 \includegraphics[width=\textwidth]{hill_dt60.png}
-\caption{$X=\rho\theta_\rho$, $\pv=p$, MIS54: $\dt=30$\,s ($n_{\rm sub}=7$, top) and $\dt=60$\,s ($n_{\rm sub}=14$, middle).}\label{fig:hill_dt60}
+\caption{$X=\rho\theta_\rho$, $\pv=p$, MIS54: $\dt=30$\,s ($n_{\rm sub}=7$, top), $\dt=60$\,s ($n_{\rm sub}=14$, middle) and their
+difference (bottom).}\label{fig:hill_dt60}
 \end{figure}
 \begin{figure}[htbp]\centering
 \includegraphics[width=\textwidth]{hill_ei0.png}
-\caption{Verlet EI with $\varepsilon=0.1$ (top) and without off-centring (middle): deep mode of the impulsive start.}\label{fig:hill_ei0}
+\caption{Small step \eqref{eq:CS} with $\gamma_d=0.1$: $\varepsilon=0.1$ (top), $\varepsilon=0$ (middle) and their difference (bottom):
+deep mode of the impulsive start.}\label{fig:hill_ei0}
 \end{figure}
 
 %======================================================================
@@ -883,13 +887,13 @@ every small step. The small step is neutral up to vertical acoustic Courant numb
 \item $X=\rho\theta_\rho$ and $X=\rho e$ are equally accurate and stable in time. $\rho e$ needs no latent-heating
 source, $\rho\theta_\rho$ is in flux form. The two spatial discretisations differ by 5--9\,\%; a resolution
 study is needed to decide which is closer to the converged solution.
-\item MIS54 and ETD (EB4) agree to 0.5\,\%; EB4 is more robust near the stability limit of the explicit phase
-change, MIS54 is 40\,\% cheaper. RK3 has the cost of MIS54 per step; in the bubble it is four to ten
-times less accurate, and on the hill it needs damping ($\gamma_d$ or larger $\varepsilon$) at
-$\dt=30$\,s and gives a different cap cloud; at half the step it agrees with MIS54.
+\item With the small step \eqref{eq:CS} ($\varepsilon=\gamma_d=0.1$) the mountain wave is insensitive to the slow integrator and to
+$\dt$: MIS54, EB4 and RK3 agree to 0.4--1\,\% at $\dt=30$\,s, and MIS54 at 60\,s differs from 30\,s by 0.2--1\,\%.
+With Verlet EI, RK3 at 30\,s was unstable or gave a different cap cloud, and 60\,s changed the cloud water by 20\,\%.
+In the bubble RK3 is four to ten times less accurate than MIS54 and EB4.
 \item The explicit relaxation is robust for $c/\tau\lesssim1$, $c$ the weight of one evaluation in the small step:
-$\tau_{\rm fac}\ge0.5$ with the explicit Verlet step (two half steps), $\tau_{\rm fac}\ge1$ with Verlet EI (one step $h$); with
-$\tau_{\rm fac}=0.5$ and the explicit Verlet step all slow integrators are stable in the bubble.
+$\tau_{\rm fac}\ge0.5$ with the explicit Verlet step and with \eqref{eq:CS} (two half steps $h/2$), $\tau_{\rm fac}\ge1$ with Verlet EI
+(one step $h$); with $\tau_{\rm fac}=0.5$ all slow integrators are stable in the bubble and on the hill.
 A linearly implicit relaxation (the phase change as part of the implicit step, or a pointwise implicit
 step after the horizontal part) would remove this limit.
 \item Open: steep terrain in the moist model, total energy as $X$, a limiter for the moisture
@@ -900,11 +904,14 @@ reconstruction, sedimentation and rain, three dimensions.
 \section{Code}
 The model is \code{FV.MoistExnerModel} (\code{src/FV/moist.jl}) of MultiRate.jl with the options
 \code{mgas = MoistGas(thvar = :thetarho | :energy)}, \code{pvar = :pi | :p}, \code{micro = :fast}, \code{$\tau$fac};
-the fast integrator \code{fast = :ei} with \code{offcenter} $=\varepsilon$ and \code{smdiv} $=\gamma_d$
+the fast integrator \code{fast = :cs} (small step \eqref{eq:CS}; \code{:verlet} for the bubble) with \code{offcenter} $=\varepsilon$ and \code{smdiv} $=\gamma_d$
 (\code{frozen\_fast\_solve!}, \code{src/TimeStepping/frozen.jl}); the implicit metric term
 \code{FV.FV\_METRIC\_IMPLICIT[] = true}; the slow integrators \code{mis\_tableau(:WSRK3 | :MIS54 | :EB4)} in
-\code{frozen\_mis\_step!}. The fast part is provided in the parts \code{:hmomentum} ($K$), \code{:hthermo}
-($H_h$) and \code{:vertical} ($H_v$), and the column solve by \code{moist\_column\_solve!}. Examples:
+\code{frozen\_mis\_step!}. The fast part is provided in the parts \code{:hmomentum} ($L_0$), \code{:hthermo}
+($K_0$, $f_a$, $f_b$) and \code{:vertical} ($K_1$, $L_1$), and the column solve by \code{moist\_column\_solve!} with
+separate weights for the cell-centred and the momentum rows. The implementation evaluates both half steps
+in $a$ of every small step (the inner steps are not yet combined into the forward--backward form), i.e.\ the
+horizontal transport twice per small step. Examples:
 \code{examples/frozen\_moist\_bubble.jl}, \code{examples/frozen\_moist\_hill.jl}.
 
 \begin{thebibliography}{99}
