@@ -3,10 +3,10 @@
 # no saturation adjustment, condensation as an explicit Fischer–Burmeister relaxation with τ on the fast scale
 # and the latent heating Q_θ in the ρθ_ρ equation; π recomputed after every MIS step).
 #
-#     [PVAR=pi|p] [THVAR=thetarho|energy] [FAST=ei|wrf|hevi] [OFFCENTER=ε] [SMDIV=γ] [MICRO=fast|slow] [TAUFAC=f] [WTAU=w]
+#     [PVAR=pi|p] [THVAR=thetarho|energy] [FAST=verlet|ei|wrf|hevi] [OFFCENTER=ε] [SMDIV=γ] [MICRO=fast|slow] [TAUFAC=f] [WTAU=w]
 #         [METHODS=MIS54,WSRK3,LRK4,EB4] [DTS=2,5,10] [DTPLOT=5] julia --project=examples examples/frozen_moist_bubble.jl [T] [nx]
 #
-# THVAR: thermodynamic variable, ρθ_ρ (default) or the internal energy ρe; FAST: fast integrator (Verlet EI (default), WRF,
+# THVAR: thermodynamic variable, ρθ_ρ (default) or the internal energy ρe; FAST: fast integrator (explicit Störmer–Verlet (default; the grid is isotropic), Verlet EI, WRF,
 # HEVI) with the off-centring OFFCENTER and the extrapolation SMDIV (docs/verlet_ei).
 #
 # Saturated, neutral atmosphere θ_e = 320 K, r_t = 0.02, 20 km × 10 km, nx × nx/2 cells (default
@@ -38,7 +38,7 @@ base = FV.FVModel(grid, gas, ρr, Θr)
 const PVAR = Symbol(get(ENV, "PVAR", "pi"))
 const MICRO = Symbol(get(ENV, "MICRO", "fast"))
 const THVAR = Symbol(get(ENV, "THVAR", "thetarho"))
-const FAST = Symbol(get(ENV, "FAST", "ei"))
+const FAST = Symbol(get(ENV, "FAST", "verlet"))     # isotropic grid: fully explicit Verlet (docs/moist_verlet)
 const OFFC = parse(Float64, get(ENV, "OFFCENTER", FAST === :ei ? "0.1" : "0"))   # EI: off-centring 0.1 (docs/moist_verlet)
 const SMDIV = parse(Float64, get(ENV, "SMDIV", "0"))
 mgm = FV.MoistGas(thvar = THVAR)                                   # gas of the model; mg (ρθ_ρ) builds the initial state
@@ -201,7 +201,7 @@ if !isempty(res)
             Colorbar(fig[r, 2col], hm)
         end
     end
-    fn = get(ENV, "OUT", "frozen_moist_bubble_$(PVAR)_$(MICRO)$(THVAR === :thetarho ? "" : "_$(THVAR)")$(FAST === :ei ? "" : "_$(FAST)")$(haskey(ENV, "TAUFAC") ? "_tf" * ENV["TAUFAC"] : "").png")
+    fn = get(ENV, "OUT", "frozen_moist_bubble_$(PVAR)_$(MICRO)$(THVAR === :thetarho ? "" : "_$(THVAR)")$(FAST === :verlet ? "" : "_$(FAST)")$(haskey(ENV, "TAUFAC") ? "_tf" * ENV["TAUFAC"] : "").png")
     save(fn, fig)
     println("wrote ", fn)
 end

@@ -33,7 +33,8 @@ face values and follow by back substitution. We compare the density potential te
 internal energy as thermodynamic variables. Condensation is an explicit Fischer--Burmeister
 relaxation without saturation adjustment. The small step is embedded in multirate infinitesimal
 step (MIS) methods, including the Runge--Kutta method of Wicker and Skamarock, and in exponential
-time differencing (ETD). Results are shown for a moist rising bubble and a moist mountain wave.
+time differencing (ETD). Results are shown for a moist rising bubble on an isotropic grid, where the
+same step with all terms explicit is used, and for a moist mountain wave.
 \end{abstract}
 
 \tableofcontents
@@ -458,10 +459,25 @@ horizontal divergence in $\rho,X,V,C,\pv$ & explicit, with the new $U$ & \\
 vertical divergence ($\Omega$) in $\rho,X,V,C,\pv$ & implicit & none\\
 vertical pressure force, metric term & implicit & none\\
 gravity $-g\bar\rho$ & implicit & none\\
-phase change $S_c$ & explicit & $\tau\gtrsim\dtau/2$\\
+phase change $S_c$ & explicit & $\tau\gtrsim\dtau$ (robust)\\
 slow forcing, sponge & explicit & \\\bottomrule
 \end{tabular}
 \end{center}
+
+\subsection{Isotropic grids: the explicit Verlet step}\label{sec:verletexpl}
+If $\Delta z\approx\Delta x$, the vertical acoustic Courant number equals the horizontal one, and nothing needs to
+be implicit. With the partition $a=\tv$, $b=(U,W)$, $K$ all momentum terms (pressure force in both
+directions, gravity, sponge, forcing) and $H$ all terms of the cell-centred rows (divergence of both
+mass fluxes, phase change, forcing), $H$ depends on $b$ only and $E_c$, $I_c$ are both explicit: \eqref{eq:EI}
+with $\beta=\tfrac12$ is the explicit Störmer--Verlet (position Verlet) step
+\[
+\tv\leftarrow\tv+\tfrac h2H(\tv,M),\qquad M\leftarrow M+h\,K(\tv),\qquad\tv\leftarrow\tv+\tfrac h2H(\tv,M),
+\]
+symmetric, of second order, with the same transport of $X$, $V$, $C$ and $\pv$ by the live mass flux and the
+same conservation properties, but without column solve and without off-centring. It is stable for
+$c_s\dtau\sqrt{\Delta x^{-2}+\Delta z^{-2}}\lesssim1$ and $N\dtau\le2$. The phase change is applied in two half steps
+$h/2$, so the explicit relaxation needs $h/\tau\le4$, i.e.\ $\tau_{\rm fac}\gtrsim0.25$. This step is used for the bubble
+(Section~\ref{sec:bubble}), Verlet EI for the mountain wave.
 
 \subsection{The column system for $\Omega$}
 In column $i$ with cells $k=1,\dots,n_z$, $\eta$-faces $k=1,\dots,n_z+1$, $\Omega_1=\Omega_{n_z+1}=0$, $\Delta z=J\Delta\eta$,
@@ -500,7 +516,7 @@ $\pi$ and $p$, dry and moist. On a flat grid $m_k=1$, $\Omega=W$, and $U$ is not
 $S_c$ is part of $H_h$ and is applied with the total weight $h$ per small step (split into $(1-\beta)h$ and
 $\beta h$, combined between steps). For the relaxation alone, $y'=-y/\tau$, this is the explicit Euler
 step, stable for $h/\tau\le2$. With $\tau=\tau_{\rm fac}\dtau_{\rm ac}$ and $h\approx\dtau_{\rm ac}$ the explicit phase change
-needs $\tau_{\rm fac}\gtrsim0.5$.
+needs $\tau_{\rm fac}\gtrsim0.5$, in practice $\tau_{\rm fac}\gtrsim1$ (Section~\ref{sec:bubble}).
 
 \subsection{Check: one small step is neutral}
 The matrix of one small step of the frozen fast operator (no phase change, no forcing) was built
@@ -574,9 +590,10 @@ domain 20\,km$\times$10\,km, $80\times40$ cells ($\Delta x=\Delta z=250$\,m), pe
 of radius 2\,km centred 2\,km above the ground, $T=1000$\,s. The columns are in discrete hydrostatic
 balance (residual at rest $\le7\cdot10^{-13}$). The initial state is built with $\rho\theta_\rho$ and converted
 cell by cell to $\rho e$ at the same $(\rho,T,\rho_v,\rho_c)$. The reference is RK4 for the same
-semi-discrete system with a step that resolves the acoustic waves and $\tau$. Fast integrator: Verlet
-EI with $\varepsilon=0.1$ unless stated otherwise, $n_{\rm sub}=\lceil\dt/\dtau_{\rm ac}\rceil$, i.e.\ $n_{\rm sub}=4/10/19$ for
-$\dt=2/5/10$\,s.
+semi-discrete system with a step that resolves the acoustic waves and $\tau$. The grid is isotropic, so
+the fast integrator is the explicit Störmer--Verlet step of Section~\ref{sec:verletexpl}; Verlet EI is
+included for comparison. $n_{\rm sub}=\lceil\dt/\dtau_{\rm ac}\rceil$, i.e.\ $n_{\rm sub}=4/10/19$ for $\dt=2/5/10$\,s
+($c_s\dtau/\Delta x\approx0.75$ in both directions).
 
 \subsection{Resolved relaxation}
 With $\tau_{\rm fac}=4$ ($\tau=2.2$\,s), Table~\ref{tab:bubble} gives the maximum error of $\theta_e'$ against RK4.
@@ -584,30 +601,30 @@ With $\tau_{\rm fac}=4$ ($\tau=2.2$\,s), Table~\ref{tab:bubble} gives the maximu
 \caption{Moist bubble, $\tau_{\rm fac}=4$: maximum error of $\theta_e'$ [mK] against RK4 at $\dt=2/5/10$\,s.}\label{tab:bubble}
 \begin{tabular}{lllccc}\toprule
 $X$ & $\pv$ & small step & RK3 & MIS54 & EB4\\\midrule
-$\rho\theta_\rho$ & $\pi$ & $\varepsilon=0.1$ & 2.3/5.5/22 & 1.8/2.1/7.7 & 3.1/3.1/4.3\\
-$\rho\theta_\rho$ & $p$ & $\varepsilon=0.1$ & 2.4/4.6/27 & 1.8/2.0/3.5 & 3.1/3.1/2.9\\
-$\rho e$ & $\pi$ & $\varepsilon=0.1$ & 2.6/7.1/27 & 2.2/2.3/9.0 & 3.8/3.8/5.0\\
-$\rho e$ & $p$ & $\varepsilon=0.1$ & 2.8/4.7/34 & 2.2/2.2/3.8 & 3.9/3.9/3.4\\\midrule
-$\rho\theta_\rho$ & $\pi$ & $\varepsilon=0$ & 1.4/7.0/24 & 0.9/0.6/9.3 & 1.1/1.1/1.9\\
-$\rho e$ & $\pi$ & $\varepsilon=0$ & 1.8/8.8/29 & 1.1/0.7/9.9 & 1.6/1.6/2.3\\
-$\rho\theta_\rho$ & $\pi$ & $\varepsilon=\gamma_d=0.1$ & 3.5/4.3/19 & 2.7/3.4/6.0 & 3.1/3.1/4.3\\
+$\rho\theta_\rho$ & $\pi$ & Verlet & 1.5/9.8/26 & 0.38/1.1/10 & 0.56/0.54/1.6\\
+$\rho\theta_\rho$ & $p$ & Verlet & 1.4/7.6/29 & 0.38/1.1/4.8 & 0.58/0.55/1.2\\
+$\rho e$ & $\pi$ & Verlet & 1.8/12/31 & 0.42/1.3/10 & 0.60/0.56/1.8\\
+$\rho e$ & $p$ & Verlet & 1.7/9.7/35 & 0.44/1.2/5.4 & 0.63/0.60/1.5\\\midrule
+$\rho\theta_\rho$ & $\pi$ & EI, $\varepsilon=0$ & 1.4/7.0/24 & 0.9/0.6/9.3 & 1.1/1.1/1.9\\
+$\rho\theta_\rho$ & $\pi$ & EI, $\varepsilon=0.1$ & 2.3/5.5/22 & 1.8/2.1/7.7 & 3.1/3.1/4.3\\
 \bottomrule
 \end{tabular}
 \end{table}
 Reference values: $\max|w|=12.52$\,m/s, $\max\theta_e'=2.96$\,K ($\rho\theta_\rho$); 12.58\,m/s, 3.19\,K ($\rho e$).
 Figures~\ref{fig:bubble} and~\ref{fig:bubble_e} show the fields at $\dt=5$\,s.
 \begin{itemize}
-\item \emph{Fast step.} With MIS54 and EB4 the error is 1--9\,mK, about $3\cdot10^{-3}$ of the amplitude of
-$\theta_e'$. The off-centring costs a factor of up to 2 at small $\dt$ (it is first order in $\dtau$); the
-extrapolation $\gamma_d$ changes little. In EB4 every small step is a separate call of the fast integrator
-(the polynomial forcing changes from step to step), so the half steps are not combined and the
-extrapolation is never active; the EB4 rows with and without $\gamma_d$ are identical.
-\item \emph{Slow integrators.} MIS54 and EB4 are equally accurate; EB4 has the flattest $\dt$ dependence.
-RK3 is as accurate as MIS54 at $\dt=2$\,s and three to seven times less accurate at $\dt=10$\,s; its error
-grows like $\dt^2$ between 5 and 10\,s. RK3 is the cheapest method (Section~\ref{sec:slow}): the run
-times at $\dt=10$\,s are in the ratio 1\,:\,1.2\,:\,2.2 for RK3, MIS54 and EB4 (runs in parallel, only
-indicative).
-\item \emph{Thermodynamic variable.} $\rho\theta_\rho$ and $\rho e$ give the same errors within 30\,\% for every
+\item \emph{Fast step.} With the explicit Verlet step the errors of MIS54 and EB4 are 0.4--1.8\,mK up to
+$\dt=5$\,s, $1.5\cdot10^{-4}$--$6\cdot10^{-4}$ of the amplitude of $\theta_e'$, and two to five times smaller than with
+Verlet EI with $\varepsilon=0.1$. EI with $\varepsilon=0$ lies in between (presumably the larger phase error of the
+trapezoidal rule compared with the explicit Verlet step at $c_s\dtau/\Delta z\approx0.75$); the off-centring adds
+a first-order error in $\dtau$. On an isotropic grid the implicit vertical step buys nothing. At $\dt=10$\,s the slow
+error dominates and both fast steps give similar errors.
+\item \emph{Slow integrators.} EB4 is the most accurate and has the flattest $\dt$ dependence
+(0.5--1.8\,mK). MIS54 is as accurate at $\dt\le5$\,s; at $\dt=10$\,s its error grows to 5--10\,mK. RK3 is four to
+ten times less accurate than MIS54 and grows like $\dt^2$ to $\dt^{1.5}$. The run times at $\dt=10$\,s are in the
+ratio 1\,:\,1.25\,:\,1.4 for RK3, MIS54 and EB4 (runs in parallel, only indicative); with the explicit step
+EB4 loses less than with EI, because there are no half steps to combine.
+\item \emph{Thermodynamic variable.} $\rho\theta_\rho$ and $\rho e$ give the same errors within 20\,\% for every
 integrator. The two semi-discrete solutions differ (12.52 against 12.58\,m/s, 2.96 against 3.19\,K in
 $\theta_e'$): the discrete energy form and the Bryan--Fritsch heating are different discretisations. This
 difference is not a time-integration error (each run is compared with RK4 of its own system); which
@@ -619,7 +636,7 @@ relative drift of $\pv$ from the equation of state before the reset is $\le3\cdo
 \end{itemize}
 \begin{figure}[htbp]\centering
 \includegraphics[width=0.92\textwidth]{bubble_thetarho_pi.png}
-\caption{Moist bubble at 1000\,s, $X=\rho\theta_\rho$, $\pv=\pi$, $\tau_{\rm fac}=4$, Verlet EI with $\varepsilon=0.1$,
+\caption{Moist bubble at 1000\,s, $X=\rho\theta_\rho$, $\pv=\pi$, $\tau_{\rm fac}=4$, explicit Verlet step,
 $\dt=5$\,s ($n_{\rm sub}=10$): $\theta_e'$, $w$ and $q_c'$ (deviation from the horizontal mean) for MIS54, RK3 (labelled WSRK3), EB4
 and the RK4 reference. In the saturated environment the bubble carries less condensate than its
 surroundings ($q_c'<0$).}\label{fig:bubble}
@@ -630,27 +647,33 @@ surroundings ($q_c'<0$).}\label{fig:bubble}
 \end{figure}
 
 \subsection{Short relaxation: the limit of the explicit phase change}
-At $\tau_{\rm fac}=0.5$ ($\tau=0.28$\,s, $h\approx0.5$\,s, $h/\tau\approx1.8$, close to the limit of
-Section~\ref{sec:fbstab}), the maximum errors of $\theta_e'$ [mK] at $\dt=2/5/10$\,s are (f: failed):
+With $\tau_{\rm fac}=0.5$ ($\tau=0.28$\,s, $h\approx0.5$\,s, $h/\tau\approx1.8$) the maximum errors of $\theta_e'$ [mK] at
+$\dt=2/5/10$\,s are (f: failed):
 \begin{center}\small
-\begin{tabular}{llccc}\toprule
-$X$ & $\pv$ & RK3 & MIS54 & EB4\\\midrule
-$\rho\theta_\rho$ & $\pi$ & $1.2\cdot10^3$ / f / f & 2.6 / $3\cdot10^4$ / f & 3.7/3.6/6.0\\
-$\rho\theta_\rho$ & $p$ & $1.2\cdot10^3$ / f / f & 2.7 / $3\cdot10^4$ / f & 3.8/3.7/3.0\\
-$\rho e$ & $\pi$ & $6\cdot10^3$ / f / f & 3.1 / $5\cdot10^3$ / f & 4.5/4.4/6.9\\
-$\rho e$ & $p$ & $5\cdot10^3$ / f / f & 3.1 / $5\cdot10^3$ / f & 4.6/4.5/3.5\\\bottomrule
+\begin{tabular}{lllccc}\toprule
+$X$ & $\pv$ & small step & RK3 & MIS54 & EB4\\\midrule
+$\rho\theta_\rho$ & $\pi$ & Verlet & 1.0/9.3/22 & 0.09/0.62/9.6 & 0.12/0.18/2.5\\
+$\rho\theta_\rho$ & $p$ & Verlet & 0.93/5.9/39 & 0.04/0.54/4.6 & 0.08/0.09/1.1\\
+$\rho e$ & $\pi$ & Verlet & 1.3/11/29 & 0.09/0.85/11 & 0.13/0.19/2.8\\
+$\rho e$ & $p$ & Verlet & 1.1/7.5/51 & 0.06/0.64/4.9 & 0.10/0.08/1.4\\\midrule
+$\rho\theta_\rho$ & $\pi$ & EI, $\varepsilon=0.1$ & $1.2\cdot10^3$ / f / f & 2.6 / $3\cdot10^4$ / f & 3.7/3.6/6.0\\
+$\rho e$ & $\pi$ & EI, $\varepsilon=0.1$ & $6\cdot10^3$ / f / f & 3.1 / $5\cdot10^3$ / f & 4.5/4.4/6.9\\\bottomrule
 \end{tabular}
 \end{center}
-(RK4: $\max|w|=13.26$\,m/s for $\rho\theta_\rho$, 13.30 for $\rho e$.) The small step is the same for all $\dt$
-($\dt/n_{\rm sub}=0.50$--0.53\,s), so the failures are not those of the fast step alone. EB4 stays at 3--7\,mK
-up to $\dt=10$\,s; MIS54 fails from $\dt=5$\,s, RK3 is already wrong at $\dt=2$\,s. In EB4 every stage starts
-from $q^n$ with the coefficients of $q^n$. In MIS54 the stage starts from $q^n+\sum\alpha_{ij}(Y_j-q^n)$ with
-coefficients combined with negative weights; in RK3 the stages start from $q^n$ but use the
-coefficients $Q_X$, $Q_\pv$ and the face values of the last stage only, which in the third stage are
-held over the full $\dt$. Both put the fast loop into states further from phase equilibrium, where the
-explicit relaxation at $h/\tau\approx2$ has no margin. (This is an observation, not an analysis.)
-\emph{Recommendation}: $\tau_{\rm fac}\ge1$ with the explicit phase change in the small step, or a
-linearly implicit relaxation (open).
+(RK4: $\max|w|=13.26$\,m/s for $\rho\theta_\rho$, 13.30 for $\rho e$.) With the explicit Verlet step all runs are stable,
+and the errors are even smaller than with $\tau_{\rm fac}=4$ (the solution stays closer to phase equilibrium).
+The explicit Verlet step applies the phase change in two half steps $h/2$, so $h/\tau\approx1.8$ is far from its
+limit 4; Verlet EI applies it once with $h$, and $h/\tau\approx1.8$ is close to its limit 2. There, EB4 still works,
+but MIS54 fails from $\dt=5$\,s and RK3 is wrong already at $\dt=2$\,s: in MIS54 the stages start from
+combinations of the previous stages and use coefficients combined with negative weights, in RK3 the
+third stage holds the coefficients of one stage over the full $\dt$, and both put the fast loop into
+states further from phase equilibrium, where the relaxation has no margin. (This is an observation,
+not an analysis.) At $\tau_{\rm fac}=0.25$ ($h/\tau\approx3.7$) the explicit Verlet step is at its limit as well: all runs
+fail except MIS54 at $\dt=2$\,s, which is wrong by 0.6--1.4\,K.
+
+\emph{Rule}: with the weight $c$ of one evaluation of the phase change ($h/2$ for Verlet, $h$ for EI) the
+explicit relaxation is stable for $c/\tau\le2$, but robust only for $c/\tau\lesssim1$: $\tau_{\rm fac}\gtrsim0.5$ with the
+explicit Verlet step, $\tau_{\rm fac}\gtrsim1$ with Verlet EI; otherwise a linearly implicit relaxation (open).
 
 %======================================================================
 \section{Moist flow over a hill}\label{sec:hill}
@@ -775,7 +798,8 @@ RK3 with $\dt=15$\,s (third row), and the difference of the first two (bottom).}
 force with an off-centred trapezoidal rule for all vertical terms. It is symmetric and of second order
 for $\beta=\tfrac12$, costs one evaluation of each part and one tridiagonal solve per column and small step,
 and is conjugate to the WRF forward--backward step without its first-order defect at the stage
-boundaries.
+boundaries. On isotropic grids the same composition with all terms explicit is the Störmer--Verlet
+step; in the bubble it is two to five times more accurate than Verlet EI with $\varepsilon=0.1$.
 \item With the pressure (or Exner pressure) as an additional variable the fast system is closed in
 $(\rho,\pv,U,W)$. With the vertical-derivative part of the metric term implicit, the column unknown is
 the contravariant flux $\Omega$, with the factor $1+z_x^2$ on the pressure part. The matrix contains the
@@ -787,10 +811,12 @@ every small step. The small step is neutral up to vertical acoustic Courant numb
 source, $\rho\theta_\rho$ is in flux form. The two spatial discretisations differ by 5--9\,\%; a resolution
 study is needed to decide which is closer to the converged solution.
 \item MIS54 and ETD (EB4) agree to 0.5\,\%; EB4 is more robust near the stability limit of the explicit phase
-change, MIS54 is 40\,\% cheaper. RK3 has the cost of MIS54 per step; in the bubble it is three to seven
-times less accurate at large $\dt$, and on the hill it needs damping ($\gamma_d$ or larger $\varepsilon$) at
+change, MIS54 is 40\,\% cheaper. RK3 has the cost of MIS54 per step; in the bubble it is four to ten
+times less accurate, and on the hill it needs damping ($\gamma_d$ or larger $\varepsilon$) at
 $\dt=30$\,s and gives a different cap cloud; at half the step it agrees with MIS54.
-\item The explicit relaxation needs $\dtau/\tau\lesssim2$ in the small step, $\tau_{\rm fac}\ge0.5$, better $\ge1$.
+\item The explicit relaxation is robust for $c/\tau\lesssim1$, $c$ the weight of one evaluation in the small step:
+$\tau_{\rm fac}\ge0.5$ with the explicit Verlet step (two half steps), $\tau_{\rm fac}\ge1$ with Verlet EI (one step $h$); with
+$\tau_{\rm fac}=0.5$ and the explicit Verlet step all slow integrators are stable in the bubble.
 A linearly implicit relaxation (the phase change as part of the implicit step, or a pointwise implicit
 step after the horizontal part) would remove this limit.
 \item Open: steep terrain in the moist model, total energy as $X$, a limiter for the moisture
