@@ -7,14 +7,15 @@
 # Air lifted by the wave saturates: a cloud forms where the displacement is upward.
 #
 #     [PVAR=pi|p] [THVAR=thetarho|energy] [FAST=ei|wrf|hevi] [OFFCENTER=ε] [SMDIV=γ] [RH0=0.95] [H0=400] [DT=30]
-#         [METHOD=MIS54|EB4|LRK4|...] [TAUFAC=0.5] \
+#         [METHOD=MIS54|WSRK3|EB4|...] [TAUFAC=0.5] [METRIC=implicit|explicit] \
 #         julia --project=examples examples/frozen_moist_hill.jl [T] [nx]
 #
 # RH0 = 0: dry run. Periodic channel 40 a, model top 12 km, Rayleigh damping of W above 8 km,
 # nx × 48 cells (default nx = 200, Δx = 2 km, Δη = 250 m). Each column is in discrete hydrostatic
 # balance with its own layer thickness J Δη; the flow starts impulsively. T default 21.6 a/U.
 # THVAR: thermodynamic variable ρθ_ρ (default) or internal energy ρe; FAST: fast integrator (Verlet EI (default), WRF, HEVI)
-# with off-centring OFFCENTER (EI default 0.1) and extrapolation SMDIV; EI needs TAUFAC ≥ 0.5 (default with EI); METHOD: MIS, ETD (EB4, ...) or Lawson (LRK4, ...) tableau.
+# with off-centring OFFCENTER (EI default 0.1) and extrapolation SMDIV; METRIC: vertical-derivative part of the metric term
+# implicit (default, Ω column solve, docs/verlet_ei) or explicit; EI needs TAUFAC ≥ 0.5 (default with EI); METHOD: MIS, ETD (EB4, ...) or Lawson (LRK4, ...) tableau.
 # Output: table (every hour), frozen_moist_hill_<PVAR>_rh<RH0 %>.png (or _dry; w, q_c, RH at T; name OUT),
 # and with SAVE=file the fields w, q_c, RH (for difference plots).
 
@@ -37,6 +38,9 @@ const THVAR = Symbol(get(ENV, "THVAR", "thetarho"))
 const FAST = Symbol(get(ENV, "FAST", "ei"))
 const OFFC = parse(Float64, get(ENV, "OFFCENTER", FAST === :ei ? "0.1" : "0"))   # EI: off-centring 0.1 (docs/moist_verlet)
 const SMDIV = parse(Float64, get(ENV, "SMDIV", "0"))
+const METRIC = Symbol(get(ENV, "METRIC", "implicit"))         # vertical metric term: implicit (Ω column solve) or explicit
+METRIC in (:implicit, :explicit) || error("METRIC: implicit or explicit")
+FV.FV_METRIC_IMPLICIT[] = METRIC === :implicit
 mg = FV.MoistGas(thvar = THVAR)
 gas = Gas(R = mg.Rd, γ = mg.Cpd / (mg.Cpd - mg.Rd), p00 = mg.p0, g = 9.81)
 grid = FV.FVGrid(nx, nz, LX, HTOP; zs = x -> h0 / (1 + ((x - xm) / a)^2))
@@ -122,7 +126,7 @@ dτ = 0.85 * 0.92 * grid.dx / c
 nsub = ceil(Int, DT / dτ)
 tab = TS.mis_tableau(METHOD)
 n = round(Int, T / DT); every = max(1, round(Int, 3600 / DT))
-@printf("%s, Δt = %.0f s, nsub = %d (Δτ = %.2f s), %d steps; thermodynamic variable %s, fast integrator %s (offcenter %.2f, smdiv %.2f)\n", METHOD, DT, nsub, DT / nsub, n, THVAR, FAST, OFFC, SMDIV)
+@printf("%s, Δt = %.0f s, nsub = %d (Δτ = %.2f s), %d steps; thermodynamic variable %s, fast integrator %s (offcenter %.2f, smdiv %.2f), metric term %s\n", METHOD, DT, nsub, DT / nsub, n, THVAR, FAST, OFFC, SMDIV, METRIC)
 x = copy(x0)
 w = TS.FrozenWork(m, length(x), tab); tmp = ntuple(_ -> zeros(length(x)), 4)
 mass0, water0 = tot(x0, (i, k) -> FV.iρ(grid, i, k)), tot(x0, (i, k) -> FV.iV(m, i, k)) + tot(x0, (i, k) -> FV.iC(m, i, k))
