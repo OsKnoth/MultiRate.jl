@@ -377,192 +377,130 @@ L_1a=\begin{pmatrix}P_xz_x\overline{G_\eta\pv}\\-P_zG_\eta\pv-g\bar\rho^{\,\eta}
 Both the transport (the equation for $a$) and the force (the equation for $b$) have an explicit and an
 implicit part. The metric term belongs to $L_1$, and the metric part $-z_x\bar U$ of $\Omega$ to $K_1$.
 
-\subsection{The step}
+\subsection{The small step}
 Verwer \cite{verwer} blends the explicit Störmer--Verlet step (a half step in $a$, a full step in $b$, a
 half step in $a$) with the trapezoidal rule: in the $b$-step the explicit part of the force is taken at
-the midpoint, the implicit part with the trapezoidal rule. This \emph{component splitting} (CS), Verwer's
-scheme (3.1) with $K_0$ explicit (horizontal) and $K_1$ implicit (vertical), is
+the midpoint, the implicit part with the trapezoidal rule. With $K_0$ explicit (horizontal), $K_1$ implicit
+(vertical), the off-centring $\beta=(1+\varepsilon)/2$ of the implicit force and the extrapolation $\gamma_d$ of the horizontal
+pressure force, the small step is
 \begin{align}
-a^{n+1/2}&=a^n+\tfrac h2\big(-K_0b^n-K_1b^n+f_a(a^n)\big),\nonumber\\
-b^{n+1}&=b^n+h\,L_0a^{n+1/2}+\tfrac h2\big(L_1a^n+L_1a^{n+1}\big)+h\,f_b,\label{eq:CS}\\
-a^{n+1}&=a^{n+1/2}+\tfrac h2\big(-K_0b^{n+1}-K_1b^{n+1}+f_a(a^{n+1/2})\big).\nonumber
+a^{n+1/2}&=a^n+\tfrac h2\big(-Kb^n+f_a(a^n)\big),\nonumber\\
+b^{n+1}&=b^n+h\,L_0\tilde a^{n+1/2}+h\big[(1-\beta)L_1a^n+\beta L_1a^{n+1}\big]+h\,f_b,\label{eq:CS}\\
+a^{n+1}&=a^{n+1/2}+\tfrac h2\big(-Kb^{n+1}+f_a(a^{n+1/2})\big),\nonumber
 \end{align}
-The first and the third line are half steps in $a$, the second a full step in $b$. The first line is explicit.
-The last two lines are coupled only through the implicit parts $K_1$ and $L_1$, which contain vertical
-differences only: they form one linear system per column (Section~\ref{sec:Isolve}). The transport and the
-phase change are applied in two half steps, the horizontal pressure force once at the intermediate state
-$a^{n+1/2}$.
+$K=K_0+K_1$, with the extrapolated state
+\begin{equation}
+\tilde a^{n+1/2}=a^{n+1/2}+\gamma_d\big(a^{n+1/2}-a^{n-1/2}\big)\label{eq:extra}
+\end{equation}
+($\tilde a^{1/2}=a^{1/2}$ in the first small step of a stage). For $\varepsilon=\gamma_d=0$ this is Verwer's scheme (3.1), with his
+row-wise split $K_1=S_uK$ replaced by the directional split \eqref{eq:KL}. The first line is explicit; the last two
+are coupled only through $K_1$ and $L_1$, which contain vertical differences only: one linear system per
+column (Section~\ref{sec:Isolve}). With $K_1=L_1=0$ the step is the explicit Störmer--Verlet step (Section~\ref{sec:verletexpl}).
 
-\paragraph{Off-centring.} The off-centring $\beta=(1+\varepsilon)/2$ acts only in the middle line, on the trapezoidal
-rule of the implicit force:
-\[
-b^{n+1}=b^n+h\,L_0a^{n+1/2}+h\big[(1-\beta)L_1a^n+\beta L_1a^{n+1}\big]+h\,f_b .
-\]
-The half steps $\tfrac h2$ in $a$ stay, so $a^{n+1/2}$ remains the midpoint state at which the horizontal pressure force
-is evaluated, and the explicit parts remain Störmer--Verlet. The off-centring damps the vertical modes
-(Linear stability below). Two other placements were considered:
-\begin{itemize}
-\item Off-centring $K_1$ alone in the $a$-equation, $a^{n+1/2}=a^n-\tfrac h2K_0b^n-(1-\beta)hK_1b^n$, is inconsistent in
-practice: in nearly incompressible motion the horizontal and the vertical divergence nearly cancel,
-$K_0b\approx-K_1b$, while each is large, and the state at which the horizontal pressure force is evaluated is
-shifted by $(\beta-\tfrac12)hK_1b$, a pressure error $\sim\tfrac\varepsilon2h\,c_s^2\partial_zw$. The resulting force error
-$\sim\tfrac\varepsilon2h\,c_s^2\partial_x\partial_zw$ is $O(\varepsilon)$ at a fixed acoustic Courant number. In the moist bubble it reduced
-$\max|w|$ after 200\,s from 5.83 to 5.39\,m/s at $\varepsilon=0.1$, an error 1500 times that of $\varepsilon=0$.
-\item Off-centring all three lines, the half steps in $a$ replaced by $(1-\beta)h$ and $\beta h$ for the whole transport
-and the phase change, is consistent (bubble error $2.6\cdot10^{-4}$\,K after 200\,s, five times that of $\varepsilon=0$),
-damps more and allows steeper slopes, but the explicit horizontal parts become of first order. This is the
-off-centring of Verlet EI (Section~\ref{sec:conj}).
-\end{itemize}
-In the $b$-equation the vertical pressure force and gravity (both in $L_1$) cancel each other in hydrostatic
-balance, so off-centring $L_1$ alone is consistent.
-Special cases:
-\begin{itemize}
-\item $K_1=L_1=0$: the explicit Störmer--Verlet (position Verlet) step \cite{verlet,hlw}, Verwer's scheme
-(2.1); used on isotropic grids (Section~\ref{sec:verletexpl}).
-\item $K_0=L_0=0$, $f=0$: the trapezoidal rule (with off-centring the $\beta$-method).
-\item Verwer's row-wise split $K_1=S_uK$ is replaced by the directional split \eqref{eq:KL}.
-\end{itemize}
+\paragraph{The forward--backward form.} The third line of step $n$ and the first line of step $n+1$ are half
+steps in $a$ with the same momentum $b^{n+1}$. Combined, the small steps of a stage take the forward--backward form
+of WRF and MPAS \cite{ksd,wrf} with $a$ on half levels:
+\begin{align*}
+a^{1/2}&=a^0+\tfrac h2\big(-Kb^0+f_a(a^0)\big),\\
+b^{n+1}&=b^n+h\,L_0\tilde a^{n+1/2}+h\big[(1-\beta)L_1a^n+\beta L_1a^{n+1}\big]+h\,f_b&&\text{(forward in $b$)},\\
+a^{n+3/2}&=a^{n+1/2}-h\,Kb^{n+1}+\tfrac h2\big(f_a(a^{n+1/2})+f_a(a^{n+1})\big)&&\text{(backward in $a$)},\quad n=0,\dots,N-2,\\
+a^N&=a^{N-1/2}+\tfrac h2\big(-Kb^N+f_a(a^{N-1/2})\big),
+\end{align*}
+where $a^{n+1}=a^{n+1/2}-\tfrac h2Kb^{n+1}+\tfrac h2f_a(a^{n+1/2})$ is the full-level state that enters the column system and the
+phase change. Only the first and the last step are half steps; $a$ and $b$ start and end the stage at the same
+time level. The increment $a^{n+1/2}-a^{n-1/2}$ in \eqref{eq:extra} is the backward step of the previous small step.
+
+\paragraph{Where the off-centring and the extrapolation act.} Both act only in the middle line, on the force.
+The half steps in $a$ stay symmetric, so that $a^{n+1/2}$ is the midpoint. This matters: in nearly incompressible
+motion the horizontal and the vertical divergence nearly cancel, $K_0b\approx-K_1b$, while each is large;
+off-centring $K_1$ alone shifts the state of the horizontal pressure force by $(\beta-\tfrac12)hK_1b$, an error
+$\sim\tfrac\varepsilon2h\,c_s^2\partial_x\partial_zw$ in the horizontal force that is $O(\varepsilon)$ at a fixed acoustic Courant number (in the
+moist bubble $\max|w|$ after 200\,s dropped from 5.83 to 5.39\,m/s at $\varepsilon=0.1$). In the $b$-equation the vertical
+pressure force and gravity, both in $L_1$, balance each other, so off-centring $L_1$ is consistent. Since
+$a^{n+1/2}-a^{n-1/2}\approx-hKb$, the extrapolation adds the divergence damping $-\gamma_dh\,L_0Kb$
+\cite{sk92,ksd,baldauf}, of the size $\gamma_dh\,c_s^2\nabla_h(\nabla\cdot\mathbf v)$, to the horizontal momentum.
+
+\paragraph{Cost.} One small step needs one evaluation of the transport $K$, one of the horizontal pressure force,
+one column solve and the phase change at $a^{n+1/2}$ and at $a^{n+1}$, each with the weight $h/2$.
 
 \subsection{Properties}
 \begin{proposition}\label{prop:sym}
-Let $f_a=0$. The step \eqref{eq:CS} is symmetric and therefore of second order. With off-centring
-($\beta\ne\tfrac12$) it is of first order.
+Let $f_a=0$ and $\varepsilon=\gamma_d=0$. The step \eqref{eq:CS} is symmetric and therefore of second order. The
+off-centring and the extrapolation add errors of first order, $(\beta-\tfrac12)h^2L_1(a^{n+1}-a^n)/h$ and $\gamma_dh^2L_0Kb$ per step.
 \end{proposition}
 \begin{proof}
-Let $\Phi_c$ be the first-order step $a^+=a-c\,Kb^+$, $b^+=b+c(L_0a+L_1a^+)+cf_b$ (explicit in $a$
-for $L_0$, implicit for $L_1$) and $\Phi_c^*=\Phi_{-c}^{-1}$ its adjoint, $a^+=a-c\,Kb$,
-$b^+=b+c(L_0a^++L_1a)+cf_b$. Then $\Phi_{h/2}\circ\Phi_{h/2}^*$ is \eqref{eq:CS} (Verwer
+Let $\Phi_c$ be the first-order step $a^+=a-c\,Kb^+$, $b^+=b+c(L_0a+L_1a^+)+cf_b$ and $\Phi_c^*=\Phi_{-c}^{-1}$ its
+adjoint, $a^+=a-c\,Kb$, $b^+=b+c(L_0a^++L_1a)+cf_b$. Then $\Phi_{h/2}\circ\Phi_{h/2}^*$ is \eqref{eq:CS} (Verwer
 \cite{verwer}, (5.1)--(5.2)): $\Phi^*_{h/2}$ gives $a^{n+1/2}$ and adds $\tfrac h2(L_0a^{n+1/2}+L_1a^n)$ to $b$, and
 $\Phi_{h/2}$ adds $\tfrac h2(L_0a^{n+1/2}+L_1a^{n+1})$ and gives $a^{n+1}$. A composition $\Phi_{h/2}\circ\Phi^*_{h/2}$ is
-symmetric, and a consistent symmetric one-step method has even order \cite[Thm.~II.3.2]{hlw}. For
-$\beta\ne\tfrac12$ the local error contains $(\beta-\tfrac12)h^2$ times the derivative of the transport and of $L_1a$.
+symmetric, and a consistent symmetric one-step method has even order \cite[Thm.~II.3.2]{hlw}.
 \end{proof}
-With $f_a\ne0$ the phase change is integrated by two explicit Euler half steps, $f_a(a^n)$ with $(1-\beta)h$ and
-$f_a(a^{n+1/2})$ with $\beta h$; this part is of first order in $\dtau$ and stable for $\beta h/\tau\le2$
-(Section~\ref{sec:fbstab}).
-
-Verwer proves that the component splitting keeps its second order under the simultaneous refinement
-$\dtau\sim\Delta x\to0$ \cite[Sect.~3.2]{verwer}: the splitting makes the local error spatially inconsistent
-by one power of $1/\Delta x$, but this part of the local error cancels in the global error. For his
-row-wise split $K_1=S_uK$ the quantity $\|a\|^2+\|b\|^2-\tfrac14h^2\langle Kb,K_0b\rangle$ is conserved. The
-directional split \eqref{eq:KL} has no such invariant ($K_0^{\rm T}K$ is not symmetric), and the
-stability follows from a Fourier analysis.
+The phase change is integrated by explicit Euler half steps $h/2$; this part is of first order in $\dtau$ and
+stable for $h/(2\tau)\le2$ (Section~\ref{sec:fbstab}). Verwer proves that the component splitting keeps its second
+order under the simultaneous refinement $\dtau\sim\Delta x\to0$ \cite[Sect.~3.2]{verwer}: the splitting makes the local
+error spatially inconsistent by one power of $1/\Delta x$, but this part cancels in the global error. His
+row-wise split conserves $\|a\|^2+\|b\|^2-\tfrac14h^2\langle Kb,K_0b\rangle$; the directional split \eqref{eq:KL} has no such
+invariant ($K_0^{\rm T}K$ is not symmetric), and the stability follows from a Fourier analysis.
 
 \paragraph{Linear stability.} For the acoustic model $\pv'=-\mathrm ic_s(k_xU+k_zW)$, $U'=-\mathrm ic_sk_x\pv$,
-$W'=-\mathrm ic_sk_z\pv$ on a flat grid let $a_x=c_sk_xh$, $a_z=c_sk_zh$. Without off-centring the amplification
-factors $\lambda$ of the non-trivial modes satisfy \cite{verletei}
+$W'=-\mathrm ic_sk_z\pv$ on a flat grid let $a_x=c_sk_xh$, $a_z=c_sk_zh$. For $\varepsilon=\gamma_d=0$ the amplification factors of
+the non-trivial modes satisfy \cite{verletei}
 \[
 (\lambda-1)^2+a_x^2\lambda+a_z^2\Big(\frac{1+\lambda}2\Big)^2=0 :
 \]
-horizontally ($a_z=0$) the step is stable for $a_x\le2$ (the Störmer--Verlet limit), vertically ($a_x=0$) for every
-$a_z$, and it is neutral, $|\lambda|=1$. With the off-centring in the middle line the product of the two
-amplification factors of a vertical mode ($a_x=0$) is
+stable for $a_x\le2$ (the Störmer--Verlet limit) and every $a_z$, and neutral, $|\lambda|=1$.
+\begin{itemize}
+\item \emph{Vertical modes} ($a_x=0$), damped by the off-centring:
 \[
-\lambda_1\lambda_2=\frac{1+\tfrac12a_z^2+\beta(1-\beta)\tfrac14a_z^4}{1+\beta a_z^2+\beta^2\tfrac14a_z^4}\ \longrightarrow\ \frac{1-\beta}\beta\quad(a_z\to\infty),
+\lambda_1\lambda_2=\frac{1+\tfrac12a_z^2+\beta(1-\beta)\tfrac14a_z^4}{1+\beta a_z^2+\beta^2\tfrac14a_z^4}\ \longrightarrow\ \frac{1-\beta}\beta\quad(a_z\to\infty).
 \]
-which is $<1$ for $\beta>\tfrac12$. For $\varepsilon=0.1$, $|\lambda|=0.98$, $0.91$ and $0.90$ per small step at $a_z=1$, 6 and $\to\infty$ (at
-large $a_z$ the two factors become real, e.g.\ $0.84$ and $0.97$ at $a_z=60$). With the off-centring in all three lines
-$|\lambda|^2=(1+(1-\beta)^2a_z^2)/(1+\beta^2a_z^2)\to((1-\beta)/\beta)^2$, $|\lambda|\to0.82$. On a terrain-following grid with constant slope $z_x$ the explicit horizontal and the
-implicit vertical parts are coupled through the metric terms ($z_xk_xk_z$). The exact Fourier analysis
-of \eqref{eq:CS} (constant slope, all wave numbers of a staggered grid) gives the largest stable slope
-\begin{center}\small
-\begin{tabular}{ccccccc}\toprule
-& \multicolumn{3}{c}{$c_s\dtau/\Delta x=0.5$} & \multicolumn{3}{c}{$c_s\dtau/\Delta x=0.75$}\\
-& & \multicolumn{2}{c}{$\varepsilon=0.1$} & & \multicolumn{2}{c}{$\varepsilon=0.1$}\\
-$c_s\dtau/\Delta z$ & $\varepsilon=0$ & middle & all & $\varepsilon=0$ & middle & all\\\midrule
-6 & 0.25 & 0.25 & 0.25 & 0.095 & 0.095 & 0.16\\
-60 & 0.025 & 0.025 & 0.37 & 0.005 & 0.005 & 0.18\\\bottomrule
-\end{tabular}
-\end{center}
-(``middle'': off-centring in the middle line only; ``all'': in all three lines.) Without off-centring the slope is
-limited by $c_s\dtau|z_x|/\Delta z\lesssim0.3$--$1.5$. The off-centring in the middle line damps the vertical modes but
-does not change this limit: the instability comes from the coupling of the explicit horizontal and the
-implicit vertical transport through the metric terms, which the middle line does not touch. Only the
-off-centring of the whole transport removes the dependence on the vertical Courant number. For the mountain wave of
-Section~\ref{sec:hill} ($c_s\dtau/\Delta z\approx6$, $|z_x|\le0.026$) both are stable. The extrapolation
-$\gamma_d>0$ damps the horizontally propagating modes \cite{ws,baldauf}.
-
-\subsection{Combined half steps: the forward--backward form and divergence damping}\label{sec:fb}
-The third line of step $n$ and the first line of step $n+1$ are both half steps in $a$ with the same
-momentum $b^{n+1}$. Combined, they give a full step from $a^{n+1/2}$ to $a^{n+3/2}$, and the inner steps of a stage
-take the forward--backward form of WRF and MPAS \cite{ksd,wrf} with $a$ on the half levels:
-\begin{align*}
-b^{n+1}&=b^n+h\,L_0\tilde a^{n+1/2}+h\big[(1-\beta)L_1a^n+\beta L_1a^{n+1}\big]+h\,f_b
-&&\text{(forward in $b$)},\\
-a^{n+3/2}&=a^{n+1/2}-h\,K\,b^{n+1}+\tfrac h2\big(f_a(a^{n+1/2})+f_a(a^{n+1})\big)&&\text{(backward in $a$)},
-\end{align*}
-with $a^{n+1}=a^{n+1/2}-\tfrac h2Kb^{n+1}+\tfrac h2f_a(a^{n+1/2})$ the full-level state of the column system. Only the first and
-the last small step of a stage are half steps in $a$; therefore $a$ and $b$ start and end a stage at the same
-time level, and the step stays symmetric (the WRF step differs by this change of variables at the stage
-boundaries, Section~\ref{sec:conj}).
-
-\paragraph{Extrapolation.} As in the forward--backward step of WRF and MPAS, the horizontal pressure force can be
-evaluated at the extrapolated state
+For $\varepsilon=0.1$, $|\lambda|=0.98$, $0.91$ and $0.90$ per small step at $a_z=1$, 6 and $\to\infty$ (at large $a_z$ the two factors
+become real, e.g.\ $0.84$ and $0.97$ at $a_z=60$).
+\item \emph{Horizontal modes} ($a_z=0$), damped by the extrapolation (three-level recursion in the
+forward--backward form):
 \[
-\tilde a^{n+1/2}=a^{n+1/2}+\gamma_d\big(a^{n+1/2}-a^{n-1/2}\big),
+\lambda^2+\big(a_x^2(1+\gamma_d)-2\big)\lambda+1-\gamma_da_x^2=0,\qquad|\lambda|^2=1-\gamma_da_x^2,
 \]
-where $a^{n+1/2}-a^{n-1/2}$ is the increment of the third line of step $n-1$ and the first line of step $n$ (in the
-first small step of a stage $\tilde a^{1/2}=a^{1/2}$). Only $L_0$ sees $\tilde a$; the implicit vertical part and the transport
-are not changed. Since $a^{n+1/2}-a^{n-1/2}\approx-hKb$, this is the divergence damping
-$-\gamma_dh\,L_0Kb$ \cite{sk92,ksd,baldauf}, of the size $\gamma_dh\,c_s^2\nabla_h(\nabla\cdot\mathbf v)$. For the horizontal acoustic mode
-($a_z=0$) the amplification factors satisfy
-\[
-\lambda^2+\big(a_x^2(1+\gamma_d)-2\big)\lambda+1-\gamma_da_x^2=0,\qquad |\lambda|^2=1-\gamma_da_x^2 ,
-\]
-stable for $a_x^2<4/(1+2\gamma_d)$ ($a_x<1.82$ for $\gamma_d=0.1$; checked against the eigenvalues of the three-level
-recursion). The damping is selective: for $\gamma_d=0.1$ the shortest horizontal mode at $c_s\dtau/\Delta x=0.75$ ($a_x=1.5$) is
-damped by 0.88 per small step, $a_x=0.5$ by 0.99, long modes by $1-O(\gamma_dk_x^2)$. It is of first order in $h$
-($\gamma_d h^2L_0K b$ per step), as in WRF. The off-centring in the middle line damps the vertical modes, the
-extrapolation the horizontal ones.
-
-\paragraph{Cost and the phase change.} In the combined form one small step needs one evaluation of the
-transport, one of the horizontal pressure force, one column solve and the phase change at $a^{n+1/2}$ and at
-$a^{n+1}$. Replacing $f_a(a^{n+1})$ by $f_a(a^{n+1/2})$ saves the second phase-change evaluation, but then the phase
-change acts once with the weight $h$ and its stability limit halves (Section~\ref{sec:fbstab}); this is what
-Verlet EI does.
+stable for $a_x^2<4/(1+2\gamma_d)$ ($a_x<1.82$ for $\gamma_d=0.1$). For $\gamma_d=0.1$ the shortest mode at $c_s\dtau/\Delta x=0.75$
+($a_x=1.5$) is damped by 0.88 per small step, $a_x=0.5$ by 0.99, long modes by $1-O(\gamma_dk_x^2)$.
+\end{itemize}
+\emph{Terrain.} With a constant slope $z_x$ the explicit horizontal and the implicit vertical transport are coupled
+through the metric terms ($z_xk_xk_z$). The exact Fourier analysis of \eqref{eq:CS} (all wave numbers of a staggered
+grid, $\gamma_d=0$) gives the largest stable slope $|z_x|=0.25$ and $0.025$ at $c_s\dtau/\Delta x=0.5$ and $c_s\dtau/\Delta z=6$ and 60,
+$0.095$ and $0.005$ at $c_s\dtau/\Delta x=0.75$, i.e.\ $c_s\dtau|z_x|/\Delta z\lesssim0.3$--$1.5$, for $\varepsilon=0$ and $\varepsilon=0.1$ alike: the off-centring
+in the middle line does not touch the coupling of the two transports. The mountain wave of
+Section~\ref{sec:hill} ($c_s\dtau/\Delta z\approx6$, $|z_x|\le0.026$, $c_s\dtau|z_x|/\Delta z\approx0.16$) is within this limit; steep terrain is not.
 
 \subsection{The implicit part: one column system}\label{sec:Isolve}
-Write the last two lines of \eqref{eq:CS}, with the off-centring in the middle line ($\beta=\tfrac12$ without), as
+Write the last two lines of \eqref{eq:CS} as
 \[
 b^{n+1}=R_b+\beta h\,L_1a^{n+1},\qquad a^{n+1}=R_a-\tfrac h2\,K_1b^{n+1},
 \]
-with $R_b=b^n+hL_0a^{n+1/2}+(1-\beta)hL_1a^n+hf_b$ and $R_a=a^{n+1/2}-\tfrac h2K_0b^{n+1}+\tfrac h2f_a(a^{n+1/2})$.
+with $R_b=b^n+hL_0\tilde a^{n+1/2}+(1-\beta)hL_1a^n+hf_b$ and $R_a=a^{n+1/2}-\tfrac h2K_0b^{n+1}+\tfrac h2f_a(a^{n+1/2})$.
 Eliminating $a^{n+1}$ gives Verwer's system (his (3.4)--(3.5))
 \[
 \big(I+\tfrac h2\,\beta h\,L_1K_1\big)\,b^{n+1}=R_b+\beta h\,L_1R_a .
 \]
 In the column system of Section~\ref{sec:apply} the weight $c$ of the cell-centred rows is $\tfrac h2$ and that of the
-momentum rows is $\beta h$ (both $\beta h$ with the off-centring in all three lines).
+momentum rows is $\beta h$.
 $L_1K_1$ is the vertical pressure force of the vertical divergence: a second difference in each
-column. On a flat grid $U^{n+1}=U^n+hL_0a^{n+1/2}+hf_U$ is explicit, $R_a$ is known, and the system is
+column. On a flat grid $U^{n+1}=U^n+hL_0\tilde a^{n+1/2}+hf_U$ is explicit, $R_a$ is known, and the system is
 one tridiagonal system per column for $W$ (Section~\ref{sec:apply}). With terrain $U^{n+1}$ contains the
 implicit metric term $\beta hP_xz_x\overline{G_\eta\pv^{n+1}}$, and $K_0b^{n+1}$ couples the columns. We evaluate the
-horizontal mass flux in $R_a$ with the predictor $\hat U=U^n+hL_0a^{n+1/2}+hf_U+\beta h\,P_xz_x\overline{G_\eta\pv^{n+1/2}}$ at the
+horizontal mass flux in $R_a$ with the predictor $\hat U=U^n+hL_0\tilde a^{n+1/2}+hf_U+\beta h\,P_xz_x\overline{G_\eta\pv^{n+1/2}}$ at the
 current pressure; the difference to the exact implicit step is $O(h\,\Delta\pv)$ per small step and does
 not change the order. The column unknown is $\Omega$, and the matrix is kept column-local by using $1+z_x^2$
 of the own column (approximate Jacobian; the residual is exact) \cite{verletei}. The phase change is in
 $R_a$ and therefore explicit.
 
 \subsection{Relation to Verlet EI and to the WRF step}\label{sec:conj}
-Verlet EI \cite{imex,verletei} partitions differently, $\tilde a=(\rho,X,V,C,\pv,W)$ and $\tilde b=U$: with $H$ all fast
-terms except the horizontal pressure force, $E_c\fs=\fs+cH(\fs)$, $I_c$ the implicit Euler step of $H$ and the
-kick $K_h$ of $U$, it is $\text{EI}_h=I_{\beta h}\circ K_h\circ E_{(1-\beta)h}$. Without combined half steps it coincides
-with \eqref{eq:CS} off-centred in all three lines: $E_{(1-\beta)h}$ is its first line together with the force $(1-\beta)hL_1a^n$ on $W$,
-and $I_{\beta h}$ is the column system. The two-variable form makes visible what is explicit and what is
-implicit in each equation, and why the off-centring has to act on the whole transport. The difference
-lies in the treatment of consecutive steps:
-\begin{itemize}
-\item EI combines the half steps of consecutive small steps: $E$ and $I$ are functions of the same affine
-$H$, the explicit half step of the next small step is $\tfrac{1-\beta}\beta$ times the increment of $I$ and needs no
-evaluation. This saves one evaluation of the explicit $a$-part per small step, but for the nonlinear
-phase change it replaces $f_a(a^{n+1})$ by $f_a(a^{n+1/2})$: the phase change is applied once per small step
-with the weight $h$, which halves its stability limit (Section~\ref{sec:fbstab}). CS evaluates both half
-steps.
-\end{itemize}
-The cost of CS per small step is two evaluations of the explicit $a$-part (horizontal transport, phase
-change), one of the horizontal pressure force, one of the vertical part and one column solve.
-The WRF forward--backward step is $\text{WRF}_h=E_{(1-\beta)h}\,\text{EI}_h\,E_{(1-\beta)h}^{-1}$: same eigenvalues, but
-only of first order through the stage boundaries \cite{verletei}.
+Verlet EI \cite{imex,verletei} partitions $\tilde a=(\rho,X,V,C,\pv,W)$, $\tilde b=U$ and integrates all fast terms except the
+horizontal pressure force with an explicit and an implicit Euler step around the kick of $U$,
+$\text{EI}_h=I_{\beta h}\circ K_h\circ E_{(1-\beta)h}$. For linear fast parts and $\varepsilon=0$ it coincides with \eqref{eq:CS}; it
+off-centres the whole transport (both half steps in $a$ with $(1-\beta)h$ and $\beta h$) and applies the phase change
+once per small step with the weight $h$. The WRF forward--backward step has the form of the inner steps above
+but starts and ends a stage without the half steps; it is conjugate to Verlet EI,
+$\text{WRF}_h=E_{(1-\beta)h}\,\text{EI}_h\,E_{(1-\beta)h}^{-1}$, and only of first order through the stage boundaries \cite{verletei}.
 
 %======================================================================
 \section{Application to the moist system}\label{sec:apply}
@@ -571,12 +509,12 @@ With $a=(\rho,X,V,C,\pv)$ and $b=(U,W)$:
 \begin{center}\small
 \begin{tabular}{llll}\toprule
 part & rows & terms & treatment\\\midrule
-$K_0$ & $a$ & $\delta_x(\phi_fJ_xU)$ & explicit, half steps $(1-\beta)h$, $\beta h$ at $b^n$, $b^{n+1}$\\
-$K_1$ & $a$ & $\delta_\eta(\phi_f\,\Omega)$, $\Omega=W-z_x\bar U$ & implicit, same weights\\
-$f_a$ & $a$ & $Q_\phi S_c$, $r_\phi$ & explicit, half steps at $a^n$, $a^{n+1/2}$\\
-$L_0$ & $U$ & $P_x\,G_x\pv$ & explicit, at $a^{n+1/2}$\\
-$L_1$ & $U$ & $P_xz_x\overline{G_\eta\pv}$ (metric term) & implicit\\
-$L_1$ & $W$ & $-P_zG_\eta\pv-g\bar\rho$ & implicit\\
+$K_0$ & $a$ & $\delta_x(\phi_fJ_xU)$ & explicit, half steps $h/2$ at $b^n$, $b^{n+1}$\\
+$K_1$ & $a$ & $\delta_\eta(\phi_f\,\Omega)$, $\Omega=W-z_x\bar U$ & implicit, half steps $h/2$\\
+$f_a$ & $a$ & $Q_\phi S_c$, $r_\phi$ & explicit, half steps $h/2$ at $a^n$, $a^{n+1/2}$\\
+$L_0$ & $U$ & $P_x\,G_x\pv$ & explicit, at the extrapolated $\tilde a^{n+1/2}$\\
+$L_1$ & $U$ & $P_xz_x\overline{G_\eta\pv}$ (metric term) & implicit, off-centred $\beta$\\
+$L_1$ & $W$ & $-P_zG_\eta\pv-g\bar\rho$ & implicit, off-centred $\beta$\\
 $f_b$ & $U$, $W$ & $r_U$, $r_W$, $-\alpha_{\rm sp}W$ & explicit\\\bottomrule
 \end{tabular}
 \end{center}
@@ -591,7 +529,7 @@ acoustic limit, far above the gravity-wave limit $N\dtau\le2$.
 \begin{center}\small
 \begin{tabular}{lll}\toprule
 term & treatment & limit on $\dtau$\\\midrule
-horizontal pressure force $P_xG_x\pv$ & explicit (midpoint) & $c_s\dtau/\Delta x\lesssim1$\\
+horizontal pressure force $P_xG_x\pv$ & explicit (midpoint, extrapolated) & $c_s\dtau/\Delta x\lesssim1$\\
 horizontal divergence in $\rho,X,V,C,\pv$ & explicit (two half steps) & \\
 vertical divergence ($\Omega$) in $\rho,X,V,C,\pv$ & implicit & none\\
 vertical pressure force, metric term & implicit & slope, Section~\ref{sec:ei}\\
@@ -647,35 +585,31 @@ the thermodynamic variable only through $\kappa$}: the solver is the same for $\
 $\pi$ and $p$, dry and moist. On a flat grid $m_k=1$, $\Omega=W$, and $U$ is not changed by the implicit step.
 
 \subsection{The phase change in the small step}\label{sec:fbstab}
-$S_c$ is part of $f_a$ and is applied in two explicit Euler half steps per small step, with $(1-\beta)h$ at $a^n$
-and $\beta h$ at $a^{n+1/2}$. For the relaxation alone, $y'=-y/\tau$, each half step is stable for $\beta h/\tau\le2$. With
+$S_c$ is part of $f_a$ and is applied in two explicit Euler half steps $h/2$ per small step, at $a^n$ and at $a^{n+1/2}$
+(in the forward--backward form at $a^{n+1/2}$ and $a^{n+1}$). For the relaxation alone, $y'=-y/\tau$, each half step is
+stable for $h/(2\tau)\le2$. With
 $\tau=\tau_{\rm fac}\dtau_{\rm ac}$ and $h\approx\dtau_{\rm ac}$ the explicit phase change needs $\tau_{\rm fac}\gtrsim0.25$; robust is
 $h/(2\tau)\lesssim1$, $\tau_{\rm fac}\gtrsim0.5$ (Section~\ref{sec:bubble}). Verlet EI with combined half steps applies the
 phase change once with the weight $h$ and needs twice the relaxation time (Section~\ref{sec:conj}).
 
 \subsection{Check: one small step is neutral}
-The matrix of one CS small step of the frozen fast operator (no phase change, no forcing) was built
-column by column for a flat, stably stratified moist state at rest (relative humidity 80\,\%, discretely
+The matrix of one small step \eqref{eq:CS} of the frozen fast operator with $\varepsilon=\gamma_d=0$ (no phase change, no forcing)
+was built column by column for a flat, stably stratified moist state at rest (relative humidity 80\,\%, discretely
 balanced, $8\times12$ cells, $\Delta x=2$\,km, $\dtau=4.47$\,s, horizontal acoustic Courant number 0.78), and
 its spectral radius $\varrho$ computed. $\varrho-1$:
 \begin{center}\small
-\begin{tabular}{llcccc}\toprule
-& & \multicolumn{2}{c}{$X=\rho\theta_\rho$} & \multicolumn{2}{c}{$X=\rho e$}\\
-case & step & $\pi$ & $p$ & $\pi$ & $p$\\\midrule
-$\Delta z=250$\,m, $N=0.01$\,s$^{-1}$ & $\varepsilon=0$ & $2\cdot10^{-10}$ & $1\cdot10^{-10}$ & $2\cdot10^{-10}$ & $1\cdot10^{-10}$\\
-($c_s\dtau/\Delta z=6$) & $\varepsilon=0.1$ & $4\cdot10^{-13}$ & $1\cdot10^{-13}$ & $3\cdot10^{-13}$ & $3\cdot10^{-13}$\\
-\midrule
-$\Delta z=25$\,m, $N=0.01$\,s$^{-1}$ & $\varepsilon=0$ & $2\cdot10^{-9}$ & $8\cdot10^{-10}$ & $2\cdot10^{-9}$ & $1\cdot10^{-9}$\\
-($c_s\dtau/\Delta z=61$) & $\varepsilon=0.1$ & $3\cdot10^{-13}$ & $3\cdot10^{-13}$ & $5\cdot10^{-13}$ & $6\cdot10^{-13}$\\\midrule
-$\Delta z=250$\,m, $N=0.03$\,s$^{-1}$ & $\varepsilon=0$ & $2\cdot10^{-10}$ & $1\cdot10^{-10}$ & $2\cdot10^{-10}$ & $8\cdot10^{-11}$\\
-& $\varepsilon=0.1$ & $6\cdot10^{-13}$ & $3\cdot10^{-13}$ & $4\cdot10^{-13}$ & $2\cdot10^{-13}$\\\bottomrule
+\begin{tabular}{lcccc}\toprule
+& \multicolumn{2}{c}{$X=\rho\theta_\rho$} & \multicolumn{2}{c}{$X=\rho e$}\\
+case & $\pi$ & $p$ & $\pi$ & $p$\\\midrule
+$\Delta z=250$\,m, $N=0.01$\,s$^{-1}$ ($c_s\dtau/\Delta z=6$) & $2\cdot10^{-10}$ & $1\cdot10^{-10}$ & $2\cdot10^{-10}$ & $1\cdot10^{-10}$\\
+$\Delta z=25$\,m, $N=0.01$\,s$^{-1}$ ($c_s\dtau/\Delta z=61$) & $2\cdot10^{-9}$ & $8\cdot10^{-10}$ & $2\cdot10^{-9}$ & $1\cdot10^{-9}$\\
+$\Delta z=250$\,m, $N=0.03$\,s$^{-1}$ & $2\cdot10^{-10}$ & $1\cdot10^{-10}$ & $2\cdot10^{-10}$ & $8\cdot10^{-11}$\\\bottomrule
 \end{tabular}
 \end{center}
 (The matrix is a difference quotient; values of $10^{-9}$ are its accuracy.) The step is neutral within
 this accuracy for both thermodynamic and both pressure variables, up to the vertical acoustic Courant
-number 61 and for three times the stratification. With $\varepsilon=0.1$ the spectral radius stays 1 because
-of the modes without vertical structure, which the off-centring does not damp. For $\varepsilon=0$ the values
-agree with those of Verlet EI to all digits (the two steps coincide for linear fast parts).
+number 61 and for three times the stratification. The damping by $\varepsilon$ and $\gamma_d$ is given by the Fourier
+analysis in Section~\ref{sec:ei}.
 
 %======================================================================
 \section{Slow integrators}\label{sec:slow}
@@ -727,8 +661,8 @@ of radius 2\,km centred 2\,km above the ground, $T=1000$\,s. The columns are in 
 balance (residual at rest $\le7\cdot10^{-13}$). The initial state is built with $\rho\theta_\rho$ and converted
 cell by cell to $\rho e$ at the same $(\rho,T,\rho_v,\rho_c)$. The reference is RK4 for the same
 semi-discrete system with a step that resolves the acoustic waves and $\tau$. The grid is isotropic, so
-the fast integrator is the explicit Störmer--Verlet step of Section~\ref{sec:verletexpl}; Verlet EI is
-included for comparison (Verlet EI is \eqref{eq:CS} with combined half steps, Section~\ref{sec:conj}). $n_{\rm sub}=\lceil\dt/\dtau_{\rm ac}\rceil$, i.e.\ $n_{\rm sub}=4/10/19$ for $\dt=2/5/10$\,s
+the fast integrator is the explicit Störmer--Verlet step of Section~\ref{sec:verletexpl}, i.e.\ \eqref{eq:CS} with $K_1=L_1=0$; Verlet EI is
+included for comparison (Section~\ref{sec:conj}). $n_{\rm sub}=\lceil\dt/\dtau_{\rm ac}\rceil$, i.e.\ $n_{\rm sub}=4/10/19$ for $\dt=2/5/10$\,s
 ($c_s\dtau/\Delta x\approx0.75$ in both directions).
 
 \subsection{Resolved relaxation}
@@ -820,7 +754,7 @@ relative humidity $RH_0=0.85$ below 7\,km, decreasing to 20\,\% at 9\,km; period
 model top 12\,km, Rayleigh damping of $W$ above 8\,km; terrain-following grid with $200\times48$ cells
 ($\Delta x=2$\,km, $\Delta\eta=250$\,m, $\max|z_x|=0.026$); every column in discrete hydrostatic balance with its own
 $J\Delta\eta$; impulsive start; $T=6$\,h. $\dt=30$\,s, $n_{\rm sub}=7$ ($\dtau=4.29$\,s, vertical acoustic Courant
-number $c_s\dtau/\Delta z\approx6$), Verlet EI (CS with combined half steps, Section~\ref{sec:conj}) with $\varepsilon=0.1$, implicit metric term (column system for
+number $c_s\dtau/\Delta z\approx6$), Verlet EI (Section~\ref{sec:conj}; the runs with the small step \eqref{eq:CS} are still to be done) with $\varepsilon=0.1$, implicit metric term (column system for
 $\Omega$), $\tau_{\rm fac}=0.5$ ($\tau=2.2$\,s, $h/\tau=1.9$). With $\tau_{\rm fac}=0.25$ ($h/\tau=3.8$) the run breaks down after
 40--50\,min, with $\tau_{\rm fac}=0.3$ the solution is wrong; between $\tau_{\rm fac}=0.4$ and 2 the solution after 1.5\,h changes by
 less than 2\,\% in $\max|w|$ and 8\,\% in $\max q_c$ (Section~\ref{sec:fbstab}).
@@ -930,14 +864,14 @@ RK3 with $\dt=15$\,s (third row), and the difference of the first two (bottom).}
 %======================================================================
 \section{Conclusions}\label{sec:concl}
 \begin{enumerate}
-\item The component splitting \eqref{eq:CS} in the two variables $a$ (cell-centred) and $b$ (momenta) splits the
-transport and the force into explicit horizontal and implicit vertical parts: a Störmer--Verlet step for the
-horizontal terms blended with an off-centred trapezoidal rule for all vertical terms, after Verwer
-\cite{verwer}. It is symmetric and of second order for $\beta=\tfrac12$ and needs one tridiagonal solve per column
-and small step. The off-centring must act on the whole transport, because horizontal and vertical divergence
-nearly cancel; off-centring the vertical part alone gives an $O(\varepsilon)$ error. With combined half steps the
-step is Verlet EI, which is conjugate to the WRF forward--backward step without its first-order defect at
-the stage boundaries. On isotropic grids the same composition with all terms explicit is the Störmer--Verlet
+\item The small step \eqref{eq:CS} is Verwer's component splitting \cite{verwer} in the two variables $a$ (cell-centred)
+and $b$ (momenta): transport and force are split into explicit horizontal and implicit vertical parts, a
+Störmer--Verlet step for the horizontal terms blended with the trapezoidal rule for all vertical terms. With
+the half steps combined it is the forward--backward step of WRF and MPAS, with half steps at the beginning
+and end of a stage. The off-centring of the implicit force damps the vertical modes, the extrapolation of the
+horizontal pressure force (divergence damping) the horizontal ones; both act only in the force, so the half
+steps in $a$ stay symmetric (horizontal and vertical divergence nearly cancel). Without them the step is
+symmetric and of second order; it needs one tridiagonal solve per column and small step. On isotropic grids the same composition with all terms explicit is the Störmer--Verlet
 step; in the bubble it is two to five times more accurate than Verlet EI with $\varepsilon=0.1$.
 \item With the pressure (or Exner pressure) as an additional variable the fast system is closed in
 $(\rho,\pv,U,W)$. With the vertical-derivative part of the metric term implicit, the column unknown is
