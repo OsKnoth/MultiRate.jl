@@ -34,6 +34,9 @@ function frozen_vertical_solve! end
 """out = :hthermo of the implicit step, the horizontal mass flux with the predictor U + w (metric
 increment at the old pressure) for models with an implicit metric term; default: plain :hthermo."""
 frozen_hthermo!(out, model, C, z, F, w) = frozen_fast!(out, model, C, z, :hthermo, F)
+"""out = the phase-change part of :hthermo (:cs/:csfb, re-evaluated in the half step after the solve);
+returns false (out unused) for models without phase change."""
+frozen_phase!(out, model, C, z) = false
 #   frozen_step_end!(model, q)                   optional: after every MIS step (e.g. recompute a
 #                                                redundant variable from the others)
 frozen_step_end!(model, q) = nothing
@@ -109,6 +112,8 @@ function frozen_fast_solve!(Z, model, C, F, dt, nsteps, k; method::Symbol = :ver
     offcenter < 0 && error("offcenter ≥ 0")
     base == :ei && length(ws) == 1 && EI_MERGE[] &&
         return _ei_merged!(Z, model, C, F, dt, nsteps, k, tmp, damp ? tmp[2] : nothing, offcenter, momentum!)
+    (base == :csfb || (base == :cs && CS_MERGE[])) && length(ws) == 1 &&
+        return _cs_loop!(Z, model, C, F, dt, nsteps, k, tmp, damp, offcenter, momentum!; halfsteps = base == :cs)
     first = true
     for _ in 1:nsteps, wt in ws
         h = wt * dt
@@ -138,7 +143,7 @@ function frozen_fast_solve!(Z, model, C, F, dt, nsteps, k; method::Symbol = :ver
             momentum!(:hmomentum); @. Z += h * k                      # K: U⁺ from t½
             frozen_hthermo!(k, model, C, Z, F, iw); @. Z += it * k    # I: implicit step, weights (it, iw)
             frozen_vertical_implicit!(Z, model, C, it, iw, k, y)      #    t⁺, W⁺
-        elseif base == :cs
+        elseif base == :cs                                            # uncombined (CS_MERGE[] = false, compositions)
             # Component splitting (Verwer, BIT 51 (2011) 427, scheme (3.1); docs/moist_verlet, (eq:CS)) in
             # two variables, a = thermodynamic rows (ρ, X, V, C, π/p), b = momenta (U, W); a' = -K b + f_a,
             # b' = L a + f_b, K = K₀ + K₁, L = L₀ + L₁ (0: horizontal, explicit; 1: vertical, implicit):
@@ -181,6 +186,56 @@ function frozen_fast_solve!(Z, model, C, F, dt, nsteps, k; method::Symbol = :ver
             @. Z = y0 + (h / 6) * acc
         else
             error("frozen fast integrator $method: :verlet, :fb, :hevi, :ei, :cs, :wrf, :rk4 (or a composition of :verlet, :hevi, :ei, :cs)")
+        end
+    end
+    return Z
+end
+
+"""
+Combine the half steps in a of consecutive :cs small steps (forward–backward form, docs/moist_verlet
+Section 7) (true) or evaluate both half steps of every small step (false).
+"""
+const CS_MERGE = Ref(true)
+
+"""
+    _cs_loop!(Z, model, C, F, h, N, k, tmp, damp, ε, momentum!; halfsteps)
+
+Small steps (eq:CS) of docs/moist_verlet in the forward–backward form. halfsteps = true (:cs):
+    a½ = a⁰ + h/2 (-K b⁰ + f_a(a⁰))                                     (first half step)
+    for n: b⁺ = b + h L₀ã½ + h[(1-β)L₁a + βL₁a⁺] + h f_b,  a⁺ = a½ + h/2(-K b⁺ + f_a(a½))   (column solve)
+           a½ ← a⁺ + h/2(-K b⁺ + f_a(a⁺))      (n < N; the last step ends with a⁺)
+The half step after the solve reuses the explicit part E of the half step before it (horizontal
+transport K₀b⁺, slow forcing, W forcing and sponge, evaluated once per small step) and evaluates only the
+phase change anew: E(a⁺) = E(a½) - P(a½) + P(a⁺), P = `frozen_phase!`; the vertical part (K₁b⁺ on a with
+h/2, L₁a⁺ on b with (1-β)h) is evaluated at (a⁺, b⁺). With the implicit metric term E uses the
+predictor Û of the solve. halfsteps = false (:csfb): no first half step, and the last step also ends
+with the half step after the solve (the forward–backward step of WRF/MPAS with the same vertical part).
+Work vectors: tmp[1] column, tmp[2:3] extrapolation, tmp[4] E, tmp[5] P(a½).
+"""
+function _cs_loop!(Z, model, C, F, h, N, k, tmp, damp, ε, momentum!; halfsteps::Bool)
+    (tmp === nothing || length(tmp) < 5) && error(":cs/:csfb need 5 work vectors (tmp)")
+    y, E, P = tmp[1], tmp[4], tmp[5]
+    β = (1 + ε) / 2
+    if halfsteps
+        frozen_fast!(k, model, C, Z, :hthermo, F)
+        frozen_vertical_rhs!(y, model, C, Z, h / 2, (1 - β) * h)
+        @. Z += (h / 2) * k + y
+        damp && (tmp[2] .= Z)                                 # no extrapolation in the first step
+    end
+    for n in 1:N
+        momentum!(:hmomentum); @. Z += h * k                  # U⁺ = U + h L₀ã½ + h f_U
+        frozen_hthermo!(E, model, C, Z, F, β * h)             # E at (a½, b⁺)
+        has_p = frozen_phase!(P, model, C, Z)                 # P(a½)
+        @. Z += (h / 2) * E
+        frozen_vertical_implicit!(Z, model, C, h / 2, β * h, k, y)   # (a⁺, b⁺)
+        if n < N || !halfsteps                                # half step after the solve
+            frozen_vertical_rhs!(y, model, C, Z, h / 2, (1 - β) * h)
+            if has_p
+                frozen_phase!(k, model, C, Z)                 # P(a⁺)
+                @. Z += (h / 2) * (E - P + k) + y
+            else
+                @. Z += (h / 2) * E + y
+            end
         end
     end
     return Z
@@ -421,7 +476,7 @@ function run_frozen(model, q0, Δt, nsteps; tab::SplitTableau = mis_tableau(:MIS
                     fast::Symbol = :verlet, smdiv::Real = 0.0, offcenter::Real = 0.0, monitor = nothing, every::Int = 1)
     q = Vector{Float64}(q0)
     w = FrozenWork(model, length(q), tab)
-    tmp = (composition(fast)[1] in (:rk4, :hevi, :ei, :cs, :wrf) || smdiv > 0) ? ntuple(_ -> zeros(length(q)), 4) : nothing
+    tmp = (composition(fast)[1] in (:rk4, :hevi, :ei, :cs, :csfb, :wrf) || smdiv > 0) ? ntuple(_ -> zeros(length(q)), 6) : nothing
     for n in 1:nsteps
         frozen_mis_step!(q, model, q, Δt, tab, w; nsub, fast, tmp, smdiv = Float64(smdiv), offcenter = Float64(offcenter))
         frozen_step_end!(model, q)

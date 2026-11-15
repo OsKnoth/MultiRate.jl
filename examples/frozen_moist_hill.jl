@@ -128,7 +128,7 @@ tab = TS.mis_tableau(METHOD)
 n = round(Int, T / DT); every = max(1, round(Int, 3600 / DT))
 @printf("%s, Δt = %.0f s, nsub = %d (Δτ = %.2f s), %d steps; thermodynamic variable %s, fast integrator %s (offcenter %.2f, smdiv %.2f), metric term %s\n", METHOD, DT, nsub, DT / nsub, n, THVAR, FAST, OFFC, SMDIV, METRIC)
 x = copy(x0)
-w = TS.FrozenWork(m, length(x), tab); tmp = ntuple(_ -> zeros(length(x)), 4)
+w = TS.FrozenWork(m, length(x), tab); tmp = ntuple(_ -> zeros(length(x)), 6)
 mass0, water0 = tot(x0, (i, k) -> FV.iρ(grid, i, k)), tot(x0, (i, k) -> FV.iV(m, i, k)) + tot(x0, (i, k) -> FV.iC(m, i, k))
 t0 = time()
 for s in 1:n

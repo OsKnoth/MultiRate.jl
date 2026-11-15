@@ -161,7 +161,7 @@ for meth in METHODS, Δt in DTS
     tab = TS.mis_tableau(meth)
     n = round(Int, T / Δt); nsub = ceil(Int, Δt / dτ)
     x = copy(x0)
-    w = TS.FrozenWork(m, length(x), tab); tmp = ntuple(_ -> zeros(length(x)), 4)
+    w = TS.FrozenWork(m, length(x), tab); tmp = ntuple(_ -> zeros(length(x)), 6)
     drift = 0.0
     t = @elapsed try
         for _ in 1:n

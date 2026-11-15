@@ -434,6 +434,14 @@ _mfast!(::Val{:hmomentum}, out, m, C, z, F) = (mmomentum_h!(out, m, C, z); forci
 _mfast!(::Val{:vertical}, out, m, C, z, F) = (mthermo_v!(out, m, C, z); mmomentum_v!(out, m, C, z); mmetric!(out, m, C, z))
 _mfast!(::Val{P}, out, m, C, z, F) where {P} = error("frozen_fast!: unknown part $P")
 
+"""Phase-change part of :hthermo (`TimeStepping.frozen_phase!`, :cs/:csfb)."""
+function frozen_phase!(out, m::MoistExnerModel, C, z)
+    m.micro === :fast || return false
+    fill!(out, 0.0)
+    mphase!(out, m, C, z)
+    return true
+end
+
 function frozen_fast!(out, m::MoistExnerModel, C, z, part::Symbol, F)
     fill!(out, 0.0)
     _mfast!(Val(part), out, m, C, z, F)
