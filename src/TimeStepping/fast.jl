@@ -133,7 +133,7 @@ end
 const NO_COMPOSITION = [1.0]
 const COMPOSITIONS = Dict{Symbol,Tuple{Symbol,Vector{Float64}}}(
     Symbol(base, suf) => (base, collect(ws))
-    for base in (:verlet, :hevi, :hevi_verlet, :hevi_relax, :imex, :fb, :ei)
+    for base in (:verlet, :hevi, :hevi_verlet, :hevi_relax, :imex, :fb, :ei, :cs)
     for (suf, ws) in (("_y4", YOSHIDA4), ("_s4", SUZUKI4), ("_y6", YOSHIDA6)))
 
 """max|w_k| of the composition: the base loop sees substeps up to this factor times dτ."""

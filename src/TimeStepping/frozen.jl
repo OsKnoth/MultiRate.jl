@@ -72,7 +72,11 @@ pressure gradient and gravity (off-centring `EI_GAMMA`), thermodynamic half step
 U forward (with `smdiv` at the extrapolated thermodynamic state), then (ρ, Θ, W) with the new
 horizontal fluxes, off-centred Crank–Nicolson in the vertical part (β = (1 + offcenter)/2, linearly
 implicit for :gradp), one column solve (`frozen_vertical_rhs!`, `frozen_vertical_solve!`);
-compositions `:verlet_s4`, `_y4`, `_y6` (see `composition`).
+compositions `:verlet_s4`, `_y4`, `_y6` (see `composition`);
+:cs component splitting (Verwer 2011) in the two variables a = thermodynamic rows, b = (U, W):
+a-equation in two half steps h/2 (horizontal and vertical divergence, phase change), horizontal
+pressure force at the midpoint (extrapolated with smdiv), vertical pressure force, metric term and
+gravity trapezoidal, off-centred with β only there; one column solve per step (docs/moist_verlet).
 
 `smdiv = β > 0`: divergence damping by forward extrapolation of the thermodynamic variables in the
 momentum part (as WRF, `WRF_SMDIV`): the momentum rows are evaluated at Z̃ = Z + β (Z - Z_prev),
@@ -134,6 +138,27 @@ function frozen_fast_solve!(Z, model, C, F, dt, nsteps, k; method::Symbol = :ver
             momentum!(:hmomentum); @. Z += h * k                      # K: U⁺ from t½
             frozen_hthermo!(k, model, C, Z, F, iw); @. Z += it * k    # I: implicit step, weights (it, iw)
             frozen_vertical_implicit!(Z, model, C, it, iw, k, y)      #    t⁺, W⁺
+        elseif base == :cs
+            # Component splitting (Verwer, BIT 51 (2011) 427, scheme (3.1); docs/moist_verlet, (eq:CS)) in
+            # two variables, a = thermodynamic rows (ρ, X, V, C, π/p), b = momenta (U, W); a' = -K b + f_a,
+            # b' = L a + f_b, K = K₀ + K₁, L = L₀ + L₁ (0: horizontal, explicit; 1: vertical, implicit):
+            #   a½ = a + h/2 (-K b + f_a(a))                                         (explicit)
+            #   b⁺ = b + h L₀ã½ + h[(1-β) L₁a + β L₁a⁺] + h f_b
+            #   a⁺ = a½ + h/2 (-K b⁺ + f_a(a½))
+            # The last two are one column solve (weights h/2 on the a rows, βh on the momentum rows).
+            # Off-centring β = (1+ε)/2 only on the implicit force; the half steps in a stay symmetric.
+            # ã½ = a½ + γd (a½ - a½_prev) (smdiv = γd): extrapolation of the horizontal pressure force
+            # (divergence damping), from the second small step of the stage on.
+            y = tmp === nothing ? error(":cs needs a work vector") : tmp[1]
+            β = (1 + offcenter) / 2
+            frozen_fast!(k, model, C, Z, :hthermo, F)                 # a½ (and h/2 of the W forcing, sponge)
+            frozen_vertical_rhs!(y, model, C, Z, h / 2, (1 - β) * h)  # K₁b on a (h/2), L₁a on b ((1-β)h)
+            @. Z += (h / 2) * k + y
+            damp && first && (tmp[2] .= Z)                            # no extrapolation in the first step
+            first = false
+            momentum!(:hmomentum); @. Z += h * k                      # U⁺ = U + h L₀ã½ + h f_U
+            frozen_hthermo!(k, model, C, Z, F, β * h); @. Z += (h / 2) * k   # explicit part of a⁺
+            frozen_vertical_implicit!(Z, model, C, h / 2, β * h, k, y)       # (a⁺, b⁺): column solve
         elseif base == :wrf
             y = tmp === nothing ? error(":wrf needs a work vector") : tmp[1]
             β = (1 + offcenter) / 2
@@ -155,7 +180,7 @@ function frozen_fast_solve!(Z, model, C, F, dt, nsteps, k; method::Symbol = :ver
             frozen_fast!(k, model, C, y, :all, F); @. acc += k
             @. Z = y0 + (h / 6) * acc
         else
-            error("frozen fast integrator $method: :verlet, :fb, :hevi, :ei, :wrf, :rk4 (or a composition of :verlet, :hevi, :ei)")
+            error("frozen fast integrator $method: :verlet, :fb, :hevi, :ei, :cs, :wrf, :rk4 (or a composition of :verlet, :hevi, :ei, :cs)")
         end
     end
     return Z
@@ -396,7 +421,7 @@ function run_frozen(model, q0, Δt, nsteps; tab::SplitTableau = mis_tableau(:MIS
                     fast::Symbol = :verlet, smdiv::Real = 0.0, offcenter::Real = 0.0, monitor = nothing, every::Int = 1)
     q = Vector{Float64}(q0)
     w = FrozenWork(model, length(q), tab)
-    tmp = (composition(fast)[1] in (:rk4, :hevi, :ei, :wrf) || smdiv > 0) ? ntuple(_ -> zeros(length(q)), 4) : nothing
+    tmp = (composition(fast)[1] in (:rk4, :hevi, :ei, :cs, :wrf) || smdiv > 0) ? ntuple(_ -> zeros(length(q)), 4) : nothing
     for n in 1:nsteps
         frozen_mis_step!(q, model, q, Δt, tab, w; nsub, fast, tmp, smdiv = Float64(smdiv), offcenter = Float64(offcenter))
         frozen_step_end!(model, q)
