@@ -482,6 +482,45 @@ off-centring of the whole transport removes the dependence on the vertical Coura
 Section~\ref{sec:hill} ($c_s\dtau/\Delta z\approx6$, $|z_x|\le0.026$) both are stable. The extrapolation
 $\gamma_d>0$ damps the horizontally propagating modes \cite{ws,baldauf}.
 
+\subsection{Combined half steps: the forward--backward form and divergence damping}\label{sec:fb}
+The third line of step $n$ and the first line of step $n+1$ are both half steps in $a$ with the same
+momentum $b^{n+1}$. Combined, they give a full step from $a^{n+1/2}$ to $a^{n+3/2}$, and the inner steps of a stage
+take the forward--backward form of WRF and MPAS \cite{ksd,wrf} with $a$ on the half levels:
+\begin{align*}
+b^{n+1}&=b^n+h\,L_0\tilde a^{n+1/2}+h\big[(1-\beta)L_1a^n+\beta L_1a^{n+1}\big]+h\,f_b
+&&\text{(forward in $b$)},\\
+a^{n+3/2}&=a^{n+1/2}-h\,K\,b^{n+1}+\tfrac h2\big(f_a(a^{n+1/2})+f_a(a^{n+1})\big)&&\text{(backward in $a$)},
+\end{align*}
+with $a^{n+1}=a^{n+1/2}-\tfrac h2Kb^{n+1}+\tfrac h2f_a(a^{n+1/2})$ the full-level state of the column system. Only the first and
+the last small step of a stage are half steps in $a$; therefore $a$ and $b$ start and end a stage at the same
+time level, and the step stays symmetric (the WRF step differs by this change of variables at the stage
+boundaries, Section~\ref{sec:conj}).
+
+\paragraph{Extrapolation.} As in the forward--backward step of WRF and MPAS, the horizontal pressure force can be
+evaluated at the extrapolated state
+\[
+\tilde a^{n+1/2}=a^{n+1/2}+\gamma_d\big(a^{n+1/2}-a^{n-1/2}\big),
+\]
+where $a^{n+1/2}-a^{n-1/2}$ is the increment of the third line of step $n-1$ and the first line of step $n$ (in the
+first small step of a stage $\tilde a^{1/2}=a^{1/2}$). Only $L_0$ sees $\tilde a$; the implicit vertical part and the transport
+are not changed. Since $a^{n+1/2}-a^{n-1/2}\approx-hKb$, this is the divergence damping
+$-\gamma_dh\,L_0Kb$ \cite{sk92,ksd,baldauf}, of the size $\gamma_dh\,c_s^2\nabla_h(\nabla\cdot\mathbf v)$. For the horizontal acoustic mode
+($a_z=0$) the amplification factors satisfy
+\[
+\lambda^2+\big(a_x^2(1+\gamma_d)-2\big)\lambda+1-\gamma_da_x^2=0,\qquad |\lambda|^2=1-\gamma_da_x^2 ,
+\]
+stable for $a_x^2<4/(1+2\gamma_d)$ ($a_x<1.82$ for $\gamma_d=0.1$; checked against the eigenvalues of the three-level
+recursion). The damping is selective: for $\gamma_d=0.1$ the shortest horizontal mode at $c_s\dtau/\Delta x=0.75$ ($a_x=1.5$) is
+damped by 0.88 per small step, $a_x=0.5$ by 0.99, long modes by $1-O(\gamma_dk_x^2)$. It is of first order in $h$
+($\gamma_d h^2L_0K b$ per step), as in WRF. The off-centring in the middle line damps the vertical modes, the
+extrapolation the horizontal ones.
+
+\paragraph{Cost and the phase change.} In the combined form one small step needs one evaluation of the
+transport, one of the horizontal pressure force, one column solve and the phase change at $a^{n+1/2}$ and at
+$a^{n+1}$. Replacing $f_a(a^{n+1})$ by $f_a(a^{n+1/2})$ saves the second phase-change evaluation, but then the phase
+change acts once with the weight $h$ and its stability limit halves (Section~\ref{sec:fbstab}); this is what
+Verlet EI does.
+
 \subsection{The implicit part: one column system}\label{sec:Isolve}
 Write the last two lines of \eqref{eq:CS}, with the off-centring in the middle line ($\beta=\tfrac12$ without), as
 \[
