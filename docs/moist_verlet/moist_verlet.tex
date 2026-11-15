@@ -380,19 +380,23 @@ implicit part. The metric term belongs to $L_1$, and the metric part $-z_x\bar U
 \subsection{The step}
 Verwer \cite{verwer} blends the explicit Störmer--Verlet step (a half step in $a$, a full step in $b$, a
 half step in $a$) with the trapezoidal rule: in the $b$-step the explicit part of the force is taken at
-the midpoint, the implicit part with the trapezoidal rule. We use this \emph{component splitting} (CS)
-with the off-centring $\beta=(1+\varepsilon)/2$:
+the midpoint, the implicit part with the trapezoidal rule. This \emph{component splitting} (CS), Verwer's
+scheme (3.1) with $K_0$ explicit (horizontal) and $K_1$ implicit (vertical), is
 \begin{align}
-a^{n+1/2}&=a^n+(1-\beta)h\big(-K_0b^n-K_1b^n+f_a(a^n)\big),\nonumber\\
-b^{n+1}&=b^n+h\,L_0a^{n+1/2}+h\big[(1-\beta)L_1a^n+\beta L_1a^{n+1}\big]+h\,f_b,\label{eq:CS}\\
-a^{n+1}&=a^{n+1/2}+\beta h\big(-K_0b^{n+1}-K_1b^{n+1}+f_a(a^{n+1/2})\big).\nonumber
+a^{n+1/2}&=a^n+\tfrac h2\big(-K_0b^n-K_1b^n+f_a(a^n)\big),\nonumber\\
+b^{n+1}&=b^n+h\,L_0a^{n+1/2}+\tfrac h2\big(L_1a^n+L_1a^{n+1}\big)+h\,f_b,\label{eq:CS}\\
+a^{n+1}&=a^{n+1/2}+\tfrac h2\big(-K_0b^{n+1}-K_1b^{n+1}+f_a(a^{n+1/2})\big).\nonumber
 \end{align}
-The first line is explicit. The last two lines are coupled only through the implicit parts $K_1$ and $L_1$,
-which contain vertical differences only: they form one linear system per column
-(Section~\ref{sec:Isolve}). The transport and the phase change are applied in two half steps, the
-horizontal pressure force once at the intermediate state $a^{n+1/2}$.
+The first and the third line are half steps in $a$, the second a full step in $b$. The first line is explicit.
+The last two lines are coupled only through the implicit parts $K_1$ and $L_1$, which contain vertical
+differences only: they form one linear system per column (Section~\ref{sec:Isolve}). The transport and the
+phase change are applied in two half steps, the horizontal pressure force once at the intermediate state
+$a^{n+1/2}$.
 
-\paragraph{Where the off-centring acts.} In the $a$-equation the off-centring acts on the whole transport,
+\paragraph{Off-centring.} With $\beta=(1+\varepsilon)/2$ the two half steps $\tfrac h2$ in $a$ become $(1-\beta)h$ (first line) and
+$\beta h$ (third line), and the trapezoidal weights of $L_1$ become $(1-\beta)h$ and $\beta h$; $L_0$ and $f_b$ keep the weight $h$.
+For $\varepsilon=0$ this is \eqref{eq:CS}.
+In the $a$-equation the off-centring acts on the whole transport,
 explicit and implicit, with the same weights; in the $b$-equation only on the implicit force $L_1$. The
 reason is the near cancellation within each equation. In nearly incompressible motion the horizontal and the
 vertical divergence nearly cancel, $K_0b\approx-K_1b$, while each of them is large. Off-centring $K_1$ alone,
@@ -408,20 +412,19 @@ Special cases:
 \begin{itemize}
 \item $K_1=L_1=0$: the explicit Störmer--Verlet (position Verlet) step \cite{verlet,hlw}, Verwer's scheme
 (2.1); used on isotropic grids (Section~\ref{sec:verletexpl}).
-\item $K_0=L_0=0$, $f=0$: the $\beta$-method, for $\beta=\tfrac12$ the trapezoidal rule.
-\item $\beta=\tfrac12$: Verwer's component splitting scheme (3.1), with his row-wise split $K_1=S_uK$
-replaced by the directional split \eqref{eq:KL}.
+\item $K_0=L_0=0$, $f=0$: the trapezoidal rule (with off-centring the $\beta$-method).
+\item Verwer's row-wise split $K_1=S_uK$ is replaced by the directional split \eqref{eq:KL}.
 \end{itemize}
 
 \subsection{Properties}
 \begin{proposition}\label{prop:sym}
-Let $f_a=0$. For $\beta=\tfrac12$ the step \eqref{eq:CS} is symmetric and therefore of second order. For
-$\beta\ne\tfrac12$ it is of first order.
+Let $f_a=0$. The step \eqref{eq:CS} is symmetric and therefore of second order. With off-centring
+($\beta\ne\tfrac12$) it is of first order.
 \end{proposition}
 \begin{proof}
 Let $\Phi_c$ be the first-order step $a^+=a-c\,Kb^+$, $b^+=b+c(L_0a+L_1a^+)+cf_b$ (explicit in $a$
 for $L_0$, implicit for $L_1$) and $\Phi_c^*=\Phi_{-c}^{-1}$ its adjoint, $a^+=a-c\,Kb$,
-$b^+=b+c(L_0a^++L_1a)+cf_b$. Then $\Phi_{h/2}\circ\Phi_{h/2}^*$ is \eqref{eq:CS} with $\beta=\tfrac12$ (Verwer
+$b^+=b+c(L_0a^++L_1a)+cf_b$. Then $\Phi_{h/2}\circ\Phi_{h/2}^*$ is \eqref{eq:CS} (Verwer
 \cite{verwer}, (5.1)--(5.2)): $\Phi^*_{h/2}$ gives $a^{n+1/2}$ and adds $\tfrac h2(L_0a^{n+1/2}+L_1a^n)$ to $b$, and
 $\Phi_{h/2}$ adds $\tfrac h2(L_0a^{n+1/2}+L_1a^{n+1})$ and gives $a^{n+1}$. A composition $\Phi_{h/2}\circ\Phi^*_{h/2}$ is
 symmetric, and a consistent symmetric one-step method has even order \cite[Thm.~II.3.2]{hlw}. For
@@ -468,7 +471,7 @@ Section~\ref{sec:hill} ($c_s\dtau/\Delta z\approx6$, $|z_x|\le0.026$) both are s
 $\gamma_d>0$ damps the horizontally propagating modes \cite{ws,baldauf}.
 
 \subsection{The implicit part: one column system}\label{sec:Isolve}
-Write the last two lines of \eqref{eq:CS} as
+Write the last two lines of \eqref{eq:CS}, with off-centring ($\beta=\tfrac12$ without), as
 \[
 b^{n+1}=R_b+\beta h\,L_1a^{n+1},\qquad a^{n+1}=R_a-\beta h\,K_1b^{n+1},
 \]
@@ -491,7 +494,7 @@ $R_a$ and therefore explicit.
 Verlet EI \cite{imex,verletei} partitions differently, $\tilde a=(\rho,X,V,C,\pv,W)$ and $\tilde b=U$: with $H$ all fast
 terms except the horizontal pressure force, $E_c\fs=\fs+cH(\fs)$, $I_c$ the implicit Euler step of $H$ and the
 kick $K_h$ of $U$, it is $\text{EI}_h=I_{\beta h}\circ K_h\circ E_{(1-\beta)h}$. Without combined half steps it coincides
-with \eqref{eq:CS}: $E_{(1-\beta)h}$ is the first line of \eqref{eq:CS} together with the force $(1-\beta)hL_1a^n$ on $W$,
+with the off-centred \eqref{eq:CS}: $E_{(1-\beta)h}$ is its first line together with the force $(1-\beta)hL_1a^n$ on $W$,
 and $I_{\beta h}$ is the column system. The two-variable form makes visible what is explicit and what is
 implicit in each equation, and why the off-centring has to act on the whole transport. The difference
 lies in the treatment of consecutive steps:
