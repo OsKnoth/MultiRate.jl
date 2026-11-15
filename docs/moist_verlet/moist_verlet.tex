@@ -576,18 +576,18 @@ $c_s\dtau\sqrt{\Delta x^{-2}+\Delta z^{-2}}\lesssim1$ and $N\dtau\le2$. This ste
 
 \subsection{The column system for $\Omega$}
 In column $i$ with cells $k=1,\dots,n_z$, $\eta$-faces $k=1,\dots,n_z+1$, $\Omega_1=\Omega_{n_z+1}=0$, $\Delta z=J\Delta\eta$,
-$c=\beta h$, and the right-hand sides $R$ (Section~\ref{sec:Isolve}: the explicit parts, $R_a$ and $R_b$), the implicit step is
+the weights $c_a=\tfrac h2$ (cell-centred rows) and $c_b=\beta h$ (momentum rows), and the right-hand sides $R$ (Section~\ref{sec:Isolve}: the explicit parts, $R_a$ and $R_b$), the implicit step is
 \begin{align*}
-\rho_k&=R_{\rho,k}-\frac c{\Delta z}\,(\Omega_{k+1}-\Omega_k),\\
-\pv_k&=R_{\pv,k}-\frac c{\Delta z}\,\big(\kappa^B_{k+1}\Omega_{k+1}-\kappa^T_k\Omega_k\big),\\
-\Omega_k&=R_{\Omega,k}-\frac c{\Delta z}\,m_kP_k\,(\pv_k-\pv_{k-1})-\frac{cg}2\,(\rho_{k-1}+\rho_k),
+\rho_k&=R_{\rho,k}-\frac{c_a}{\Delta z}\,(\Omega_{k+1}-\Omega_k),\\
+\pv_k&=R_{\pv,k}-\frac{c_a}{\Delta z}\,\big(\kappa^B_{k+1}\Omega_{k+1}-\kappa^T_k\Omega_k\big),\\
+\Omega_k&=R_{\Omega,k}-\frac{c_b}{\Delta z}\,m_kP_k\,(\pv_k-\pv_{k-1})-\frac{c_bg}2\,(\rho_{k-1}+\rho_k),
 \end{align*}
 with $m_k=1+z_{x,k}^2$, $R_{\Omega,k}=R_{W,k}-z_{x,k}\bar R_{U,k}$, $\kappa^T_k$ the coefficient \eqref{eq:kappa} of the cell
-above face $k$ and $\kappa^B_k$ of the cell below. Eliminating $\rho$ and $\pv$, with $r=c^2/\Delta z^2$ and
-$g_g=c^2g/(2\Delta z)$,
+above face $k$ and $\kappa^B_k$ of the cell below. Eliminating $\rho$ and $\pv$, with $r=c_ac_b/\Delta z^2$ and
+$g_g=c_ac_bg/(2\Delta z)$,
 \begin{multline}
 \big[-rm_kP_k\kappa^T_{k-1}+g_g\big]\Omega_{k-1}+\big[1+rm_kP_k(\kappa^T_k+\kappa^B_k)\big]\Omega_k+\big[-rm_kP_k\kappa^B_{k+1}-g_g\big]\Omega_{k+1}\\
-=R_{\Omega,k}-\frac c{\Delta z}m_kP_k\,(R_{\pv,k}-R_{\pv,k-1})-\frac{cg}2\,(R_{\rho,k-1}+R_{\rho,k}).\label{eq:tri}
+=R_{\Omega,k}-\frac{c_b}{\Delta z}m_kP_k\,(R_{\pv,k}-R_{\pv,k-1})-\frac{c_bg}2\,(R_{\rho,k-1}+R_{\rho,k}).\label{eq:tri}
 \end{multline}
 The terms with $r$ are the vertical acoustics ($P\kappa\approx c_s^2$), those with $g_g$ gravity. The
 pressure part is a discrete $-c_s^2(1+z_x^2)\partial_{zz}$ with positive diagonal, the gravity part is
@@ -595,12 +595,12 @@ antisymmetric and small ($g_g/r=g\Delta z/2\ll c_s^2$); the system is solved by 
 without pivoting and factored once per stage. Then all cell-centred rows follow by back substitution
 with their own face coefficient,
 \[
-\phi_k=R_{\phi,k}-\frac c{\Delta z}\,\big(\phi^B_{k+1}\Omega_{k+1}-\phi^T_k\Omega_k\big),\qquad\phi\in\{X,V,C,\pv\}
+\phi_k=R_{\phi,k}-\frac{c_a}{\Delta z}\,\big(\phi^B_{k+1}\Omega_{k+1}-\phi^T_k\Omega_k\big),\qquad\phi\in\{X,V,C,\pv\}
 \]
 ($\phi^B=\phi^T$ for $V$, $C$ and for $X=\rho\theta_\rho$), and both momenta from the new pressure,
 \[
-W_k=R_{W,k}-\frac c{\Delta z}P_k(\pv_k-\pv_{k-1})-\frac{cg}2(\rho_{k-1}+\rho_k),\qquad
-U=R_U+c\,P_xz_x\overline{G_\eta\pv} .
+W_k=R_{W,k}-\frac{c_b}{\Delta z}P_k(\pv_k-\pv_{k-1})-\frac{c_bg}2(\rho_{k-1}+\rho_k),\qquad
+U=R_U+c_b\,P_xz_x\overline{G_\eta\pv} .
 \]
 $U$ and $W$ are not recovered from $\Omega$; $W-z_x\bar U=\Omega$ holds up to the column-local
 approximation of $\overline{z_x\overline{G_\eta\pv}}$ (Section~\ref{sec:Isolve}). \emph{The matrix \eqref{eq:tri} contains
