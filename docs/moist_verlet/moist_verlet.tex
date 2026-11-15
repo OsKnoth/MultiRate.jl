@@ -393,21 +393,28 @@ differences only: they form one linear system per column (Section~\ref{sec:Isolv
 phase change are applied in two half steps, the horizontal pressure force once at the intermediate state
 $a^{n+1/2}$.
 
-\paragraph{Off-centring.} With $\beta=(1+\varepsilon)/2$ the two half steps $\tfrac h2$ in $a$ become $(1-\beta)h$ (first line) and
-$\beta h$ (third line), and the trapezoidal weights of $L_1$ become $(1-\beta)h$ and $\beta h$; $L_0$ and $f_b$ keep the weight $h$.
-For $\varepsilon=0$ this is \eqref{eq:CS}.
-In the $a$-equation the off-centring acts on the whole transport,
-explicit and implicit, with the same weights; in the $b$-equation only on the implicit force $L_1$. The
-reason is the near cancellation within each equation. In nearly incompressible motion the horizontal and the
-vertical divergence nearly cancel, $K_0b\approx-K_1b$, while each of them is large. Off-centring $K_1$ alone,
-$a^{n+1/2}=a^n-\tfrac h2K_0b^n-(1-\beta)hK_1b^n$, shifts the state at which the horizontal pressure force is
-evaluated by $(\beta-\tfrac12)h\,K_1b$, a pressure error $\sim\tfrac\varepsilon2h\,c_s^2\partial_zw$. The error of the
-horizontal force per unit time is $\sim\tfrac\varepsilon2h\,c_s^2\partial_x\partial_zw$; at a fixed acoustic Courant number
-$c_sh/\Delta x$ this is $O(\varepsilon)$, not $O(\varepsilon h)$. In the moist bubble this variant reduced $\max|w|$ after
-200\,s from 5.83 to 5.39\,m/s at $\varepsilon=0.1$, an error 1500 times that of $\varepsilon=0$; with the off-centring on the
-whole $a$-equation the error is $2.6\cdot10^{-4}$\,K, five times that of $\varepsilon=0$. In the $b$-equation the
-vertical pressure force and gravity (both in $L_1$) cancel each other in hydrostatic balance, so off-centring $L_1$
-alone is consistent.
+\paragraph{Off-centring.} The off-centring $\beta=(1+\varepsilon)/2$ acts only in the middle line, on the trapezoidal
+rule of the implicit force:
+\[
+b^{n+1}=b^n+h\,L_0a^{n+1/2}+h\big[(1-\beta)L_1a^n+\beta L_1a^{n+1}\big]+h\,f_b .
+\]
+The half steps $\tfrac h2$ in $a$ stay, so $a^{n+1/2}$ remains the midpoint state at which the horizontal pressure force
+is evaluated, and the explicit parts remain Störmer--Verlet. The off-centring damps the vertical modes
+(Linear stability below). Two other placements were considered:
+\begin{itemize}
+\item Off-centring $K_1$ alone in the $a$-equation, $a^{n+1/2}=a^n-\tfrac h2K_0b^n-(1-\beta)hK_1b^n$, is inconsistent in
+practice: in nearly incompressible motion the horizontal and the vertical divergence nearly cancel,
+$K_0b\approx-K_1b$, while each is large, and the state at which the horizontal pressure force is evaluated is
+shifted by $(\beta-\tfrac12)hK_1b$, a pressure error $\sim\tfrac\varepsilon2h\,c_s^2\partial_zw$. The resulting force error
+$\sim\tfrac\varepsilon2h\,c_s^2\partial_x\partial_zw$ is $O(\varepsilon)$ at a fixed acoustic Courant number. In the moist bubble it reduced
+$\max|w|$ after 200\,s from 5.83 to 5.39\,m/s at $\varepsilon=0.1$, an error 1500 times that of $\varepsilon=0$.
+\item Off-centring all three lines, the half steps in $a$ replaced by $(1-\beta)h$ and $\beta h$ for the whole transport
+and the phase change, is consistent (bubble error $2.6\cdot10^{-4}$\,K after 200\,s, five times that of $\varepsilon=0$),
+damps more and allows steeper slopes, but the explicit horizontal parts become of first order. This is the
+off-centring of Verlet EI (Section~\ref{sec:conj}).
+\end{itemize}
+In the $b$-equation the vertical pressure force and gravity (both in $L_1$) cancel each other in hydrostatic
+balance, so off-centring $L_1$ alone is consistent.
 Special cases:
 \begin{itemize}
 \item $K_1=L_1=0$: the explicit Störmer--Verlet (position Verlet) step \cite{verlet,hlw}, Verwer's scheme
@@ -442,44 +449,51 @@ directional split \eqref{eq:KL} has no such invariant ($K_0^{\rm T}K$ is not sym
 stability follows from a Fourier analysis.
 
 \paragraph{Linear stability.} For the acoustic model $\pv'=-\mathrm ic_s(k_xU+k_zW)$, $U'=-\mathrm ic_sk_x\pv$,
-$W'=-\mathrm ic_sk_z\pv$ on a flat grid let $a_x=c_sk_xh$, $a_z=c_sk_zh$ and $\mu=(1-\beta)+\beta\lambda$. The
-amplification factors $\lambda$ of the non-trivial modes satisfy \cite{verletei}
+$W'=-\mathrm ic_sk_z\pv$ on a flat grid let $a_x=c_sk_xh$, $a_z=c_sk_zh$. Without off-centring the amplification
+factors $\lambda$ of the non-trivial modes satisfy \cite{verletei}
 \[
-(\lambda-1)^2+a_x^2\lambda+a_z^2\mu^2=0 .
+(\lambda-1)^2+a_x^2\lambda+a_z^2\Big(\frac{1+\lambda}2\Big)^2=0 :
 \]
-Horizontally ($a_z=0$) the step is stable for $a_x\le2$ (the Störmer--Verlet limit), vertically
-($a_x=0$) for every $a_z$, with
+horizontally ($a_z=0$) the step is stable for $a_x\le2$ (the Störmer--Verlet limit), vertically ($a_x=0$) for every
+$a_z$, and it is neutral, $|\lambda|=1$. With the off-centring in the middle line the product of the two
+amplification factors of a vertical mode ($a_x=0$) is
 \[
-|\lambda|^2=\frac{1+(1-\beta)^2a_z^2}{1+\beta^2a_z^2}\ \longrightarrow\ \Big(\frac{1-\beta}\beta\Big)^2\quad(a_z\to\infty).
+\lambda_1\lambda_2=\frac{1+\tfrac12a_z^2+\beta(1-\beta)\tfrac14a_z^4}{1+\beta a_z^2+\beta^2\tfrac14a_z^4}\ \longrightarrow\ \frac{1-\beta}\beta\quad(a_z\to\infty),
 \]
-For $\varepsilon=0$ the step is neutral; $\varepsilon=0.1$ damps the shortest vertical modes by the factor $0.82$
-per small step. On a terrain-following grid with constant slope $z_x$ the explicit horizontal and the
+which is $<1$ for $\beta>\tfrac12$. For $\varepsilon=0.1$, $|\lambda|=0.98$, $0.91$ and $0.90$ per small step at $a_z=1$, 6 and $\to\infty$ (at
+large $a_z$ the two factors become real, e.g.\ $0.84$ and $0.97$ at $a_z=60$). With the off-centring in all three lines
+$|\lambda|^2=(1+(1-\beta)^2a_z^2)/(1+\beta^2a_z^2)\to((1-\beta)/\beta)^2$, $|\lambda|\to0.82$. On a terrain-following grid with constant slope $z_x$ the explicit horizontal and the
 implicit vertical parts are coupled through the metric terms ($z_xk_xk_z$). The exact Fourier analysis
 of \eqref{eq:CS} (constant slope, all wave numbers of a staggered grid) gives the largest stable slope
 \begin{center}\small
-\begin{tabular}{ccccc}\toprule
-& \multicolumn{2}{c}{$c_s\dtau/\Delta x=0.5$} & \multicolumn{2}{c}{$c_s\dtau/\Delta x=0.75$}\\
-$c_s\dtau/\Delta z$ & $\varepsilon=0$ & $\varepsilon=0.1$ & $\varepsilon=0$ & $\varepsilon=0.1$\\\midrule
-6 & 0.25 & 0.25 & 0.095 & 0.16\\
-60 & 0.025 & 0.37 & 0.005 & 0.18\\\bottomrule
+\begin{tabular}{ccccccc}\toprule
+& \multicolumn{3}{c}{$c_s\dtau/\Delta x=0.5$} & \multicolumn{3}{c}{$c_s\dtau/\Delta x=0.75$}\\
+& & \multicolumn{2}{c}{$\varepsilon=0.1$} & & \multicolumn{2}{c}{$\varepsilon=0.1$}\\
+$c_s\dtau/\Delta z$ & $\varepsilon=0$ & middle & all & $\varepsilon=0$ & middle & all\\\midrule
+6 & 0.25 & 0.25 & 0.25 & 0.095 & 0.095 & 0.16\\
+60 & 0.025 & 0.025 & 0.37 & 0.005 & 0.005 & 0.18\\\bottomrule
 \end{tabular}
 \end{center}
-Without off-centring the slope is limited by $c_s\dtau|z_x|/\Delta z\lesssim0.3$--$1.5$; the off-centring of the
-implicit part removes the dependence on the vertical Courant number (computed for \eqref{eq:CS} with the
-off-centring on the whole $a$-equation). For the mountain wave of
+(``middle'': off-centring in the middle line only; ``all'': in all three lines.) Without off-centring the slope is
+limited by $c_s\dtau|z_x|/\Delta z\lesssim0.3$--$1.5$. The off-centring in the middle line damps the vertical modes but
+does not change this limit: the instability comes from the coupling of the explicit horizontal and the
+implicit vertical transport through the metric terms, which the middle line does not touch. Only the
+off-centring of the whole transport removes the dependence on the vertical Courant number. For the mountain wave of
 Section~\ref{sec:hill} ($c_s\dtau/\Delta z\approx6$, $|z_x|\le0.026$) both are stable. The extrapolation
 $\gamma_d>0$ damps the horizontally propagating modes \cite{ws,baldauf}.
 
 \subsection{The implicit part: one column system}\label{sec:Isolve}
-Write the last two lines of \eqref{eq:CS}, with off-centring ($\beta=\tfrac12$ without), as
+Write the last two lines of \eqref{eq:CS}, with the off-centring in the middle line ($\beta=\tfrac12$ without), as
 \[
-b^{n+1}=R_b+\beta h\,L_1a^{n+1},\qquad a^{n+1}=R_a-\beta h\,K_1b^{n+1},
+b^{n+1}=R_b+\beta h\,L_1a^{n+1},\qquad a^{n+1}=R_a-\tfrac h2\,K_1b^{n+1},
 \]
-with $R_b=b^n+hL_0a^{n+1/2}+(1-\beta)hL_1a^n+hf_b$ and $R_a=a^{n+1/2}-\beta hK_0b^{n+1}+\beta hf_a(a^{n+1/2})$.
+with $R_b=b^n+hL_0a^{n+1/2}+(1-\beta)hL_1a^n+hf_b$ and $R_a=a^{n+1/2}-\tfrac h2K_0b^{n+1}+\tfrac h2f_a(a^{n+1/2})$.
 Eliminating $a^{n+1}$ gives Verwer's system (his (3.4)--(3.5))
 \[
-\big(I+\beta^2h^2L_1K_1\big)\,b^{n+1}=R_b+\beta h\,L_1R_a .
+\big(I+\tfrac h2\,\beta h\,L_1K_1\big)\,b^{n+1}=R_b+\beta h\,L_1R_a .
 \]
+In the column system of Section~\ref{sec:apply} the weight $c$ of the cell-centred rows is $\tfrac h2$ and that of the
+momentum rows is $\beta h$ (both $\beta h$ with the off-centring in all three lines).
 $L_1K_1$ is the vertical pressure force of the vertical divergence: a second difference in each
 column. On a flat grid $U^{n+1}=U^n+hL_0a^{n+1/2}+hf_U$ is explicit, $R_a$ is known, and the system is
 one tridiagonal system per column for $W$ (Section~\ref{sec:apply}). With terrain $U^{n+1}$ contains the
@@ -494,7 +508,7 @@ $R_a$ and therefore explicit.
 Verlet EI \cite{imex,verletei} partitions differently, $\tilde a=(\rho,X,V,C,\pv,W)$ and $\tilde b=U$: with $H$ all fast
 terms except the horizontal pressure force, $E_c\fs=\fs+cH(\fs)$, $I_c$ the implicit Euler step of $H$ and the
 kick $K_h$ of $U$, it is $\text{EI}_h=I_{\beta h}\circ K_h\circ E_{(1-\beta)h}$. Without combined half steps it coincides
-with the off-centred \eqref{eq:CS}: $E_{(1-\beta)h}$ is its first line together with the force $(1-\beta)hL_1a^n$ on $W$,
+with \eqref{eq:CS} off-centred in all three lines: $E_{(1-\beta)h}$ is its first line together with the force $(1-\beta)hL_1a^n$ on $W$,
 and $I_{\beta h}$ is the column system. The two-variable form makes visible what is explicit and what is
 implicit in each equation, and why the off-centring has to act on the whole transport. The difference
 lies in the treatment of consecutive steps:
