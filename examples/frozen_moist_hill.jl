@@ -6,13 +6,17 @@
 # (dry θ), subsaturated air with relative humidity RH0 below ZRH, decreasing to 20 % 2 km higher.
 # Air lifted by the wave saturates: a cloud forms where the displacement is upward.
 #
-#     [PVAR=pi|p] [RH0=0.95] [H0=400] [DT=30] [METHOD=MIS54] [TAUFAC=0.25] \
+#     [PVAR=pi|p] [THVAR=thetarho|energy] [FAST=ei|wrf|hevi] [OFFCENTER=ε] [SMDIV=γ] [RH0=0.95] [H0=400] [DT=30]
+#         [METHOD=MIS54|EB4|LRK4|...] [TAUFAC=0.5] \
 #         julia --project=examples examples/frozen_moist_hill.jl [T] [nx]
 #
 # RH0 = 0: dry run. Periodic channel 40 a, model top 12 km, Rayleigh damping of W above 8 km,
 # nx × 48 cells (default nx = 200, Δx = 2 km, Δη = 250 m). Each column is in discrete hydrostatic
 # balance with its own layer thickness J Δη; the flow starts impulsively. T default 21.6 a/U.
-# Output: table (every hour), frozen_moist_hill_<PVAR>_rh<RH0 %>.png (or _dry; w, q_c, RH at T).
+# THVAR: thermodynamic variable ρθ_ρ (default) or internal energy ρe; FAST: fast integrator (Verlet EI (default), WRF, HEVI)
+# with off-centring OFFCENTER (EI default 0.1) and extrapolation SMDIV; EI needs TAUFAC ≥ 0.5 (default with EI); METHOD: MIS, ETD (EB4, ...) or Lawson (LRK4, ...) tableau.
+# Output: table (every hour), frozen_moist_hill_<PVAR>_rh<RH0 %>.png (or _dry; w, q_c, RH at T; name OUT),
+# and with SAVE=file the fields w, q_c, RH (for difference plots).
 
 include(joinpath(@__DIR__, "euler2d_common.jl"))
 
@@ -29,13 +33,17 @@ const DT = parse(Float64, get(ENV, "DT", "30"))
 const METHOD = Symbol(get(ENV, "METHOD", "MIS54"))
 xm = LX / 2
 
-mg = FV.MoistGas()
+const THVAR = Symbol(get(ENV, "THVAR", "thetarho"))
+const FAST = Symbol(get(ENV, "FAST", "ei"))
+const OFFC = parse(Float64, get(ENV, "OFFCENTER", FAST === :ei ? "0.1" : "0"))   # EI: off-centring 0.1 (docs/moist_verlet)
+const SMDIV = parse(Float64, get(ENV, "SMDIV", "0"))
+mg = FV.MoistGas(thvar = THVAR)
 gas = Gas(R = mg.Rd, γ = mg.Cpd / (mg.Cpd - mg.Rd), p00 = mg.p0, g = 9.81)
 grid = FV.FVGrid(nx, nz, LX, HTOP; zs = x -> h0 / (1 + ((x - xm) / a)^2))
 θd(z) = θ0 * exp(NBV^2 * z / gas.g)
 RH(z) = RH0 * (z <= ZRH ? 1.0 : max(0.2 / max(RH0, 1e-12), 1 - (z - ZRH) / 2e3 * (1 - 0.2 / max(RH0, 1e-12))))
 
-"""(ρ, Θ = ρθ_ρ, Q = ρ_v) of subsaturated air at pressure p and height z (RH of the profile)."""
+"""(ρ, Θ = ρθ_ρ (or ρe), Q = ρ_v) of subsaturated air at pressure p and height z (RH of the profile)."""
 function air(p, z)
     T = θd(z) * (p / mg.p0)^(mg.Rd / mg.Cpd)
     e = RH0 > 0 ? min(RH(z), 1.0) * FV.psat(mg, T) : 0.0
@@ -84,7 +92,7 @@ for i in 1:nx
 end
 cgz = U0 * min(1.0, U0 / (NBV * a))
 base = FV.with_sponge(base0, zeros(base0.nq); zD = ZD, αtop = 5cgz / (HTOP - ZD))
-m = FV.MoistExnerModel(base; mgas = mg, pvar = PVAR, micro = :fast, τfac = parse(Float64, get(ENV, "TAUFAC", "0.25")))
+m = FV.MoistExnerModel(base; mgas = mg, pvar = PVAR, micro = :fast, τfac = parse(Float64, get(ENV, "TAUFAC", FAST === :ei ? "0.5" : "0.25")))
 rest = FV.moist_exner_state(m, qb, Q)
 Nr = TS.rhs_nonlinear(m, rest)
 @printf("moist hill: %d × %d cells, Δx = %.0f m, Δη = %.0f m, h0 = %.0f m, RH0 = %.2f, %s, τ = %.2f s\n",
@@ -108,18 +116,19 @@ function rh_c(x)
 end
 tot(x, f) = sum(grid.Jc[i] * x[f(i, k)] for i in 1:nx, k in 1:nz)
 
-c = 1.05 * FV.sound_speed_max(base, qb)
+c = THVAR === :thetarho ? 1.05 * FV.sound_speed_max(base, qb) :
+    1.05 * maximum(sqrt(gas.γ * FV.moist_state(mg, rest[FV.iρ(grid, i, k)], rest[FV.iΘ(grid, i, k)], rest[FV.iV(m, i, k)], rest[FV.iC(m, i, k)])[4] / rest[FV.iρ(grid, i, k)]) for i in 1:nx, k in 1:nz)
 dτ = 0.85 * 0.92 * grid.dx / c
 nsub = ceil(Int, DT / dτ)
 tab = TS.mis_tableau(METHOD)
 n = round(Int, T / DT); every = max(1, round(Int, 3600 / DT))
-@printf("%s, Δt = %.0f s, nsub = %d (Δτ = %.2f s), %d steps\n", METHOD, DT, nsub, DT / nsub, n)
+@printf("%s, Δt = %.0f s, nsub = %d (Δτ = %.2f s), %d steps; thermodynamic variable %s, fast integrator %s (offcenter %.2f, smdiv %.2f)\n", METHOD, DT, nsub, DT / nsub, n, THVAR, FAST, OFFC, SMDIV)
 x = copy(x0)
-w = TS.FrozenWork(m, length(x), tab); tmp = (zeros(length(x)), zeros(length(x)), zeros(length(x)))
+w = TS.FrozenWork(m, length(x), tab); tmp = ntuple(_ -> zeros(length(x)), 4)
 mass0, water0 = tot(x0, (i, k) -> FV.iρ(grid, i, k)), tot(x0, (i, k) -> FV.iV(m, i, k)) + tot(x0, (i, k) -> FV.iC(m, i, k))
 t0 = time()
 for s in 1:n
-    TS.frozen_mis_step!(x, m, x, DT, tab, w; nsub, fast = :hevi, tmp)
+    TS.frozen_mis_step!(x, m, x, DT, tab, w; nsub, fast = FAST, tmp, smdiv = SMDIV, offcenter = OFFC)
     TS.frozen_step_end!(m, x)
     all(isfinite, x) || (println("unstable at t = $(s * DT) s"); exit(1))
     if s % every == 0 || s == n
@@ -155,6 +164,11 @@ for (col, (name, f, cr, cm)) in enumerate((("w [m/s]", wc, (-1, 1) .* max(1e-3, 
     lines!(ax, X[sel, 1], grid.Zf[sel, 1] ./ 1e3; color = :black)
     Colorbar(fig[1, 2col], sf)
 end
-fname = "frozen_moist_hill_$(PVAR)_$(RH0 > 0 ? "rh$(round(Int, 100RH0))" : "dry").png"
+fname = get(ENV, "OUT", "frozen_moist_hill_$(PVAR)_$(RH0 > 0 ? "rh$(round(Int, 100RH0))" : "dry").png")
+if haskey(ENV, "SAVE")
+    open(ENV["SAVE"], "w") do io
+        write(io, Int64(nx), Int64(nz)); write(io, wc); write(io, qc); write(io, rh_c(x))
+    end
+end
 save(fname, fig)
 println("wrote $fname")

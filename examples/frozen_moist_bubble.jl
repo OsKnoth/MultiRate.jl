@@ -3,19 +3,24 @@
 # no saturation adjustment, condensation as an explicit Fischer–Burmeister relaxation with τ on the fast scale
 # and the latent heating Q_θ in the ρθ_ρ equation; π recomputed after every MIS step).
 #
-#     [PVAR=pi|p] [MICRO=fast|slow] [TAUFAC=f] [WTAU=w] [METHODS=MIS54,WSRK3,LRK4,EB4] [DTS=2,5,10] julia --project=examples examples/frozen_moist_bubble.jl [T] [nx]
+#     [PVAR=pi|p] [THVAR=thetarho|energy] [FAST=ei|wrf|hevi] [OFFCENTER=ε] [SMDIV=γ] [MICRO=fast|slow] [TAUFAC=f] [WTAU=w]
+#         [METHODS=MIS54,WSRK3,LRK4,EB4] [DTS=2,5,10] [DTPLOT=5] julia --project=examples examples/frozen_moist_bubble.jl [T] [nx]
+#
+# THVAR: thermodynamic variable, ρθ_ρ (default) or the internal energy ρe; FAST: fast integrator (Verlet EI (default), WRF,
+# HEVI) with the off-centring OFFCENTER and the extrapolation SMDIV (docs/verlet_ei).
 #
 # Saturated, neutral atmosphere θ_e = 320 K, r_t = 0.02, 20 km × 10 km, nx × nx/2 cells (default
 # 100 × 50, Δx = 200 m). The background is in discrete hydrostatic balance with the pressure form
 # of the model (no background state in the equations); the perturbation of θ_ρ by
 # 2 K cos²(π r/(2 r_c)), r_c = 2 km, at (10 km, 2 km) at fixed pressure and r_t, saturated (as
-# CGDycore `PerturbMoistProfile`). MIS54, HEVI; reference RK4 of the same operator. T = 1000 s.
+# CGDycore `PerturbMoistProfile`). MIS54, Verlet EI; reference RK4 of the same operator. T = 1000 s.
 # PVAR = p: the pressure itself as the additional variable (∂p/∂(ρ, Θ, V, C), plain δp).
 # MICRO = fast (default): phase change in every small step, τ = a quarter of the acoustic step (shortest stable); slow: at the
 # slow stages (then set WTAU, τ = min(Δx, Δz)/WTAU ≳ Δt/2).
 # METHODS: comma separated tableaus of the frozen step (default MIS54): MIS (MIS54, WSRK3 = Wicker–Skamarock
 # RK3, ...), Lawson (LRK4, LRK3, LRK2) or ETD (EB4, ETD2, EB1); Lawson and ETD freeze the fast part at qⁿ.
-# Output: table, frozen_moist_bubble_<PVAR>_<MICRO>[_tf<TAUFAC>].png (θ_e′, w, q_c′ at T, first method).
+# Output: table, frozen_moist_bubble_<PVAR>_<MICRO>[_<THVAR>][_<FAST>][_tf<TAUFAC>].png (θ_e′, w, q_c′ at T: every
+# method at Δt = DTPLOT and the RK4 reference).
 
 include(joinpath(@__DIR__, "euler2d_common.jl"))
 using LinearAlgebra: norm
@@ -32,7 +37,13 @@ FV.FV_PRESSURE_FORM[] = :gradp
 base = FV.FVModel(grid, gas, ρr, Θr)
 const PVAR = Symbol(get(ENV, "PVAR", "pi"))
 const MICRO = Symbol(get(ENV, "MICRO", "fast"))
-m = FV.MoistExnerModel(base; mgas = mg, pvar = PVAR, micro = MICRO, τfac = parse(Float64, get(ENV, "TAUFAC", "0.25")),
+const THVAR = Symbol(get(ENV, "THVAR", "thetarho"))
+const FAST = Symbol(get(ENV, "FAST", "ei"))
+const OFFC = parse(Float64, get(ENV, "OFFCENTER", FAST === :ei ? "0.1" : "0"))   # EI: off-centring 0.1 (docs/moist_verlet)
+const SMDIV = parse(Float64, get(ENV, "SMDIV", "0"))
+mgm = FV.MoistGas(thvar = THVAR)                                   # gas of the model; mg (ρθ_ρ) builds the initial state
+mθ = FV.MoistExnerModel(base; mgas = mg, pvar = PVAR, micro = MICRO)
+m = FV.MoistExnerModel(base; mgas = mgm, pvar = PVAR, micro = MICRO, τfac = parse(Float64, get(ENV, "TAUFAC", FAST === :ei ? "0.5" : "0.25")),
                         wτ = haskey(ENV, "WTAU") ? parse(Float64, ENV["WTAU"]) : nothing)
 const θe0, rt0 = 320.0, 0.02
 
@@ -120,16 +131,16 @@ for k in 1:nz, i in 1:nx
     ρp, Θp, Qp = perturb(grid.xc[i], grid.zc[k], ρ, Θ, Q, ps[k])
     q0[FV.iρ(grid, i, k)] = ρp; q0[FV.iΘ(grid, i, k)] = Θp; Q0[i, k] = Qp
 end
-rest = FV.moist_exner_state(m, qb, Qb)
-x0 = FV.moist_exner_state(m, q0, Q0)
+rest = FV.thermo_convert(mθ, m, FV.moist_exner_state(mθ, qb, Qb))
+x0 = FV.thermo_convert(mθ, m, FV.moist_exner_state(mθ, q0, Q0))
 Nr = TS.rhs_nonlinear(m, rest)
 @printf("moist bubble: %d × %d cells (Δx = %.0f m); rest-state residual max|N_W| = %.2e; surface p = %.1f Pa, ρ_c at z_1 = %.2e kg/m³\n",
         nx, nz, grid.dx, maximum(abs, Nr[FV.iW(grid, i, k)] for i in 1:nx, k in 2:nz), ps[1],
         FV.moist_state(mg, cols[1]...)[3])
 
-θe_field(x) = [FV.theta_e(mg, x[FV.iρ(grid, i, k)], x[FV.iΘ(grid, i, k)], x[FV.iV(m, i, k)], x[FV.iC(m, i, k)]) - θe0 for i in 1:nx, k in 1:nz]
+θe_field(x) = [FV.theta_e(mgm, x[FV.iρ(grid, i, k)], x[FV.iΘ(grid, i, k)], x[FV.iV(m, i, k)], x[FV.iC(m, i, k)]) - θe0 for i in 1:nx, k in 1:nz]
 qc_field(x) = [x[FV.iC(m, i, k)] / x[FV.iρ(grid, i, k)] for i in 1:nx, k in 1:nz]
-fb_field(x) = [abs(FV.fischer_burmeister(mg, x[FV.iρ(grid, i, k)], x[FV.iΘ(grid, i, k)], x[FV.iV(m, i, k)], x[FV.iC(m, i, k)])[1]) / x[FV.iρ(grid, i, k)] for i in 1:nx, k in 1:nz]
+fb_field(x) = [abs(FV.fischer_burmeister(mgm, x[FV.iρ(grid, i, k)], x[FV.iΘ(grid, i, k)], x[FV.iV(m, i, k)], x[FV.iC(m, i, k)])[1]) / x[FV.iρ(grid, i, k)] for i in 1:nx, k in 1:nz]
 w_field(x) = [x[FV.iW(grid, i, k)] / (0.5 * (x[FV.iρ(grid, i, k - 1)] + x[FV.iρ(grid, i, k)])) for i in 1:nx, k in 2:nz]
 tot(x, f) = sum(x[f(i, k)] for i in 1:nx, k in 1:nz)
 
@@ -142,17 +153,19 @@ tr = @elapsed xr = TS.run_rk4(m, x0, T / nref, nref)
 
 const METHODS = Symbol.(split(get(ENV, "METHODS", "MIS54"), ","))
 dτ = 0.85 * 0.92 * grid.dx / c
-res5 = nothing
+res = Pair{String,Vector{Float64}}[]
+const DTPLOT = parse(Float64, get(ENV, "DTPLOT", "5"))
+@printf("thermodynamic variable %s, pressure variable %s, fast integrator %s (offcenter %.2f, smdiv %.2f)\n", THVAR, PVAR, FAST, OFFC, SMDIV)
 const DTS = parse.(Float64, split(get(ENV, "DTS", "2,5,10"), ","))
 for meth in METHODS, Δt in DTS
     tab = TS.mis_tableau(meth)
     n = round(Int, T / Δt); nsub = ceil(Int, Δt / dτ)
     x = copy(x0)
-    w = TS.FrozenWork(m, length(x), tab); tmp = (zeros(length(x)), zeros(length(x)), zeros(length(x)))
+    w = TS.FrozenWork(m, length(x), tab); tmp = ntuple(_ -> zeros(length(x)), 4)
     drift = 0.0
     t = @elapsed try
         for _ in 1:n
-            TS.frozen_mis_step!(x, m, x, Δt, tab, w; nsub, fast = :hevi, tmp)
+            TS.frozen_mis_step!(x, m, x, Δt, tab, w; nsub, fast = FAST, tmp, smdiv = SMDIV, offcenter = OFFC)
             drift = max(drift, maximum(abs(x[FV.iπ(m, i, k)] / FV.moist_pvar(m, x[FV.iρ(grid, i, k)], x[FV.iΘ(grid, i, k)], x[FV.iV(m, i, k)], x[FV.iC(m, i, k)]) - 1)
                                        for i in 1:nx, k in 1:nz))
             TS.frozen_step_end!(m, x)
@@ -169,16 +182,17 @@ for meth in METHODS, Δt in DTS
             tot(x, (i, k) -> FV.iρ(grid, i, k)) / tot(x0, (i, k) -> FV.iρ(grid, i, k)) - 1,
             tot(x, (i, k) -> FV.iΘ(grid, i, k)) / tot(x0, (i, k) -> FV.iΘ(grid, i, k)) - 1,
             (tot(x, (i, k) -> FV.iV(m, i, k)) + tot(x, (i, k) -> FV.iC(m, i, k))) / (tot(x0, (i, k) -> FV.iV(m, i, k)) + tot(x0, (i, k) -> FV.iC(m, i, k))) - 1, drift, maximum(fb_field(x)), t)
-    Δt == 5.0 && res5 === nothing && (global res5 = x)
+    Δt == DTPLOT && push!(res, "$meth, Δt = $(round(Int, Δt)) s" => x)
     flush(stdout)
 end
 
-if res5 !== nothing
+if !isempty(res)
     qcp(x) = (qx = qc_field(x); 1e3 .* (qx .- sum(qx; dims = 1) ./ size(qx, 1)))
-    qcmax = max(1e-3, maximum(abs, qcp(res5)), maximum(abs, qcp(xr)))
-    fig = Figure(size = (1500, 800))
+    qcmax = max(1e-3, maximum(abs, qcp(xr)))
+    rows = vcat(res, ["RK4 reference" => xr])
+    fig = Figure(size = (1500, 400 * length(rows)))
     xk, zk = grid.xc ./ 1e3, grid.zc ./ 1e3
-    for (r, (lab, x)) in enumerate((("frozen $(METHODS[1]), Δt = 5 s", res5), ("RK4 reference", xr)))
+    for (r, (lab, x)) in enumerate(rows)
         for (col, (name, f, cr, cm)) in enumerate((("θ_e′ [K]", θe_field(x), (-0.5, 2.5), :thermal),
                                                    ("w [m/s]", w_field(x), (-12, 12), :balance),
                                                    ("q_c′ [g/kg] (minus horizontal mean)", qcp(x), (-1, 1) .* qcmax, :balance)))
@@ -187,7 +201,7 @@ if res5 !== nothing
             Colorbar(fig[r, 2col], hm)
         end
     end
-    fn = "frozen_moist_bubble_$(PVAR)_$(MICRO)$(haskey(ENV, "TAUFAC") ? "_tf" * ENV["TAUFAC"] : "").png"
+    fn = get(ENV, "OUT", "frozen_moist_bubble_$(PVAR)_$(MICRO)$(THVAR === :thetarho ? "" : "_$(THVAR)")$(FAST === :ei ? "" : "_$(FAST)")$(haskey(ENV, "TAUFAC") ? "_tf" * ENV["TAUFAC"] : "").png")
     save(fn, fig)
     println("wrote ", fn)
 end

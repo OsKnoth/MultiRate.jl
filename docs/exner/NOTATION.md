@@ -32,6 +32,8 @@ easy to confuse (candidates for renaming).
 | p | `p` | p = R_m T = p_0 (R_d Θ/p_0)^(1/(1−κ_M)) | |
 | θ_ρ | — | density potential temperature with κ_M | |
 | Θ = ρ θ_ρ | `Θ`, `iΘ` | prognostic thermodynamic variable | |
+| E = ρe | `Θ`, `iΘ` (`MoistGas(thvar = :energy)`) | internal energy c_vm T + e0v ρ_v as the thermodynamic variable instead of Θ (docs/moist_verlet) | same slot as Θ |
+| χ | `mθxL`, `mθxR`, `mθzB`, `mθzT` | transport coefficient of the thermodynamic variable per face and neighbour cell: θ_f, or e_f + p_c/ρ̄_f | |
 | π | `π`, `iπ` | (p/p_0)^κ_d, Exner pressure with the dry exponent (pvar = :pi) | iπ holds p when pvar = :p |
 | Θ̂ | `Θh`, `Θ̂x`, `Θ̂z` | p/(R_d π): ∇p = c_pd Θ̂ ∇π | |
 | θ_e | `theta_e` | equivalent potential temperature (poster eq. 17), diagnostic only | |
@@ -95,6 +97,6 @@ The first four blocks are the dry `FVModel` state (`base.nq`); `moist_exner_stat
 V, C (phase equilibrium split of Q) and π of the equation of state. π is recomputed from
 (ρ, Θ, V, C) after every MIS step (`frozen_step_end!`).
 
-Coefficient vector C(y) (`frozen_ncoef = 8N + 6Nz`, Nz = nx(nz+1)): x-faces 6 blocks of N
-(θx, qvx, Θ̂x, κxL, κxR, qcx), z-faces 6 blocks of Nz (θz, qvz, Θ̂z, κzB, κzT, qcz), cells 2 blocks
+Coefficient vector C(y) (`frozen_ncoef = 9N + 7Nz`, Nz = nx(nz+1)): x-faces 7 blocks of N
+(χxL, qvx, Θ̂x, κxL, κxR, qcx, χxR), z-faces 7 blocks of Nz (χzB, qvz, Θ̂z, κzB, κzT, qcz, χzT), cells 2 blocks
 of N (Q_θ/S_c, Q_π/S_c).

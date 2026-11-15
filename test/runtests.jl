@@ -841,6 +841,67 @@ end
     end
 end
 
+@testset "FV2D: moist air with the internal energy as thermodynamic variable (thvar = :energy)" begin
+    mgθ = FV.MoistGas(); mge = FV.MoistGas(thvar = :energy)
+    # equation of state: the same (T, p) from ρθ_ρ and from ρe, phase equilibrium, isochoric first law
+    ρ = 1.1; Θ = 300.0 * ρ
+    T, ρv, ρc, p = FV.moist_state(mgθ, ρ, Θ, 0.02ρ)
+    E = FV._Θof(mge, ρ, T, ρv, ρc)
+    Te, ρve, ρce, pe = FV.moist_state(mge, ρ, E, 0.02ρ)
+    @test Te ≈ T rtol = 1e-12
+    @test ρve ≈ ρv rtol = 1e-10
+    @test pe ≈ p rtol = 1e-12
+    @test FV._Θof(mgθ, ρ, T, ρv, ρc) ≈ Θ rtol = 1e-13
+    h = 1e-6 * ρ
+    ρd = ρ - ρv - ρc; Rm = mgθ.Rd * ρd + mgθ.Rv * ρv; cvm = mgθ.Cpd * ρd + mgθ.Cpv * ρv + mgθ.Cpl * ρc - Rm
+    st(s) = FV.moist_state(mge, ρ, E, ρv - s * h, ρc + s * h)               # condensation at fixed ρ and ρe
+    @test (st(1)[1] - st(-1)[1]) / 2h ≈ (FV.latent(mge, T) - mge.Rv * T) / cvm rtol = 1e-6
+    @test (st(1)[4] - st(-1)[4]) / 2h ≈ FV.pressure_phase_factor(mge, ρ, T, ρv, ρc) rtol = 1e-6
+    @test FV.theta_phase_factor(mge, ρ, E, T, p, ρv, ρc) == 0
+    gas = CM.Gas(R = mgθ.Rd, γ = mgθ.Cpd / (mgθ.Cpd - mgθ.Rd), p00 = mgθ.p0)
+    ρr, Θr, θr = CM.stratified_reference(gas; θ0 = 300.0, N = 0.01)
+    for g in (FV.FVGrid(12, 8, 12e3, 8e3), FV.FVGrid(16, 10, 40e3, 10e3; zs = x -> 800 / (1 + ((x - 20e3) / 4e3)^2))), pvar in (:pi, :p)
+        nx, nz = g.nx, g.nz
+        b = FV.FVModel(g, gas, ρr, Θr)
+        q = CM.project2d(b, (x, z) -> (ρ = ρr(z) * (1 + 1e-3 * sin(2π * x / g.Lx)); (ρ, 10ρ + sin(x / 2e3), 0.5 * sin(π * z / g.H) * cos(x / 3e3), Θr(z) * (1 + 1e-3 * cos(x / 2e3)))))
+        Q = [0.012 * q[FV.iρ(g, i, k)] for i in 1:nx, k in 1:nz]
+        mθ = FV.MoistExnerModel(b; mgas = mgθ, pvar, micro = :fast); me = FV.MoistExnerModel(b; mgas = mge, pvar, micro = :fast)
+        xθ = FV.moist_exner_state(mθ, q, Q)
+        x = FV.thermo_convert(mθ, me, xθ)
+        # the same temperature, pressure variable and water; converting back reproduces the state
+        @test maximum(abs, x[FV.iπ(me, 1, 1):end] - xθ[FV.iπ(mθ, 1, 1):end]) < 1e-12 * maximum(abs, xθ[FV.iπ(mθ, 1, 1):end])
+        @test maximum(abs, FV.thermo_convert(me, mθ, x) - xθ) < 1e-11 * maximum(abs, xθ)
+        C = zeros(TS.frozen_ncoef(me)); S = zeros(me.nq); TS.frozen_data!(C, S, me, x)
+        o(p, z = x) = TS.frozen_fast!(zeros(me.nq), me, C, z, p, S)
+        N = TS.rhs_nonlinear(me, x)
+        @test o(:all) == N
+        @test maximum(abs, o(:hthermo) + o(:hmomentum) + o(:vertical) - N) < 1e-13 * maximum(abs, N)
+        # ρ, U, W, V, C rows as with ρθ_ρ (the thermodynamic variable enters only its own row and the pressure row)
+        Nθ = TS.rhs_nonlinear(mθ, xθ)
+        for f in ((i, k) -> FV.iρ(g, i, k), (i, k) -> FV.iU(g, i, k), (i, k) -> FV.iV(me, i, k), (i, k) -> FV.iC(me, i, k))
+            @test maximum(abs(N[f(i, k)] - Nθ[f(i, k)]) for i in 1:nx, k in 1:nz) <= 1e-10 * maximum(abs(Nθ[f(i, k)]) for i in 1:nx, k in 1:nz)
+        end
+        # pressure row: the same pressure equation up to the discretization of the two forms
+        rel = maximum(abs(N[FV.iπ(me, i, k)] - Nθ[FV.iπ(mθ, i, k)]) for i in 1:nx, k in 1:nz) / maximum(abs(Nθ[FV.iπ(mθ, i, k)]) for i in 1:nx, k in 1:nz)
+        @test rel < 0.05
+        # exact column solve (the vertical part is linear; χ per face and cell)
+        TS.frozen_stage_begin!(me, C, x)
+        R = 1e-3 .* cos.(1:me.nq); Y = zeros(me.nq); FV.moist_column_solve!(Y, me, 3.0, R)
+        G(z) = TS.frozen_fast!(zeros(me.nq), me, C, z, :vertical, S)
+        @test maximum(abs.(Y .- 3.0 .* (G(x .+ Y) .- G(x)) .- R)) < 1e-9 * maximum(abs, R)
+        # frozen steps (MIS, Lawson, ETD; Verlet EI): mass and water conserved, close to RK4
+        xr = TS.run_rk4(me, x, 0.05, 400)
+        tot(y, f) = sum(g.Jc[i] * y[f(i, k)] for i in 1:nx, k in 1:nz)
+        for name in (:MIS54, :LRK4, :EB4)
+            y = TS.run_frozen(me, x, 5.0, 4; tab = TS.mis_tableau(name), nsub = 10, fast = :ei, offcenter = 0.1)
+            @test abs(tot(y, (i, k) -> FV.iρ(g, i, k)) / tot(x, (i, k) -> FV.iρ(g, i, k)) - 1) < 1e-13
+            @test abs((tot(y, (i, k) -> FV.iV(me, i, k)) + tot(y, (i, k) -> FV.iC(me, i, k))) /
+                      (tot(x, (i, k) -> FV.iV(me, i, k)) + tot(x, (i, k) -> FV.iC(me, i, k))) - 1) < 1e-13
+            @test norm(y[1:b.nq] - xr[1:b.nq]) < 0.1 * norm(xr[1:b.nq] - x[1:b.nq])
+        end
+    end
+end
+
 @testset "Fast substeps per stage: no fast step longer than Δt/nsub" begin
     @test TS.fast_substeps(0.4704, 3) == 2            # MIS2 stage 3 (round gave 1 step of 0.47 Δt)
     @test TS.fast_substeps(0.5, 12) == 6 && TS.fast_substeps(1 / 3, 12) == 4 && TS.fast_substeps(0.01, 12) == 1

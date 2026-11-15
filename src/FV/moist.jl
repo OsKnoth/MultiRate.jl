@@ -23,9 +23,15 @@
 # State [ρ; U; W; Θ; V; C; π]; π is recomputed from the equation of state after every MIS step.
 # pvar = :p: the pressure itself instead of π, (a, b, c, d) = ∂p/∂(ρ, Θ, V, C), plain -δp in the
 # momentum rows.
+# Thermodynamic variable (`MoistGas(thvar = ...)`): :thetarho (default) X = Θ = ρθ_ρ as above, or :energy,
+# the internal energy X = ρe = c_vm T + e0v ρ_v (c_vm = c_vd ρ_d + c_vv ρ_v + c_pl ρ_c, e0v = L0V - (c_pv - c_pl) T0),
+#     X_t + ∇·(e M) + p ∇·(M/ρ) = 0   (no phase source: ρe is constant in an isochoric phase change),
+# frozen as -δ(e_f F) - p_c δ(F/ρ̄_f): live mass flux F, frozen e_f, cell pressure p_c (the prognostic one) and
+# face density; a transport coefficient χ = e_f + p_c/ρ̄_f per face and neighbour cell (χ = θ_f for :thetarho).
+# Only the X row and the coefficients κ of the pressure row depend on the choice; the column solve does not.
 # Frozen form (fast part linear in z apart from the :fast phase source), per face f and its two cells:
-#     ρ, Θ, V, C, π rows: -δ(F), -δ(θ_f F), -δ(qv_f F), -δ(qc_f F), -δ(κ_cell,f F),
-#     κ_cell,f = a + b θ_f + c qv_f + d qc_f,
+#     ρ, X, V, C, π rows: -δ(F), -δ(χ_cell,f F), -δ(qv_f F), -δ(qc_f F), -δ(κ_cell,f F),
+#     κ_cell,f = a + b χ_cell,f + c qv_f + d qc_f,
 #     U, W rows: -c_pd Θ̂_f δπ (- g ρ̄),   slow: momentum advection (shift technique).
 
 Base.@kwdef struct MoistGas
@@ -37,7 +43,10 @@ Base.@kwdef struct MoistGas
     L0V::Float64 = 2.5e6
     T0::Float64 = 273.15
     p0::Float64 = 1.0e5
+    thvar::Symbol = :thetarho      # thermodynamic variable X: :thetarho (ρθ_ρ) or :energy (internal energy ρe)
 end
+"""Energy constant of the vapour: e_v = c_vv T + e0v, so that L(T) = h_v - h_l = e0v + (c_pv - c_pl) T."""
+@inline _e0v(mg::MoistGas) = mg.L0V - (mg.Cpv - mg.Cpl) * mg.T0
 
 """Saturation vapour pressure over water (CGDycore `fpws`)."""
 @inline psat(mg::MoistGas, T) = 661.2 * exp(17.368 * (T - mg.T0) / (238.88 + T - mg.T0))
@@ -48,6 +57,10 @@ end
 @inline function _temp(mg::MoistGas, ρ, Θ, Q, ρv)
     ρd = ρ - Q
     Rm = mg.Rd * ρd + mg.Rv * ρv
+    if mg.thvar === :energy                # ρe = c_vm T + e0v ρ_v, c_vm = c_vd ρ_d + c_vv ρ_v + c_pl ρ_c
+        cvm = (mg.Cpd - mg.Rd) * ρd + (mg.Cpv - mg.Rv) * ρv + mg.Cpl * (Q - ρv)
+        return (Θ - _e0v(mg) * ρv) / cvm, Rm
+    end
     κ = Rm / (mg.Cpd * ρd + mg.Cpv * ρv + mg.Cpl * (Q - ρv))
     return (mg.Rd * Θ / mg.p0^κ)^(1 / (1 - κ)) / Rm, Rm
 end
@@ -98,10 +111,11 @@ end
 theta_e(mg::MoistGas, ρ, Θ, Q) = (s = moist_state(mg, ρ, Θ, Q); _theta_e(mg, ρ, Q, s[1], s[2]))
 theta_e(mg::MoistGas, ρ, Θ, ρv, ρc) = _theta_e(mg, ρ, ρv + ρc, moist_state(mg, ρ, Θ, ρv, ρc)[1], ρv)
 
-"""Θ = ρθ_ρ of (ρ, T, ρv, ρc)."""
+"""Thermodynamic variable of (ρ, T, ρv, ρc): Θ = ρθ_ρ (thvar = :thetarho) or the internal energy ρe (:energy)."""
 @inline function _Θof(mg::MoistGas, ρ, T, ρv, ρc)
     ρd = ρ - ρv - ρc
     Rm = mg.Rd * ρd + mg.Rv * ρv
+    mg.thvar === :energy && return ((mg.Cpd - mg.Rd) * ρd + (mg.Cpv - mg.Rv) * ρv + mg.Cpl * ρc) * T + _e0v(mg) * ρv
     κ = Rm / (mg.Cpd * ρd + mg.Cpv * ρv + mg.Cpl * ρc)
     return (Rm * T)^(1 - κ) * mg.p0^κ / mg.Rd
 end
@@ -128,6 +142,7 @@ with the density-weighted R_m = R_d ρ_d + R_v ρ_v, c_pm = c_pd ρ_d + c_pv ρ_
 equation of state this is the isochoric first law, dT/dρ_c = (L - R_v T)/c_vm, c_vm = c_pm - R_m.
 """
 function theta_phase_factor(mg::MoistGas, ρ, Θ, T, p, ρv, ρc)
+    mg.thvar === :energy && return 0.0     # the internal energy does not change in an isochoric phase change
     ρd = ρ - ρv - ρc
     cpm = mg.Cpd * ρd + mg.Cpv * ρv + mg.Cpl * ρc; Rm = mg.Rd * ρd + mg.Rv * ρv
     L = latent(mg, T)
@@ -177,10 +192,12 @@ struct MoistExnerModel{M<:FVModel}
     column::ExnerColumn
     θq::Matrix{Float64}            # qv_f at the z-faces for the column solve
     θc::Matrix{Float64}            # qc_f at the z-faces for the column solve
+    θT::Matrix{Float64}            # χ of the cell above the z-face (column.θz: of the cell below)
 end
 function MoistExnerModel(base::FVModel; mgas::MoistGas = MoistGas(), pvar::Symbol = :pi,
                          micro::Symbol = :fast, τfac::Real = 0.25, cs::Real = 350.0, wτ = nothing, τ = nothing)
     pvar in (:pi, :p) || error("pvar: :pi or :p")
+    mgas.thvar in (:thetarho, :energy) || error("thvar: :thetarho or :energy")
     micro in (:slow, :fast, :none) || error("micro: :slow, :fast or :none")
     _no_cutcell(base); _no_background(base)
     g = base.grid
@@ -188,9 +205,9 @@ function MoistExnerModel(base::FVModel; mgas::MoistGas = MoistGas(), pvar::Symbo
     z1() = zeros(g.nx, g.nz + 1)
     h = min(g.dx, minimum(g.Jc) * g.dz)        # physical spacing (terrain following: thinnest layer), for wτ
     τv = τ !== nothing ? Float64(τ) : wτ !== nothing ? h / wτ : τfac * 0.85 * 0.92 * g.dx / cs   # HEVI: horizontal acoustic step
-    return MoistExnerModel(base, mgas, pvar, micro, τv, base.nq + 3N, zeros(8N + 6Nz), zeros(base.nq + 3N),
+    return MoistExnerModel(base, mgas, pvar, micro, τv, base.nq + 3N, zeros(9N + 7Nz), zeros(base.nq + 3N),
                            zeros(g.nx, g.nz), zeros(g.nx, g.nz), zeros(4, g.nx, g.nz),
-                           ExnerColumn(z1(), z1(), z1(), z1(), Dict{Float64,NTuple{3,Matrix{Float64}}}(), zeros(g.nz + 1), zeros(g.nx, g.nz), zeros(base.nq + 3N)), z1(), z1())
+                           ExnerColumn(z1(), z1(), z1(), z1(), Dict{Float64,NTuple{3,Matrix{Float64}}}(), zeros(g.nz + 1), zeros(g.nx, g.nz), zeros(base.nq + 3N)), z1(), z1(), z1())
 end
 
 @inline _cell(g, i, k) = ip(g, i) + (k - 1) * g.nx
@@ -211,17 +228,41 @@ function moist_exner_state(m::MoistExnerModel, q, Q)
 end
 base_state(m::MoistExnerModel, q) = q[1:m.base.nq]
 
+"""
+    thermo_convert(mfrom, mto, x)
+
+State of the model `mto` with the same (ρ, U, W, T, ρ_v, ρ_c) as the state x of `mfrom` (same grid, another
+thermodynamic variable `mgas.thvar`); the pressure variable from the equation of state of `mto`.
+"""
+function thermo_convert(mfrom::MoistExnerModel, mto::MoistExnerModel, x)
+    g = mfrom.base.grid
+    y = copy(x)
+    @inbounds for k in 1:g.nz, i in 1:g.nx
+        ρ, V, C = x[iρ(g, i, k)], x[iV(mfrom, i, k)], x[iC(mfrom, i, k)]
+        T = moist_state(mfrom.mgas, ρ, x[iΘ(g, i, k)], V, C)[1]
+        y[iΘ(g, i, k)] = _Θof(mto.mgas, ρ, T, V, C)
+        y[iπ(mto, i, k)] = moist_pvar(mto, ρ, y[iΘ(g, i, k)], V, C)
+    end
+    return y
+end
+
 # ------------------------------------------------------------------ coefficient vector
-# x-faces (N each): θx, qvx, Θ̂x, κxL, κxR, qcx; z-faces (Nz each): θz, qvz, Θ̂z, κzB, κzT, qcz;
-# cells (N each): ∂Θ/∂ρc|θe, ∂π/∂ρc along the phase change
+# x-faces (N each): χxL, qvx, Θ̂x, κxL, κxR, qcx, χxR; z-faces (Nz each): χzB, qvz, Θ̂z, κzB, κzT, qcz, χzT;
+# cells (N each): ∂X/∂ρc, ∂π/∂ρc along the phase change.
+# χ: transport coefficient of the thermodynamic variable X per face and neighbour cell (L/B: the cell left of /
+# below the face, R/T: right / above). thvar = :thetarho: χ = θ_f (upwind θ_ρ) for both cells.
+# thvar = :energy: internal energy in the form E_t = -δ(e_f F) - p_c δ(F/ρ̄_f) (live mass flux F, frozen e_f,
+# cell pressure p_c and face density ρ̄_f), i.e. χ_{c,f} = e_f + p_c/ρ̄_f.
 frozen_ncoef(m::MoistExnerModel) = length(m.C)
 @inline _mx(g, b, i, k) = b * _eN(g) + _e(g, i, k)
-@inline _mz(g, b, i, k) = 6 * _eN(g) + b * _eNz(g) + _e(g, i, k)
-@inline _mc(g, b, i, k) = 6 * _eN(g) + 6 * _eNz(g) + b * _eN(g) + _cell(g, i, k)
-@inline mθx(C, g, i, k) = C[_mx(g, 0, i, k)];  @inline mqx(C, g, i, k) = C[_mx(g, 1, i, k)]
+@inline _mz(g, b, i, k) = 7 * _eN(g) + b * _eNz(g) + _e(g, i, k)
+@inline _mc(g, b, i, k) = 7 * _eN(g) + 7 * _eNz(g) + b * _eN(g) + _cell(g, i, k)
+@inline mθxL(C, g, i, k) = C[_mx(g, 0, i, k)]; @inline mθxR(C, g, i, k) = C[_mx(g, 6, i, k)]
+@inline mθzB(C, g, i, k) = C[_mz(g, 0, i, k)]; @inline mθzT(C, g, i, k) = C[_mz(g, 6, i, k)]
+  @inline mqx(C, g, i, k) = C[_mx(g, 1, i, k)]
 @inline mPx(C, g, i, k) = C[_mx(g, 2, i, k)];  @inline mκxL(C, g, i, k) = C[_mx(g, 3, i, k)]
 @inline mκxR(C, g, i, k) = C[_mx(g, 4, i, k)]; @inline mcx(C, g, i, k) = C[_mx(g, 5, i, k)]
-@inline mθz(C, g, i, k) = C[_mz(g, 0, i, k)];  @inline mqz(C, g, i, k) = C[_mz(g, 1, i, k)]
+@inline mqz(C, g, i, k) = C[_mz(g, 1, i, k)]
 @inline mPz(C, g, i, k) = C[_mz(g, 2, i, k)];  @inline mκzB(C, g, i, k) = C[_mz(g, 3, i, k)]
 @inline mκzT(C, g, i, k) = C[_mz(g, 4, i, k)]; @inline mcz(C, g, i, k) = C[_mz(g, 5, i, k)]
 @inline mθS(C, g, i, k) = C[_mc(g, 0, i, k)];  @inline mκS(C, g, i, k) = C[_mc(g, 1, i, k)]
@@ -267,19 +308,31 @@ function frozen_data!(C, S, m::MoistExnerModel, q)
     # momentum coefficient: c_pd Θ̂, Θ̂ = p/(R_d π) with p = p0 π^(c_pd/R_d) (pvar = :pi), or 1 (pvar = :p)
     Θh(i, k) = m.pvar === :p ? 1.0 : (p = mg.p0 * q[iπ(m, i, k)]^(mg.Cpd / mg.Rd); mg.Cpd * p / (mg.Rd * q[iπ(m, i, k)]))
     κ(i, k, θf, qf, cf) = (ii = ip(g, i); m.abc[1, ii, k] + m.abc[2, ii, k] * θf + m.abc[3, ii, k] * qf + m.abc[4, ii, k] * cf)
+    en = mg.thvar === :energy
+    pc(i, k) = m.pvar === :p ? q[iπ(m, i, k)] : mg.p0 * q[iπ(m, i, k)]^(mg.Cpd / mg.Rd)   # prognostic pressure of the cell
     @inbounds for k in 1:nz, i in 1:nx
         θx = a.θfx[i, k]; F = a.Fx[i, k]
         qx = aface_x(g, m.φq, i, k, F); cx = aface_x(g, m.φc, i, k, F)
-        C[_mx(g, 0, i, k)] = θx; C[_mx(g, 1, i, k)] = qx; C[_mx(g, 5, i, k)] = cx
+        θL = θR = θx
+        if en                                   # χ = e_f + p_c/ρ̄_f
+            ρf = 0.5 * (q[iρ(g, i - 1, k)] + q[iρ(g, i, k)])
+            θL = θx + pc(i - 1, k) / ρf; θR = θx + pc(i, k) / ρf
+        end
+        C[_mx(g, 0, i, k)] = θL; C[_mx(g, 6, i, k)] = θR; C[_mx(g, 1, i, k)] = qx; C[_mx(g, 5, i, k)] = cx
         C[_mx(g, 2, i, k)] = 0.5 * (Θh(i - 1, k) + Θh(i, k))
-        C[_mx(g, 3, i, k)] = κ(i - 1, k, θx, qx, cx); C[_mx(g, 4, i, k)] = κ(i, k, θx, qx, cx)
+        C[_mx(g, 3, i, k)] = κ(i - 1, k, θL, qx, cx); C[_mx(g, 4, i, k)] = κ(i, k, θR, qx, cx)
         S[iU(g, i, k)] = a.SU[i, k]
         if k > 1
             θz = a.θfz[i, k]; Fz = a.Fz[i, k]
             qz = aface_z(g, m.φq, i, k, Fz); cz = aface_z(g, m.φc, i, k, Fz)
-            C[_mz(g, 0, i, k)] = θz; C[_mz(g, 1, i, k)] = qz; C[_mz(g, 5, i, k)] = cz
+            θB = θT = θz
+            if en
+                ρf = 0.5 * (q[iρ(g, i, k - 1)] + q[iρ(g, i, k)])
+                θB = θz + pc(i, k - 1) / ρf; θT = θz + pc(i, k) / ρf
+            end
+            C[_mz(g, 0, i, k)] = θB; C[_mz(g, 6, i, k)] = θT; C[_mz(g, 1, i, k)] = qz; C[_mz(g, 5, i, k)] = cz
             C[_mz(g, 2, i, k)] = 0.5 * (Θh(i, k - 1) + Θh(i, k))
-            C[_mz(g, 3, i, k)] = κ(i, k - 1, θz, qz, cz); C[_mz(g, 4, i, k)] = κ(i, k, θz, qz, cz)
+            C[_mz(g, 3, i, k)] = κ(i, k - 1, θB, qz, cz); C[_mz(g, 4, i, k)] = κ(i, k, θT, qz, cz)
             S[iW(g, i, k)] = a.SW[i, k]
         end
         m.micro === :slow && _phase!(S, m, C, q, i, k)
@@ -294,14 +347,14 @@ function mthermo_h!(out, m::MoistExnerModel, C, z)
         Ul, Ur = g.Jx[ip(g, i)] * z[iU(g, i, k)], g.Jx[ip(g, i + 1)] * z[iU(g, i + 1, k)]
         s = 1 / g.Jc[i]
         out[iρ(g, i, k)] -= s * (Ur - Ul) / g.dx
-        out[iΘ(g, i, k)] -= s * (mθx(C, g, i + 1, k) * Ur - mθx(C, g, i, k) * Ul) / g.dx
+        out[iΘ(g, i, k)] -= s * (mθxL(C, g, i + 1, k) * Ur - mθxR(C, g, i, k) * Ul) / g.dx
         out[iV(m, i, k)] -= s * (mqx(C, g, i + 1, k) * Ur - mqx(C, g, i, k) * Ul) / g.dx
         out[iC(m, i, k)] -= s * (mcx(C, g, i + 1, k) * Ur - mcx(C, g, i, k) * Ul) / g.dx
         out[iπ(m, i, k)] -= s * (mκxL(C, g, i + 1, k) * Ur - mκxR(C, g, i, k) * Ul) / g.dx
         if g.terrain && !_metric_implicit(g)     # horizontal part -z_x Ū of Ω
             Hb, Ht = Ωh(g, z, i, k), Ωh(g, z, i, k + 1)
             out[iρ(g, i, k)] -= s * (Ht - Hb) / g.dz
-            out[iΘ(g, i, k)] -= s * (mθz(C, g, i, k + 1) * Ht - mθz(C, g, i, k) * Hb) / g.dz
+            out[iΘ(g, i, k)] -= s * (mθzB(C, g, i, k + 1) * Ht - mθzT(C, g, i, k) * Hb) / g.dz
             out[iV(m, i, k)] -= s * (mqz(C, g, i, k + 1) * Ht - mqz(C, g, i, k) * Hb) / g.dz
             out[iC(m, i, k)] -= s * (mcz(C, g, i, k + 1) * Ht - mcz(C, g, i, k) * Hb) / g.dz
             out[iπ(m, i, k)] -= s * (mκzB(C, g, i, k + 1) * Ht - mκzT(C, g, i, k) * Hb) / g.dz
@@ -316,7 +369,7 @@ function mthermo_v!(out, m::MoistExnerModel, C, z)
         Wb, Wt = imp ? (Ωface(g, z, i, k), Ωface(g, z, i, k + 1)) : (Wface(g, z, i, k), Wface(g, z, i, k + 1))
         h = dzc(g, i)
         out[iρ(g, i, k)] -= (Wt - Wb) / h
-        out[iΘ(g, i, k)] -= (mθz(C, g, i, k + 1) * Wt - mθz(C, g, i, k) * Wb) / h
+        out[iΘ(g, i, k)] -= (mθzB(C, g, i, k + 1) * Wt - mθzT(C, g, i, k) * Wb) / h
         out[iV(m, i, k)] -= (mqz(C, g, i, k + 1) * Wt - mqz(C, g, i, k) * Wb) / h
         out[iC(m, i, k)] -= (mcz(C, g, i, k + 1) * Wt - mcz(C, g, i, k) * Wb) / h
         out[iπ(m, i, k)] -= (mκzB(C, g, i, k + 1) * Wt - mκzT(C, g, i, k) * Wb) / h
@@ -406,7 +459,7 @@ function frozen_stage_begin!(m::MoistExnerModel, C, z)
     s = m.column; g = m.base.grid
     @inbounds for k in 1:g.nz+1, i in 1:g.nx
         s.P[i, k] = mPz(C, g, i, k); s.cB[i, k] = mκzB(C, g, i, k); s.cT[i, k] = mκzT(C, g, i, k)
-        s.θz[i, k] = mθz(C, g, i, k); m.θq[i, k] = mqz(C, g, i, k); m.θc[i, k] = mcz(C, g, i, k)
+        s.θz[i, k] = mθzB(C, g, i, k); m.θT[i, k] = mθzT(C, g, i, k); m.θq[i, k] = mqz(C, g, i, k); m.θc[i, k] = mcz(C, g, i, k)
         k <= g.nz && (s.Px[i, k] = mPx(C, g, i, k))
     end
     empty!(s.factors)
@@ -434,7 +487,7 @@ function moist_column_solve!(Y, m::MoistExnerModel, c, R, cw = c)
         W[1] = 0.0; W[nz+1] = 0.0
         for k in 1:nz
             Y[iρ(g, i, k)] = R[iρ(g, i, k)] - (c / dz) * (W[k+1] - W[k])
-            Y[iΘ(g, i, k)] = R[iΘ(g, i, k)] - (c / dz) * (s.θz[i, k+1] * W[k+1] - s.θz[i, k] * W[k])
+            Y[iΘ(g, i, k)] = R[iΘ(g, i, k)] - (c / dz) * (s.θz[i, k+1] * W[k+1] - m.θT[i, k] * W[k])
             Y[iV(m, i, k)] = R[iV(m, i, k)] - (c / dz) * (m.θq[i, k+1] * W[k+1] - m.θq[i, k] * W[k])
             Y[iC(m, i, k)] = R[iC(m, i, k)] - (c / dz) * (m.θc[i, k+1] * W[k+1] - m.θc[i, k] * W[k])
             Y[iπ(m, i, k)] = R[iπ(m, i, k)] - (c / dz) * (s.cB[i, k+1] * W[k+1] - s.cT[i, k] * W[k])
