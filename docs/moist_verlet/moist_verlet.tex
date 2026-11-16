@@ -409,6 +409,25 @@ a^N&=a^{N-1/2}+\tfrac h2\big(-Kb^N+f_a(a^{N-1/2})\big),
 where $a^{n+1}=a^{n+1/2}-\tfrac h2Kb^{n+1}+\tfrac h2f_a(a^{n+1/2})$ is the full-level state that enters the column system and the
 phase change. Only the first and the last step are half steps; $a$ and $b$ start and end the stage at the same
 time level. The increment $a^{n+1/2}-a^{n-1/2}$ in \eqref{eq:extra} is the backward step of the previous small step.
+The implementation uses this form: the explicit part of the half step after the column solve (horizontal transport
+$K_0b^{n+1}$, slow forcing, sponge) is that of the half step before it, and only the phase change is evaluated anew at
+$a^{n+1}$. It agrees with the uncombined step to $4\cdot10^{-5}$ of $\max|w|$ on the hill; the run time is the same, since the
+transport is a small part of the cost of a small step.
+
+\paragraph{Forward--backward step without half steps.} As a second option the same splitting is used as a plain
+forward--backward step with $a$ and $b$ on the same level, as in WRF and MPAS:
+\begin{equation}
+b^{n+1}=b^n+h\,L_0\tilde a^n+h\big[(1-\beta)L_1a^n+\beta L_1a^{n+1}\big]+h\,f_b,\qquad
+a^{n+1}=a^n+h\big(-Kb^{n+1}+f_a(a^n)\big),\label{eq:CSFB}
+\end{equation}
+$\tilde a^n=a^n+\gamma_d(a^n-a^{n-1})$. $K_1b^{n+1}$ and $L_1a^{n+1}$ are again one column system, now with the weights $h$ (cell-centred
+rows) and $\beta h$ (momentum rows); off-centring and extrapolation act only in the force. The inner steps of \eqref{eq:CS} and
+\eqref{eq:CSFB} have the same structure, but in \eqref{eq:CS} $a$ is on half levels and enters the force at the full level
+$a^{n+1}=a^{n+1/2}-\tfrac h2Kb^{n+1}+\dots$, whereas \eqref{eq:CSFB} starts and ends the stage with $a$ and $b$ on the same
+level. \eqref{eq:CSFB} is therefore not symmetric, only of first order through the stage boundaries, and it applies the
+phase change once per small step with the weight $h$. (A first implementation that kept the half-step loop of \eqref{eq:CS}
+without the first and last half step evaluated the vertical force half a step behind and was unstable; it must be
+written as \eqref{eq:CSFB}.)
 
 \paragraph{Where the off-centring and the extrapolation act.} Both act only in the middle line, on the force.
 The half steps in $a$ stay symmetric, so that $a^{n+1/2}$ is the midpoint. This matters: in nearly incompressible
@@ -499,7 +518,8 @@ horizontal pressure force with an explicit and an implicit Euler step around the
 $\text{EI}_h=I_{\beta h}\circ K_h\circ E_{(1-\beta)h}$. For linear fast parts and $\varepsilon=0$ it coincides with \eqref{eq:CS}; it
 off-centres the whole transport (both half steps in $a$ with $(1-\beta)h$ and $\beta h$) and applies the phase change
 once per small step with the weight $h$. The WRF forward--backward step has the form of the inner steps above
-but starts and ends a stage without the half steps; it is conjugate to Verlet EI,
+but starts and ends a stage without the half steps, and it off-centres the vertical transport $K_1$ as well
+(\eqref{eq:CSFB} off-centres only $L_1$); it is conjugate to Verlet EI,
 $\text{WRF}_h=E_{(1-\beta)h}\,\text{EI}_h\,E_{(1-\beta)h}^{-1}$, and only of first order through the stage boundaries \cite{verletei}.
 
 %======================================================================
@@ -590,7 +610,8 @@ $S_c$ is part of $f_a$ and is applied in two explicit Euler half steps $h/2$ per
 stable for $h/(2\tau)\le2$. With
 $\tau=\tau_{\rm fac}\dtau_{\rm ac}$ and $h\approx\dtau_{\rm ac}$ the explicit phase change needs $\tau_{\rm fac}\gtrsim0.25$; robust is
 $h/(2\tau)\lesssim1$, $\tau_{\rm fac}\gtrsim0.5$ (Section~\ref{sec:bubble}). Verlet EI with combined half steps applies the
-phase change once with the weight $h$ and needs twice the relaxation time (Section~\ref{sec:conj}).
+phase change once with the weight $h$ and needs twice the relaxation time (Section~\ref{sec:conj}); the same holds
+for the forward--backward step \eqref{eq:CSFB} (Section~\ref{sec:hill}).
 
 \subsection{Check: one small step is neutral}
 The matrix of one small step \eqref{eq:CS} of the frozen fast operator with $\varepsilon=\gamma_d=0$ (no phase change, no forcing)
@@ -839,6 +860,54 @@ downstream, all heights), of the size of the difference of the two spatial discr
 bubble. The pressure variable matters less (1.6\,\%).
 \end{itemize}
 
+\subsection{Without damping, the forward--backward step and the relaxation time}\label{sec:hillfb}
+Table~\ref{tab:hillfb} collects runs with $\varepsilon=\gamma_d=0$ and with the forward--backward step \eqref{eq:CSFB}
+($X=\rho\theta_\rho$, $\pv=\pi$, $\dt=30$\,s); the differences are relative to \eqref{eq:CS} with MIS54, $\varepsilon=\gamma_d=0.1$, at the same
+$\tau_{\rm fac}$ (at $\tau_{\rm fac}=0.5$: $\max|w|=0.979$, $\max q_c=0.168$\,g/kg; at $\tau_{\rm fac}=1$: 0.973 and 0.167).
+\begin{table}[htbp]\centering\small
+\caption{Moist mountain wave after 6\,h, $X=\rho\theta_\rho$, $\pv=\pi$, $\dt=30$\,s: small steps \eqref{eq:CS} and \eqref{eq:CSFB}
+without damping and with other relaxation times. $\Delta$: difference to \eqref{eq:CS}, MIS54, $\varepsilon=\gamma_d=0.1$, same $\tau_{\rm fac}$.}\label{tab:hillfb}
+\begin{tabular}{llllccc}\toprule
+step & method & $\varepsilon=\gamma_d$ & $\tau_{\rm fac}$ & $\max|w|$ [m/s] & $\max q_c$ [g/kg] & $\Delta w$ / $\Delta q_c$\\\midrule
+\eqref{eq:CS} & RK3 & 0.1 & 0.5 & 0.980 & 0.168 & 0.6 / 1.2\,\%\\
+\eqref{eq:CS} & MIS54 & 0 & 0.5 & 0.975 & 0.167 & 25 / 4\,\%\\
+\eqref{eq:CS} & RK3 & 0 & 0.5 & \multicolumn{3}{l}{unstable ($\max|w|=1.8$\,m/s at 1\,h)}\\
+\eqref{eq:CS} & EB4 & 0 & 0.5 & \multicolumn{3}{l}{unstable after 1--2\,h}\\
+\eqref{eq:CS} & MIS54 & 0.1 & 1 & 0.973 & 0.167 & (1.3 / 1.2\,\% to $\tau_{\rm fac}=0.5$)\\\midrule
+\eqref{eq:CSFB} & MIS54 & 0.1 & 0.5 & 0.971 & 0.164 & 4.7 / 22\,\%\\
+\eqref{eq:CSFB} & RK3 & 0.1 & 0.5 & 0.972 & 0.251 & 3.8 / 82\,\%\\
+\eqref{eq:CSFB} & EB4 & 0.1 & 0.5 & 0.970 & 0.271 & 3.5 / 88\,\%\\
+\eqref{eq:CSFB} & MIS54 & 0 & 0.5 & 0.973 & 0.165 & 3.0 / 22\,\%\\
+\eqref{eq:CSFB} & RK3 & 0 & 0.5 & 0.965 & 0.310 & 3.1 / 117\,\%\\
+\eqref{eq:CSFB} & EB4 & 0 & 0.5 & 0.964 & 0.333 & 3.0 / 125\,\%\\
+\eqref{eq:CSFB} & MIS54 & 0.1 & 1 & 0.973 & 0.167 & 0.4 / 0.2\,\%\\
+\eqref{eq:CSFB} & RK3 & 0.1 & 1 & 0.973 & 0.167 & 0.5 / 0.2\,\%\\
+\eqref{eq:CSFB} & EB4 & 0.1 & 1 & 0.973 & 0.167 & 0.6 / 0.3\,\%\\
+\eqref{eq:CSFB} & MIS54, RK3, EB4 & 0.1 & 2 & 0.959 & 0.164 & 2.4 / 2.4\,\%\\\bottomrule
+\end{tabular}
+\end{table}
+\begin{itemize}
+\item \emph{Without damping} ($\varepsilon=\gamma_d=0$) \eqref{eq:CS} is stable only with MIS54, and the deep mode of the impulsive
+start stays (25\,\% of $\max|w|$). RK3 and EB4 become unstable within 1--2\,h. In EB4 the extrapolation never acts (every
+small step is a separate fast integration), and the transport is frozen at $q^n$ over the whole $\dt$; the slow,
+explicit remainder is then not damped. The damping is needed for RK3 and ETD.
+\item \emph{The forward--backward step} \eqref{eq:CSFB} is stable with all three slow integrators, also without damping,
+and it has no deep mode ($\Delta w=3$\,\%): its first-order error at the stage boundaries damps.
+\item \emph{Relaxation time.} With $\tau_{\rm fac}=0.5$ \eqref{eq:CSFB} produces a grid-scale, oscillating cap cloud over the crest
+with RK3 and EB4, with 1.5--2 times the condensate (Figure~\ref{fig:hill_csfb}); the wave cloud aloft is correct. This is the
+limit $h/\tau\lesssim1$ of Section~\ref{sec:fbstab}: \eqref{eq:CSFB} applies the phase change once with the weight $h$, so
+$h/\tau=2$ at $\tau_{\rm fac}=0.5$, the same failure as \eqref{eq:CS} with $\tau_{\rm fac}=0.25$. With $\tau_{\rm fac}=1$ ($h/\tau=1$) all three slow
+integrators agree with \eqref{eq:CS} at $\tau_{\rm fac}=1$ to 0.2--0.6\,\%, and with each other to 0.1\,\%.
+\item \emph{The relaxation time is part of the model.} Doubling $\tau_{\rm fac}$ changes the solution by 1.2--1.3\,\% (0.5 to 1) and 2.4\,\%
+(1 to 2), more than the time integration does at $\tau_{\rm fac}=1$. For the same $\tau$, \eqref{eq:CS} allows half the relaxation time of
+\eqref{eq:CSFB}, i.e.\ a phase change closer to equilibrium.
+\end{itemize}
+\begin{figure}[htbp]\centering
+\includegraphics[width=\textwidth]{hill_csfb.png}
+\caption{Forward--backward step \eqref{eq:CSFB}, RK3, $\varepsilon=\gamma_d=0.1$: $\tau_{\rm fac}=0.5$ (top), $\tau_{\rm fac}=1$ (middle) and their difference
+(bottom): the oscillating cap cloud over the crest at $h/\tau=2$.}\label{fig:hill_csfb}
+\end{figure}
+
 \begin{figure}[htbp]\centering
 \includegraphics[width=\textwidth]{hill_thvar.png}
 \caption{Moist mountain wave after 6\,h, MIS54, small step \eqref{eq:CS} with $\varepsilon=\gamma_d=0.1$, $\dt=30$\,s, implicit metric
@@ -894,8 +963,14 @@ In the bubble RK3 is four to ten times less accurate than MIS54 and EB4.
 \item The explicit relaxation is robust for $c/\tau\lesssim1$, $c$ the weight of one evaluation in the small step:
 $\tau_{\rm fac}\ge0.5$ with the explicit Verlet step and with \eqref{eq:CS} (two half steps $h/2$), $\tau_{\rm fac}\ge1$ with Verlet EI
 (one step $h$); with $\tau_{\rm fac}=0.5$ all slow integrators are stable in the bubble and on the hill.
+The forward--backward step \eqref{eq:CSFB} (one step $h$) needs $\tau_{\rm fac}\ge1$ like Verlet EI: at $\tau_{\rm fac}=0.5$ RK3 and EB4 give
+an oscillating cap cloud with 1.5--2 times the condensate, at $\tau_{\rm fac}=1$ it agrees with \eqref{eq:CS} to 0.2--0.6\,\%.
+The relaxation time itself changes the solution by 1--2.5\,\% per doubling.
 A linearly implicit relaxation (the phase change as part of the implicit step, or a pointwise implicit
 step after the horizontal part) would remove this limit.
+\item Without off-centring and extrapolation \eqref{eq:CS} is stable on the hill only with MIS54 (with the deep mode of
+the impulsive start); RK3 and EB4 need the damping. \eqref{eq:CSFB} is stable with all three without damping and
+damps the deep mode through its first-order stage boundaries.
 \item Open: steep terrain in the moist model, total energy as $X$, a limiter for the moisture
 reconstruction, sedimentation and rain, three dimensions.
 \end{enumerate}
@@ -904,14 +979,15 @@ reconstruction, sedimentation and rain, three dimensions.
 \section{Code}
 The model is \code{FV.MoistExnerModel} (\code{src/FV/moist.jl}) of MultiRate.jl with the options
 \code{mgas = MoistGas(thvar = :thetarho | :energy)}, \code{pvar = :pi | :p}, \code{micro = :fast}, \code{$\tau$fac};
-the fast integrator \code{fast = :cs} (small step \eqref{eq:CS}; \code{:verlet} for the bubble) with \code{offcenter} $=\varepsilon$ and \code{smdiv} $=\gamma_d$
+the fast integrator \code{fast = :cs} (small step \eqref{eq:CS}; \code{:csfb} the forward--backward step \eqref{eq:CSFB};
+\code{:verlet} for the bubble) with \code{offcenter} $=\varepsilon$ and \code{smdiv} $=\gamma_d$
 (\code{frozen\_fast\_solve!}, \code{src/TimeStepping/frozen.jl}); the implicit metric term
 \code{FV.FV\_METRIC\_IMPLICIT[] = true}; the slow integrators \code{mis\_tableau(:WSRK3 | :MIS54 | :EB4)} in
 \code{frozen\_mis\_step!}. The fast part is provided in the parts \code{:hmomentum} ($L_0$), \code{:hthermo}
 ($K_0$, $f_a$, $f_b$) and \code{:vertical} ($K_1$, $L_1$), and the column solve by \code{moist\_column\_solve!} with
-separate weights for the cell-centred and the momentum rows. The implementation evaluates both half steps
-in $a$ of every small step (the inner steps are not yet combined into the forward--backward form), i.e.\ the
-horizontal transport twice per small step. Examples:
+separate weights for the cell-centred and the momentum rows. The small steps of a stage are combined into the
+forward--backward form (\code{\_cs\_loop!}); the phase change is re-evaluated through the hook \code{frozen\_phase!}.
+\code{CS\_MERGE[] = false} evaluates both half steps of every small step. Examples:
 \code{examples/frozen\_moist\_bubble.jl}, \code{examples/frozen\_moist\_hill.jl}.
 
 \begin{thebibliography}{99}
