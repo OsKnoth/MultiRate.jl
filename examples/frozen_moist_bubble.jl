@@ -152,7 +152,9 @@ tr = @elapsed xr = TS.run_rk4(m, x0, T / nref, nref)
         nref, tr, extrema(θer)..., maximum(abs, w_field(xr)), maximum(qc_field(xr)), m.τ, MICRO)
 
 const METHODS = Symbol.(split(get(ENV, "METHODS", "MIS54"), ","))
-dτ = 0.85 * 0.92 * grid.dx / c
+# small step: 0.9 of the 2D acoustic limit of the explicit forward–backward step, c Δτ √(1/Δx² + 1/Δz²) ≤ 1
+# (Δx = Δz: c Δτ/Δx ≤ 1/√2). The former 0.85·0.92 Δx/c (c Δτ/Δx ≈ 0.75) exceeded it; Δt = 10 s blew up for τfac ≥ 1.
+dτ = 0.9 / (c * sqrt(1 / grid.dx^2 + 1 / grid.dz^2))
 res = Pair{String,Vector{Float64}}[]
 const DTPLOT = parse(Float64, get(ENV, "DTPLOT", "5"))
 @printf("thermodynamic variable %s, pressure variable %s, fast integrator %s (offcenter %.2f, smdiv %.2f)\n", THVAR, PVAR, FAST, OFFC, SMDIV)

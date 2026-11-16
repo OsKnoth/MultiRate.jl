@@ -304,14 +304,21 @@ function exner_derivatives(mg::MoistGas, ρ, Θ, ρv, ρc; f = moist_exner)
             (f(mg, ρ, Θ, ρv, ρc + dQ) - f(mg, ρ, Θ, ρv, ρc - dQ)) / 2dQ)
 end
 
-"""Phase-change sources of cell (i, k) for the state z: S_c to C, -S_c to V, (∂Θ/∂ρc) S_c to Θ, κ_S S_c to π."""
+"""Phase-change sources of cell (i, k) for the state z: S_c to C, -S_c to V, (∂Θ/∂ρc) S_c to Θ, κ_S S_c to π.
+The factors ∂Θ/∂ρc and κ_S = ∂π/∂ρc (or ∂p/∂ρc) are evaluated at the live state z (not frozen at the slow stage):
+with frozen factors the prognostic π leaves the equation of state while ρc relaxes, and the bubble at Δt = 10 s, τfac ≥ 1 blows up."""
 @inline function _phase!(out, m::MoistExnerModel, C, z, i, k)
-    g = m.base.grid
-    Sc = -fischer_burmeister(m.mgas, z[iρ(g, i, k)], z[iΘ(g, i, k)], z[iV(m, i, k)], z[iC(m, i, k)])[1] / m.τ
+    g = m.base.grid; mg = m.mgas
+    ρ, Θ, ρv, ρc = z[iρ(g, i, k)], z[iΘ(g, i, k)], z[iV(m, i, k)], z[iC(m, i, k)]
+    φ, T = fischer_burmeister(mg, ρ, Θ, ρv, ρc)
+    Sc = -φ / m.τ
+    p = (mg.Rd * (ρ - ρv - ρc) + mg.Rv * ρv) * T
+    Qp = pressure_phase_factor(mg, ρ, T, ρv, ρc)
+    κS = m.pvar === :p ? Qp : (mg.Rd / mg.Cpd) * (p / mg.p0)^(mg.Rd / mg.Cpd) / p * Qp
     out[iC(m, i, k)] += Sc
     out[iV(m, i, k)] -= Sc
-    out[iΘ(g, i, k)] += mθS(C, g, i, k) * Sc
-    out[iπ(m, i, k)] += mκS(C, g, i, k) * Sc
+    out[iΘ(g, i, k)] += theta_phase_factor(mg, ρ, Θ, T, p, ρv, ρc) * Sc
+    out[iπ(m, i, k)] += κS * Sc
     return out
 end
 
@@ -327,11 +334,7 @@ function frozen_data!(C, S, m::MoistExnerModel, q)
         m.φq[i, k] = ρv / ρ; m.φc[i, k] = ρc / ρ
         d = exner_derivatives(mg, ρ, Θ, ρv, ρc; f)
         for j in 1:4; m.abc[j, i, k] = d[j]; end
-        T, _, _, p = moist_state(mg, ρ, Θ, ρv, ρc)
-        C[_mc(g, 0, i, k)] = theta_phase_factor(mg, ρ, Θ, T, p, ρv, ρc)          # Q_Θ / S_c (Bryan–Fritsch)
-        Qp = pressure_phase_factor(mg, ρ, T, ρv, ρc)                            # Q_p / S_c
-        C[_mc(g, 1, i, k)] = m.pvar === :p ? Qp : (mg.Rd / mg.Cpd) * (p / mg.p0)^(mg.Rd / mg.Cpd) / p * Qp
-    end
+    end                                         # (phase factors: live in `_phase!`; the C slots stay unused)
     # momentum coefficient: c_pd Θ̂, Θ̂ = p/(R_d π) with p = p0 π^(c_pd/R_d) (pvar = :pi), or 1 (pvar = :p)
     Θh(i, k) = m.pvar === :p ? 1.0 : (p = mg.p0 * q[iπ(m, i, k)]^(mg.Cpd / mg.Rd); mg.Cpd * p / (mg.Rd * q[iπ(m, i, k)]))
     κ(i, k, θf, qf, cf) = (ii = ip(g, i); m.abc[1, ii, k] + m.abc[2, ii, k] * θf + m.abc[3, ii, k] * qf + m.abc[4, ii, k] * cf)
