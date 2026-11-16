@@ -6,16 +6,17 @@
 # (dry θ), subsaturated air with relative humidity RH0 below ZRH, decreasing to 20 % 2 km higher.
 # Air lifted by the wave saturates: a cloud forms where the displacement is upward.
 #
-#     [PVAR=pi|p] [THVAR=thetarho|energy] [FAST=cs|ei|wrf|hevi] [OFFCENTER=ε] [SMDIV=γ] [RH0=0.95] [H0=400] [DT=30]
-#         [METHOD=MIS54|WSRK3|EB4|...] [TAUFAC=0.5] [METRIC=implicit|explicit] \
+#     [PVAR=pi|p] [THVAR=thetarho|energy|entropy] [FAST=cs|csfb|ei|wrf|hevi] [OFFCENTER=ε] [SMDIV=γ] [RH0=0.95] [H0=400] [DT=30]
+#         [METHOD=MIS54|WSRK3|EB4|...] [TAUFAC=0.5] [METRIC=implicit|explicit] [GRAVITY=implicit|explicit] \
 #         julia --project=examples examples/frozen_moist_hill.jl [T] [nx]
 #
 # RH0 = 0: dry run. Periodic channel 40 a, model top 12 km, Rayleigh damping of W above 8 km,
 # nx × 48 cells (default nx = 200, Δx = 2 km, Δη = 250 m). Each column is in discrete hydrostatic
 # balance with its own layer thickness J Δη; the flow starts impulsively. T default 21.6 a/U.
-# THVAR: thermodynamic variable ρθ_ρ (default) or internal energy ρe; FAST: fast integrator (component splitting CS (default; docs/moist_verlet, Section 7), Verlet EI, WRF, HEVI)
+# THVAR: thermodynamic variable ρθ_ρ (default), internal energy ρe or moist entropy ρs; FAST: fast integrator (component splitting CS (default; docs/moist_verlet, Section 7), Verlet EI, WRF, HEVI)
 # with off-centring OFFCENTER (CS, EI default 0.1) and extrapolation SMDIV (CS default 0.1); METRIC: vertical-derivative part of the metric term
-# implicit (default, Ω column solve, docs/verlet_ei) or explicit; CS and EI use TAUFAC = 0.5 by default; METHOD: MIS, ETD (EB4, ...) or Lawson (LRK4, ...) tableau.
+# implicit (default, Ω column solve, docs/verlet_ei) or explicit; GRAVITY: gravity in the implicit vertical part (default) or in the
+# explicit momentum part (FV_GRAVITY_IMPLICIT); CS uses TAUFAC = 0.5, CSFB and EI TAUFAC = 1 by default; METHOD: MIS, ETD (EB4, ...) or Lawson (LRK4, ...) tableau.
 # Output: table (every hour), frozen_moist_hill_<PVAR>_rh<RH0 %>.png (or _dry; w, q_c, RH at T; name OUT),
 # and with SAVE=file the fields w, q_c, RH (for difference plots).
 
@@ -41,6 +42,9 @@ const SMDIV = parse(Float64, get(ENV, "SMDIV", FAST in (:cs, :csfb) ? "0.1" : "0
 const METRIC = Symbol(get(ENV, "METRIC", "implicit"))         # vertical metric term: implicit (Ω column solve) or explicit
 METRIC in (:implicit, :explicit) || error("METRIC: implicit or explicit")
 FV.FV_METRIC_IMPLICIT[] = METRIC === :implicit
+const GRAVITY = Symbol(get(ENV, "GRAVITY", "implicit"))       # gravity: implicit (column system) or explicit (with L₀)
+GRAVITY in (:implicit, :explicit) || error("GRAVITY: implicit or explicit")
+FV.FV_GRAVITY_IMPLICIT[] = GRAVITY === :implicit
 mg = FV.MoistGas(thvar = THVAR)
 gas = Gas(R = mg.Rd, γ = mg.Cpd / (mg.Cpd - mg.Rd), p00 = mg.p0, g = 9.81)
 grid = FV.FVGrid(nx, nz, LX, HTOP; zs = x -> h0 / (1 + ((x - xm) / a)^2))
@@ -126,7 +130,7 @@ dτ = 0.85 * 0.92 * grid.dx / c
 nsub = ceil(Int, DT / dτ)
 tab = TS.mis_tableau(METHOD)
 n = round(Int, T / DT); every = max(1, round(Int, 3600 / DT))
-@printf("%s, Δt = %.0f s, nsub = %d (Δτ = %.2f s), %d steps; thermodynamic variable %s, fast integrator %s (offcenter %.2f, smdiv %.2f), metric term %s\n", METHOD, DT, nsub, DT / nsub, n, THVAR, FAST, OFFC, SMDIV, METRIC)
+@printf("%s, Δt = %.0f s, nsub = %d (Δτ = %.2f s), %d steps; thermodynamic variable %s, fast integrator %s (offcenter %.2f, smdiv %.2f), metric term %s, gravity %s\n", METHOD, DT, nsub, DT / nsub, n, THVAR, FAST, OFFC, SMDIV, METRIC, GRAVITY)
 x = copy(x0)
 w = TS.FrozenWork(m, length(x), tab); tmp = ntuple(_ -> zeros(length(x)), 6)
 mass0, water0 = tot(x0, (i, k) -> FV.iρ(grid, i, k)), tot(x0, (i, k) -> FV.iV(m, i, k)) + tot(x0, (i, k) -> FV.iC(m, i, k))

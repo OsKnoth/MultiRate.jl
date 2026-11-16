@@ -841,8 +841,8 @@ end
     end
 end
 
-@testset "FV2D: moist air with the internal energy as thermodynamic variable (thvar = :energy)" begin
-    mgθ = FV.MoistGas(); mge = FV.MoistGas(thvar = :energy)
+@testset "FV2D: moist air with the internal energy or the moist entropy as thermodynamic variable (thvar = $thv)" for thv in (:energy, :entropy)
+    mgθ = FV.MoistGas(); mge = FV.MoistGas(thvar = thv); mgE = FV.MoistGas(thvar = :energy)
     # equation of state: the same (T, p) from ρθ_ρ and from ρe, phase equilibrium, isochoric first law
     ρ = 1.1; Θ = 300.0 * ρ
     T, ρv, ρc, p = FV.moist_state(mgθ, ρ, Θ, 0.02ρ)
@@ -854,10 +854,21 @@ end
     @test FV._Θof(mgθ, ρ, T, ρv, ρc) ≈ Θ rtol = 1e-13
     h = 1e-6 * ρ
     ρd = ρ - ρv - ρc; Rm = mgθ.Rd * ρd + mgθ.Rv * ρv; cvm = mgθ.Cpd * ρd + mgθ.Cpv * ρv + mgθ.Cpl * ρc - Rm
-    st(s) = FV.moist_state(mge, ρ, E, ρv - s * h, ρc + s * h)               # condensation at fixed ρ and ρe
+    Ee = FV._Θof(mgE, ρ, T, ρv, ρc)
+    st(s) = FV.moist_state(mgE, ρ, Ee, ρv - s * h, ρc + s * h)              # condensation at fixed ρ and ρe
     @test (st(1)[1] - st(-1)[1]) / 2h ≈ (FV.latent(mge, T) - mge.Rv * T) / cvm rtol = 1e-6
     @test (st(1)[4] - st(-1)[4]) / 2h ≈ FV.pressure_phase_factor(mge, ρ, T, ρv, ρc) rtol = 1e-6
-    @test FV.theta_phase_factor(mge, ρ, E, T, p, ρv, ρc) == 0
+    if thv === :energy
+        @test FV.theta_phase_factor(mge, ρ, E, T, p, ρv, ρc) == 0
+    else
+        # dρs/dρ_c along the isochoric, energy-conserving phase change; zero at saturation at T0
+        Xs(s) = FV._Θof(mge, ρ, st(s)[1], ρv - s * h, ρc + s * h)
+        @test (Xs(1) - Xs(-1)) / 2h ≈ FV.theta_phase_factor(mge, ρ, E, T, p, ρv, ρc) rtol = 1e-6
+        ρv0 = FV.psat(mge, mge.T0) / (mge.Rv * mge.T0)
+        @test abs(FV.theta_phase_factor(mge, 1.0, 0.0, mge.T0, 0.0, ρv0, 1e-4)) < 1e-12
+        # the dry limit ρ_v = 0 is regular
+        @test FV.moist_state(mge, ρ, FV._Θof(mge, ρ, 290.0, 0.0, 0.0), 0.0, 0.0)[1] ≈ 290.0 rtol = 1e-13
+    end
     gas = CM.Gas(R = mgθ.Rd, γ = mgθ.Cpd / (mgθ.Cpd - mgθ.Rd), p00 = mgθ.p0)
     ρr, Θr, θr = CM.stratified_reference(gas; θ0 = 300.0, N = 0.01)
     for g in (FV.FVGrid(12, 8, 12e3, 8e3), FV.FVGrid(16, 10, 40e3, 10e3; zs = x -> 800 / (1 + ((x - 20e3) / 4e3)^2))), pvar in (:pi, :p)
@@ -899,6 +910,53 @@ end
                       (tot(x, (i, k) -> FV.iV(me, i, k)) + tot(x, (i, k) -> FV.iC(me, i, k))) - 1) < 1e-13
             @test norm(y[1:b.nq] - xr[1:b.nq]) < 0.1 * norm(xr[1:b.nq] - x[1:b.nq])
         end
+    end
+end
+
+@testset "FV2D: gravity explicit (FV_GRAVITY_IMPLICIT[] = false), moist model, terrain, metric term implicit" begin
+    mg = FV.MoistGas()
+    gas = CM.Gas(R = mg.Rd, γ = mg.Cpd / (mg.Cpd - mg.Rd), p00 = mg.p0)
+    ρr, Θr, θr = CM.stratified_reference(gas; θ0 = 300.0, N = 0.01)
+    g = FV.FVGrid(16, 10, 40e3, 10e3; zs = x -> 800 / (1 + ((x - 20e3) / 4e3)^2))
+    b = FV.FVModel(g, gas, ρr, Θr)
+    q = CM.project2d(b, (x, z) -> (ρ = ρr(z) * (1 + 1e-3 * sin(2π * x / g.Lx)); (ρ, 10ρ + sin(x / 2e3), 0.5 * sin(π * z / g.H) * cos(x / 3e3), Θr(z) * (1 + 1e-3 * cos(x / 2e3)))))
+    Q = [0.012 * q[FV.iρ(g, i, k)] for i in 1:16, k in 1:10]
+    try
+        FV.FV_METRIC_IMPLICIT[] = true
+        m = FV.MoistExnerModel(b; mgas = mg, pvar = :pi, micro = :fast)
+        x = FV.moist_exner_state(m, q, Q)
+        C = zeros(TS.frozen_ncoef(m)); S = zeros(m.nq); TS.frozen_data!(C, S, m, x)
+        o(p, z = x) = TS.frozen_fast!(zeros(m.nq), m, C, z, p, S)
+        N = TS.rhs_nonlinear(m, x)
+        V1 = o(:vertical); H1 = o(:hmomentum)
+        y1 = TS.run_frozen(m, x, 5.0, 4; tab = TS.mis_tableau(:MIS54), nsub = 10, fast = :cs, offcenter = 0.1, smdiv = 0.1)
+        FV.FV_GRAVITY_IMPLICIT[] = false
+        @test TS.rhs_nonlinear(m, x) ≈ N rtol = 1e-14
+        @test maximum(abs, o(:hthermo) + o(:hmomentum) + o(:vertical) - N) < 1e-13 * maximum(abs, N)
+        # gravity moved from the vertical to the explicit momentum part
+        Gw = FV.gravity_w!(zeros(m.nq), m, x)
+        @test maximum(abs, V1 - o(:vertical) - Gw) < 1e-12 * maximum(abs, V1)
+        @test maximum(abs, o(:hmomentum) - H1 - Gw) < 1e-12 * maximum(abs, Gw)
+        # column solve of the vertical part without gravity: exact with the explicit metric term (with the
+        # implicit one the matrix uses the column-local 1 + z_x², an approximate Jacobian)
+        FV.FV_METRIC_IMPLICIT[] = false
+        TS.frozen_data!(C, S, m, x); TS.frozen_stage_begin!(m, C, x)
+        R = 1e-3 .* cos.(1:m.nq); Y = zeros(m.nq); FV.moist_column_solve!(Y, m, 3.0, R, 2.0)
+        G(z) = TS.frozen_fast!(zeros(m.nq), m, C, z, :vertical, S)
+        D(v) = FV._scale_tw!(copy(v), g, 3.0, 2.0)
+        @test maximum(abs.(Y .- D(G(x .+ Y) .- G(x)) .- R)) < 1e-9 * maximum(abs, R)
+        FV.FV_METRIC_IMPLICIT[] = true; TS.frozen_data!(C, S, m, x)
+        # the small step :cs and :csfb with explicit gravity: close to implicit gravity and to RK4
+        xr = TS.run_rk4(m, x, 0.05, 400)
+        for fast in (:cs, :csfb)
+            y = TS.run_frozen(m, x, 5.0, 4; tab = TS.mis_tableau(:MIS54), nsub = 10, fast, offcenter = 0.1, smdiv = 0.1)
+            @test all(isfinite, y)
+            @test norm(y[1:b.nq] - xr[1:b.nq]) < 0.1 * norm(xr[1:b.nq] - x[1:b.nq])
+            fast === :cs && @test norm(y[1:b.nq] - y1[1:b.nq]) < 0.05 * norm(xr[1:b.nq] - x[1:b.nq])
+        end
+    finally
+        FV.FV_GRAVITY_IMPLICIT[] = true
+        FV.FV_METRIC_IMPLICIT[] = false
     end
 end
 

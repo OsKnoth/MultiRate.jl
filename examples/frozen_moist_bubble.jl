@@ -3,10 +3,10 @@
 # no saturation adjustment, condensation as an explicit Fischer–Burmeister relaxation with τ on the fast scale
 # and the latent heating Q_θ in the ρθ_ρ equation; π recomputed after every MIS step).
 #
-#     [PVAR=pi|p] [THVAR=thetarho|energy] [FAST=verlet|ei|wrf|hevi] [OFFCENTER=ε] [SMDIV=γ] [MICRO=fast|slow] [TAUFAC=f] [WTAU=w]
+#     [PVAR=pi|p] [THVAR=thetarho|energy|entropy] [FAST=verlet|ei|wrf|hevi] [OFFCENTER=ε] [SMDIV=γ] [MICRO=fast|slow] [TAUFAC=f] [WTAU=w]
 #         [METHODS=MIS54,WSRK3,LRK4,EB4] [DTS=2,5,10] [DTPLOT=5] julia --project=examples examples/frozen_moist_bubble.jl [T] [nx]
 #
-# THVAR: thermodynamic variable, ρθ_ρ (default) or the internal energy ρe; FAST: fast integrator (explicit Störmer–Verlet (default; the grid is isotropic), Verlet EI, WRF,
+# THVAR: thermodynamic variable, ρθ_ρ (default), the internal energy ρe or the moist entropy ρs; FAST: fast integrator (explicit Störmer–Verlet (default; the grid is isotropic), Verlet EI, WRF,
 # HEVI) with the off-centring OFFCENTER and the extrapolation SMDIV (docs/verlet_ei).
 #
 # Saturated, neutral atmosphere θ_e = 320 K, r_t = 0.02, 20 km × 10 km, nx × nx/2 cells (default

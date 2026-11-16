@@ -31,8 +31,8 @@ an additional prognostic variable whose equation follows from the equation of st
 rule. The momentum equations then contain only the pressure variable and the density, and the
 column system is independent of the thermodynamic variable; the thermodynamic variable and the two
 moisture variables (vapour and cloud water) are transported by the evolving mass flux with frozen
-face values and follow by back substitution. We compare the density potential temperature and the
-internal energy as thermodynamic variables. Condensation is an explicit Fischer--Burmeister
+face values and follow by back substitution. We compare the density potential temperature, the
+internal energy and the moist entropy as thermodynamic variables. Condensation is an explicit Fischer--Burmeister
 relaxation without saturation adjustment. The small step is embedded in multirate infinitesimal
 step (MIS) methods, including the Runge--Kutta method of Wicker and Skamarock, and in exponential
 time differencing (ETD). Results are shown for a moist rising bubble on an isotropic grid, where the
@@ -45,7 +45,7 @@ same step with all terms explicit is used, and for a moist mountain wave.
 \section{Introduction}\label{sec:intro}
 Split-explicit methods integrate the slow part of the compressible equations (advection) with a
 large step $\dt$ and the fast part (acoustic and gravity waves) with $n_{\rm sub}$ small steps
-$\dtau$ per large step \cite{klempwil,sk92,sk94,ws,ksd}. In the Runge--Kutta form of Wicker and
+$\dtau$ per large step \cite{klempwil,sk92,sk94,ws,ksd,horn}. In the Runge--Kutta form of Wicker and
 Skamarock \cite{ws}, used in WRF \cite{wrf}, each stage of a three-stage Runge--Kutta method is an
 integration of the fast system with the slow tendency held constant. Multirate infinitesimal step
 (MIS) methods \cite{wkg,knothwensch,bauer} generalise this construction: the stage is the exact or
@@ -76,12 +76,13 @@ parts it coincides with the Verlet EI step \cite{imex}, to which the WRF step is
 Moisture adds two difficulties. First, the equation of state depends on the vapour and condensate
 densities, and the choice of the thermodynamic variable (potential temperature, density potential
 temperature, internal energy, entropy) changes the structure of the equations
-\cite{satoh,thuburn}. Second, phase changes are fast compared with $\dt$. We avoid both difficulties
+\cite{satoh,thuburn,horn,ooyama,marquet}. Second, phase changes are fast compared with $\dt$. We avoid both difficulties
 in the fast step by two choices: (i) the pressure variable is an additional prognostic variable, so
 the fast acoustic--gravity system is closed in $(\rho,\pv,U,W)$ for every thermodynamic variable;
 (ii) condensation is an explicit relaxation towards phase equilibrium, written as a
 complementarity condition with the Fischer--Burmeister function \cite{fischer}, evaluated in the
-small step; there is no saturation adjustment.
+small step; there is no saturation adjustment. ASAMgpu \cite{horn} also replaces the saturation adjustment by a relaxation
+towards saturation, with a limiter of the same form, and uses an entropy variable.
 
 \paragraph{Contributions.}
 \begin{enumerate}
@@ -95,7 +96,7 @@ vertical mass flux $\Omega$ per column, independent of the thermodynamic and the
 \item A transport of the thermodynamic variable and of vapour and cloud water that is linear in the
 evolving mass flux, consistent with the continuity equation and conservative in every small step
 (Section~\ref{sec:moisture}).
-\item A comparison of $\rho\theta_\rho$ and $\rho e$ as thermodynamic variables, of $\pi$ and $p$ as
+\item A comparison of $\rho\theta_\rho$, $\rho e$ and $\rho s$ as thermodynamic variables, of $\pi$ and $p$ as
 pressure variables, and of MIS (RK3, MIS54) and ETD (EB4) slow integrators on a moist bubble
 \cite{bryanfritsch} and a moist mountain wave \cite{durranklemp83}
 (Sections~\ref{sec:bubble}--\ref{sec:hill}).
@@ -110,7 +111,7 @@ symbol & meaning & code\\\midrule
 $\rho$ & total density (dry air, vapour, cloud water) & \code{irho}\\
 $U=\rho u$, $W=\rho w$ & Cartesian momenta & \code{iU}, \code{iW}\\
 $\Omega=W-z_xU$ & contravariant vertical mass flux & --\\
-$X$ & thermodynamic variable: $\rho\theta_\rho$ or $\rho e$ & \code{iTheta}\\
+$X$ & thermodynamic variable: $\rho\theta_\rho$, $\rho e$ or $\rho s$ & \code{iTheta}\\
 $V=\rho_v=\rho q_v$ & vapour density & \code{iV}\\
 $C=\rho_c=\rho q_c$ & cloud water density & \code{iC}\\
 $\pv$ & pressure variable: $\pi=(p/p_0)^{\kappa_d}$ or $p$ & \code{ipi}\\\bottomrule
@@ -167,7 +168,7 @@ With the density-weighted quantities
 R_m=R_d\rho_d+R_v\rho_v,\qquad c_{pm}=c_{pd}\rho_d+c_{pv}\rho_v+c_{pl}\rho_c,\qquad c_{vm}=c_{pm}-R_m,
 \]
 the pressure is $p=R_mT$, and the latent heat is $L(T)=L_0+(c_{pv}-c_{pl})(T-T_0)$. The temperature is an
-explicit function of $(\rho,X,V,C)$ for both thermodynamic variables (Section~\ref{sec:thvar}). Phase
+explicit function of $(\rho,X,V,C)$ for all three thermodynamic variables (Section~\ref{sec:thvar}). Phase
 equilibrium between vapour and cloud water is the complementarity condition
 \[
 \rho_c\ge0,\qquad\rho_{vs}(T)-\rho_v\ge0,\qquad\rho_c\,\big(\rho_{vs}(T)-\rho_v\big)=0,\qquad\rho_{vs}=\frac{e_s(T)}{R_vT}.
@@ -178,7 +179,8 @@ reads $\varphi_{FB}(\rho_{vs}-\rho_v,\rho_c)=0$, and the condensation rate is th
 S_c=-\frac{\varphi_{FB}\big(\rho_{vs}(T)-\rho_v,\ \rho_c\big)}{\tau},\qquad\tau=\tau_{\rm fac}\,\dtau_{\rm ac},\label{eq:Sc}
 \end{equation}
 with the acoustic step $\dtau_{\rm ac}=0.85\cdot0.92\,\Delta x/c_s$. $\varphi_{FB}\le\rho_c$, so the
-evaporation is limited by the available condensate for $\dtau\le\tau$. In supersaturated air
+evaporation is limited by the available condensate for $\dtau\le\tau$. The same function, $a+b-\sqrt{a^2+b^2}=2\varphi_{FB}(a,b)$, limits the
+condensation rate and the activation in ASAMgpu \cite{horn} (there as a form of the triangle inequality). In supersaturated air
 ($\rho_v>\rho_{vs}$) $\varphi_{FB}<0$ and $S_c>0$; in subsaturated cloudy air $S_c<0$. The phase change is
 isochoric and conserves the internal energy, so
 \[
@@ -225,14 +227,14 @@ and the coefficients $b\,\mathcal T_X$ of the pressure row.
 %======================================================================
 \section{Thermodynamic variables}\label{sec:thvar}
 \begin{center}\small
-\begin{tabular}{p{2.6cm}p{5.9cm}p{5.9cm}}\toprule
-& $X=\rho\theta_\rho$ (\code{thvar = :thetarho}) & $X=\rho e$ (\code{thvar = :energy})\\\midrule
+\begin{tabular}{p{1.9cm}p{4.6cm}p{4.0cm}p{4.4cm}}\toprule
+& $X=\rho\theta_\rho$ (\code{:thetarho}) & $X=\rho e$ (\code{:energy}) & $X=\rho s$ (\code{:entropy})\\\midrule
 equation of state & $p=p_0\big(R_dX/p_0\big)^{1/(1-\kappa_M)}$, $\kappa_M=R_m/c_{pm}$ &
-$X=c_{vm}T+e_{0v}\rho_v$, $e_{0v}=L_0-(c_{pv}-c_{pl})T_0$\\
-temperature & $T=\big(R_dX/p_0^{\kappa_M}\big)^{1/(1-\kappa_M)}/R_m$ & $T=(X-e_{0v}\rho_v)/c_{vm}$\\
-transport & $\nabla\cdot(\theta_\rho M)$ & $\nabla\cdot(eM)+p\,\nabla\cdot(M/\rho)$\\
-phase source $Q_X$ & $-X\,P_{BF}$ & $0$\\
-conserved & $\int X$ without phase change & $\int X$ only for $\nabla\cdot v=0$\\\bottomrule
+$X=c_{vm}T+e_{0v}\rho_v$, $e_{0v}=L_0-(c_{pv}-c_{pl})T_0$ & $X=c_{vm}\ln\frac T{T_0}+B(\rho_d,\rho_v)$\\
+temperature & $T=\big(R_dX/p_0^{\kappa_M}\big)^{1/(1-\kappa_M)}/R_m$ & $T=(X-e_{0v}\rho_v)/c_{vm}$ & $T=T_0\exp\frac{X-B}{c_{vm}}$\\
+transport & $\nabla\cdot(\theta_\rho M)$ & $\nabla\cdot(eM)+p\,\nabla\cdot(M/\rho)$ & $\nabla\cdot(sM)$\\
+phase source $Q_X$ & $-X\,P_{BF}$ & $0$ & $P_s$, \eqref{eq:Ps}\\
+conserved & $\int X$ without phase change & $\int X$ only for $\nabla\cdot v=0$ & $\int X$ without phase change\\\bottomrule
 \end{tabular}
 \end{center}
 \paragraph{Density potential temperature.} $\theta_\rho$ with the moist exponent $\kappa_M$ is a
@@ -253,13 +255,47 @@ written with the mass flux,
 \]
 so that it is linear in $M$ like every other transport term (cf.\ \cite{satoh}).
 
+\paragraph{Moist entropy.} The total entropy density of moist air is the prognostic thermodynamic variable of Ooyama's
+formulation \cite{ooyama}, on which the moist potential vorticity of Schubert et al.\ \cite{schubert} is built; Bannon
+\cite{bannon} derives its budget, including the entropy sources of the phase changes, from multicomponent and multiphase
+flow theory, Pauluis \cite{pauluis} the anelastic approximation that keeps it consistent, and Marquet \cite{marquet}
+the moist entropy potential temperature $\theta_s$ with the entropy constants of the third law. Gassmann and Herzog
+\cite{gassmann08,gassmann15} use the entropy to build energetically consistent compressible models and to identify the
+local entropy production of the numerical and subgrid-scale fluxes. Here we use the simplest form with constant
+heat capacities and $T_0$ as reference. With the same heat capacities and $e_{0v}$ the entropy densities of the three components are
+\[
+s_d=c_{vd}\ln\frac T{T_0}-R_d\ln\frac{\rho_d}{\rho_{d0}},\qquad s_v=c_{vv}\ln\frac T{T_0}-R_v\ln\frac{\rho_v}{\rho_{v0}}+\frac{L_0}{T_0},\qquad s_l=c_{pl}\ln\frac T{T_0},
+\]
+$\rho_{d0}=p_0/(R_dT_0)$, $\rho_{v0}=e_s(T_0)/(R_vT_0)$, so that $s_v-s_l=L_0/T_0$ for saturated vapour at $T_0$. With
+$X=\rho s=\rho_ds_d+\rho_vs_v+\rho_cs_l$,
+\[
+X=c_{vm}\ln\frac T{T_0}+B,\qquad B=-R_d\rho_d\ln\frac{\rho_d}{\rho_{d0}}-R_v\rho_v\ln\frac{\rho_v}{\rho_{v0}}+\frac{L_0}{T_0}\rho_v,
+\]
+the temperature is explicit, $T=T_0\exp\big((X-B)/c_{vm}\big)$, and $p=R_mT$. Without phase change $s$ is a material invariant, so $X$
+is in flux form like $\rho\theta_\rho$ ($\chi_{c,f}=s_f$ in \eqref{eq:chi}). The isochoric, energy-conserving phase change produces
+entropy; at fixed $\rho$ and $\rho e$
+\begin{equation}
+P_s=\frac{\mathrm dX}{\mathrm d\rho_c}=\frac{c_{vm}}T\,\frac{L-R_vT}{c_{vm}}+\frac{\partial X}{\partial\rho_c}-\frac{\partial X}{\partial\rho_v}
+=\frac{L-R_vT}T+(c_{pl}-c_{vv})\ln\frac T{T_0}+R_v\Big(\ln\frac{\rho_v}{\rho_{v0}}+1\Big)-\frac{L_0}{T_0},\label{eq:Ps}
+\end{equation}
+the derivatives at fixed $T$. $P_s$ vanishes at saturation at $T_0$ (no entropy production in equilibrium); in general it
+is $(\mu_v-\mu_l)/T$, the difference of the chemical potentials, and vanishes on the saturation curve of the
+constant heat capacities, which differs slightly from the empirical $e_s(T)$ of the relaxation \eqref{eq:Sc} (on the empirical
+curve $P_s$ corresponds to a relative humidity of $1-4\cdot10^{-4}$ to $1-7\cdot10^{-4}$ at 290--300\,K, $1-5\cdot10^{-3}$ at 250\,K). The phase
+change then produces the small amount of entropy $P_sS_c$ of a relaxation towards the empirical curve. $\rho_v\ln\rho_v$
+is regular at $\rho_v=0$; in $P_s$ and in $\partial\pv/\partial\rho_v$ the logarithm is bounded by $\rho_v\ge10^{-12}\rho_{v0}$.
+ASAMgpu \cite{horn} uses the entropy variable $\rho\sigma$, $\sigma=c_{pml}\ln T-R_{ml}\ln p$ (specific heat capacity and gas constant of the
+mixture), likewise in flux form with explicit $T$ and $p$, and the phase source $\big(L/T+(c_{pl}-c_{pv})\ln T+R_v\ln p\big)\,\mathrm d\rho_c$. \eqref{eq:Ps}
+has the same form with the partial pressure of the vapour, $R_v\ln(\rho_vT)=R_v\ln e+{\rm const}$, in place of $R_v\ln p$: the
+entropy of mixing of the vapour, which makes $P_s$ vanish at saturation.
+
 \paragraph{One discrete form for both.} At a face $f$ with the mass flux $F_f$ ($JU$ at an $x$-face,
 $\Omega$ at an $\eta$-face) and for the adjacent cell $c$, both transport operators are
 \begin{equation}
 \mathcal T_X\big|_c=\frac1{|c|}\sum_{f\in\partial c}\pm\,\chi_{c,f}\,F_f,\qquad
-\chi_{c,f}=\begin{cases}\theta_{\rho,f}&X=\rho\theta_\rho,\\[1mm] e_f+\dfrac{p_c}{\bar\rho_f}&X=\rho e,\end{cases}\label{eq:chi}
+\chi_{c,f}=\begin{cases}\theta_{\rho,f}&X=\rho\theta_\rho,\\[1mm] e_f+\dfrac{p_c}{\bar\rho_f}&X=\rho e,\\[1mm] s_f&X=\rho s,\end{cases}\label{eq:chi}
 \end{equation}
-with the upwind face value $\theta_{\rho,f}$ or $e_f$ (third order, as for $q_v$ and $q_c$), the
+with the upwind face value $\theta_{\rho,f}$, $e_f$ or $s_f$ (third order, as for $q_v$ and $q_c$), the
 pressure $p_c$ of the cell and the face mean $\bar\rho_f$ of the density. For the energy the
 coefficient is a face enthalpy; it differs between the two cells of a face by $(p_c-p_{c'})/\bar\rho_f$,
 the discrete $v\cdot\nabla p$. The pressure row has the same form with
@@ -546,6 +582,25 @@ terms of the column system. Both feedback loops are inside the column system. Th
 of the gravity waves (horizontal pressure force and horizontal divergence) is explicit, with the
 acoustic limit, far above the gravity-wave limit $N\dtau\le2$.
 
+\paragraph{Explicit gravity (option).} With \code{FV\_GRAVITY\_IMPLICIT[] = false} the weight $-g\bar\rho$ moves from $L_1$ to $L_0$:
+it is evaluated with the horizontal pressure force at the extrapolated midpoint $\tilde a^{n+1/2}$, and the column system contains
+only the vertical pressure force (the terms $\pm g$ in \eqref{eq:tri} drop out). The vertical-derivative part of the metric term
+stays implicit. The step is then no longer neutral: the spectral radius $\varrho$ of one small step for the resting, stratified
+moist column of Section~\ref{sec:apply} ($\rho\theta_\rho$, $\pi$, $N=0.01$\,s$^{-1}$) is
+\begin{center}\small
+\begin{tabular}{lcccc}\toprule
+$c_s\dtau/\Delta z$ & \multicolumn{2}{c}{gravity implicit} & \multicolumn{2}{c}{gravity explicit}\\
+& $\varepsilon=0$ & $\varepsilon=0.1$ & $\varepsilon=0$ & $\varepsilon=0.1$\\\midrule
+6 & $2\cdot10^{-10}$ & $1\cdot10^{-10}$ & $2\cdot10^{-8}$ & $3.5\cdot10^{-4}$\\
+15 & $4\cdot10^{-10}$ & $2\cdot10^{-10}$ & $8\cdot10^{-3}$ & $8\cdot10^{-5}$\\
+61 & $2\cdot10^{-9}$ & $2\cdot10^{-10}$ & $4.5\cdot10^{-2}$ & $5\cdot10^{-6}$\\\bottomrule
+\end{tabular}
+\end{center}
+($\varrho-1$, $\gamma_d=0$). Gravity couples $\rho$ and $\Omega$ in the vertical acoustic mode, whose frequency $c_sk_\eta$ is far above $1/\dtau$;
+the explicit part of this coupling is not damped by the implicit pressure force and makes the mode grow. On the hill
+($c_s\dtau/\Delta z\approx6$, 5040 small steps in 6\,h) the growth $3.5\cdot10^{-4}$ per small step amounts to a factor of about 6
+(Section~\ref{sec:hillent}). Gravity belongs to the implicit part.
+
 \begin{center}\small
 \begin{tabular}{lll}\toprule
 term & treatment & limit on $\dtau$\\\midrule
@@ -767,6 +822,25 @@ explicit relaxation is stable for $c/\tau\le2$, but robust only for $c/\tau\less
 explicit Verlet step, $\tau_{\rm fac}\gtrsim1$ with Verlet EI; otherwise a linearly implicit relaxation (open).
 
 %======================================================================
+\subsection{Moist entropy}
+With the moist entropy $X=\rho s$ and the present version of the bubble example (explicit Verlet step, $n_{\rm sub}=5/12/23$, $\tau_{\rm fac}=4$:
+$\tau=1.8$\,s; $\tau_{\rm fac}=0.5$: $\tau=0.22$\,s) the maximum errors of $\theta_e'$ [mK] against RK4 of the same system at $\dt=2/5/10$\,s are
+(f: failed)
+\begin{center}\small
+\begin{tabular}{lllccc}\toprule
+$X$ & $\pv$ & $\tau_{\rm fac}$ & RK3 & MIS54 & EB4\\\midrule
+$\rho\theta_\rho$ & $\pi$ & 4 & 1.7/16/f & 0.32/1.4/f & 0.45/0.50/f\\
+$\rho s$ & $\pi$ & 4 & 1.7/16/f & 0.32/1.4/f & 0.45/0.50/f\\
+$\rho s$ & $p$ & 4 & 1.6/13/f & 0.33/1.2/f & 0.46/0.43/f\\
+$\rho s$ & $\pi$ & 0.5 & 1.2/15/41 & 0.07/0.84/15 & 0.08/0.27/3.4\\
+$\rho s$ & $p$ & 0.5 & 1.2/8.6/57 & 0.05/1.0/7.5 & 0.07/0.14/1.9\\\bottomrule
+\end{tabular}
+\end{center}
+(RK4: $\max|w|=12.83$\,m/s for $\tau_{\rm fac}=4$, 13.62\,m/s for $\tau_{\rm fac}=0.5$, the same for $\rho\theta_\rho$ and $\rho s$.) $\rho s$ and
+$\rho\theta_\rho$ give the same semi-discrete solution and the same time-integration errors to two digits. In this
+configuration $\dt=10$\,s fails at $\tau_{\rm fac}=4$ for both variables and all three slow integrators, but not at $\tau_{\rm fac}=0.5$;
+this is not explained yet (Table~\ref{tab:bubble} was computed with an earlier set-up, $\tau=2.2$\,s, $n_{\rm sub}=4/10/19$).
+
 \section{Moist flow over a hill}\label{sec:hill}
 \subsection{Set-up}
 Hydrostatic mountain wave over an Agnesi hill \cite{pinty} with moisture (cf.\ \cite{durranklemp83}):
@@ -908,6 +982,35 @@ integrators agree with \eqref{eq:CS} at $\tau_{\rm fac}=1$ to 0.2--0.6\,\%, and 
 (bottom): the oscillating cap cloud over the crest at $h/\tau=2$.}\label{fig:hill_csfb}
 \end{figure}
 
+\subsection{Moist entropy and explicit gravity}\label{sec:hillent}
+Small step \eqref{eq:CS}, $\varepsilon=\gamma_d=0.1$, $\tau_{\rm fac}=0.5$, $\dt=30$\,s unless stated; differences to $\rho\theta_\rho$, $\pi$, MIS54
+with implicit gravity:
+\begin{center}\small
+\begin{tabular}{llllccc}\toprule
+$X$ & $\pv$ & method & options & $\max|w|$ [m/s] & $\max q_c$ [g/kg] & $\Delta w$ / $\Delta q_c$\\\midrule
+$\rho s$ & $\pi$ & MIS54 & & 0.980 & 0.168 & 0.1 / 0.2\,\%\\
+$\rho s$ & $\pi$ & EB4 & & 0.981 & 0.168 & 0.6 / 0.4\,\%\\
+$\rho s$ & $\pi$ & RK3 & & 0.980 & 0.168 & 0.6 / 1.1\,\%\\
+$\rho s$ & $p$ & MIS54 & & 0.967 & 0.165 & 1.5 / 2.1\,\%\\\midrule
+$\rho\theta_\rho$ & $\pi$ & MIS54 & gravity explicit & 0.987 & 0.160 & 24 / 30\,\%\\
+$\rho\theta_\rho$ & $\pi$ & MIS54 & gravity explicit, $\gamma_d=0$ & 0.987 & 0.162 & 24 / 29\,\%\\
+$\rho\theta_\rho$ & $\pi$ & MIS54 & gravity explicit, $\dt=15$\,s & 0.692 & 0.132 & 40 / 61\,\%\\
+$\rho\theta_\rho$ & $\pi$ & MIS54 & gravity explicit, $\dt=60$\,s & 0.535 & 0.187 & 94 / 107\,\%\\
+$\rho\theta_\rho$ & $\pi$ & RK3 & gravity explicit & 0.817 & 0.241 & 109 / 144\,\%\\
+$\rho\theta_\rho$ & $\pi$ & RK3 & gravity explicit, $\gamma_d=0$ & \multicolumn{3}{l}{unstable}\\
+$\rho\theta_\rho$ & $\pi$ & EB4 & gravity explicit & \multicolumn{3}{l}{unstable}\\\bottomrule
+\end{tabular}
+\end{center}
+\begin{itemize}
+\item \emph{Moist entropy.} $\rho s$ and $\rho\theta_\rho$ give the same mountain wave to 0.1--0.2\,\% (MIS54), and $\rho s$ is as insensitive
+to the slow integrator (0.6--1.1\,\%) and to the pressure variable (1.5\,\%) as $\rho\theta_\rho$. Both are in flux form with an
+upwind face value of a material invariant and differ only in the phase source; $\rho e$ differs from both by 9\,\%
+(Table~\ref{tab:hilldiff}), which suggests that this difference comes from the compression term of the energy form.
+\item \emph{Explicit gravity} gives a different solution with every slow integrator, gets worse with smaller $\dt$ (more small
+steps), and is unstable with EB4 and, without extrapolation, with RK3. The extrapolation $\gamma_d$ is not the cause. This is the
+growing vertical mode of Section~\ref{sec:apply}.
+\end{itemize}
+
 \begin{figure}[htbp]\centering
 \includegraphics[width=\textwidth]{hill_thvar.png}
 \caption{Moist mountain wave after 6\,h, MIS54, small step \eqref{eq:CS} with $\varepsilon=\gamma_d=0.1$, $\dt=30$\,s, implicit metric
@@ -953,7 +1056,9 @@ thermodynamic variable only through the coefficients $\kappa_{c,f}$ of the press
 thermodynamic variable and the two moisture variables follow by back substitution with the same
 $\Omega$, which makes the moisture transport consistent with the continuity equation and conservative in
 every small step. The small step is neutral up to vertical acoustic Courant numbers of 61.
-\item $X=\rho\theta_\rho$ and $X=\rho e$ are equally accurate and stable in time. $\rho e$ needs no latent-heating
+\item $X=\rho\theta_\rho$, $X=\rho e$ and the moist entropy $X=\rho s$ are equally accurate and stable in time. $\rho s$ has an explicit
+temperature, is in flux form like $\rho\theta_\rho$ and gives the same solution as $\rho\theta_\rho$ to 0.1--0.2\,\% on the hill and to
+two digits in the bubble; its phase source is the entropy production of the relaxation. $\rho e$ needs no latent-heating
 source, $\rho\theta_\rho$ is in flux form. The two spatial discretisations differ by 5--9\,\%; a resolution
 study is needed to decide which is closer to the converged solution.
 \item With the small step \eqref{eq:CS} ($\varepsilon=\gamma_d=0.1$) the mountain wave is insensitive to the slow integrator and to
@@ -971,6 +1076,9 @@ step after the horizontal part) would remove this limit.
 \item Without off-centring and extrapolation \eqref{eq:CS} is stable on the hill only with MIS54 (with the deep mode of
 the impulsive start); RK3 and EB4 need the damping. \eqref{eq:CSFB} is stable with all three without damping and
 damps the deep mode through its first-order stage boundaries.
+\item Gravity must be implicit together with the vertical pressure force: with gravity in the explicit part the vertical
+acoustic mode grows ($\varrho-1$ up to $3.5\cdot10^{-4}$ per small step at $c_s\dtau/\Delta z=6$, $4.5\cdot10^{-2}$ at 61), and the mountain wave is
+wrong by 24--100\,\% or unstable.
 \item Open: steep terrain in the moist model, total energy as $X$, a limiter for the moisture
 reconstruction, sedimentation and rain, three dimensions.
 \end{enumerate}
@@ -978,11 +1086,11 @@ reconstruction, sedimentation and rain, three dimensions.
 \appendix
 \section{Code}
 The model is \code{FV.MoistExnerModel} (\code{src/FV/moist.jl}) of MultiRate.jl with the options
-\code{mgas = MoistGas(thvar = :thetarho | :energy)}, \code{pvar = :pi | :p}, \code{micro = :fast}, \code{$\tau$fac};
+\code{mgas = MoistGas(thvar = :thetarho | :energy | :entropy)}, \code{pvar = :pi | :p}, \code{micro = :fast}, \code{$\tau$fac};
 the fast integrator \code{fast = :cs} (small step \eqref{eq:CS}; \code{:csfb} the forward--backward step \eqref{eq:CSFB};
 \code{:verlet} for the bubble) with \code{offcenter} $=\varepsilon$ and \code{smdiv} $=\gamma_d$
 (\code{frozen\_fast\_solve!}, \code{src/TimeStepping/frozen.jl}); the implicit metric term
-\code{FV.FV\_METRIC\_IMPLICIT[] = true}; the slow integrators \code{mis\_tableau(:WSRK3 | :MIS54 | :EB4)} in
+\code{FV.FV\_METRIC\_IMPLICIT[] = true}; gravity in the explicit part with \code{FV.FV\_GRAVITY\_IMPLICIT[] = false}; the slow integrators \code{mis\_tableau(:WSRK3 | :MIS54 | :EB4)} in
 \code{frozen\_mis\_step!}. The fast part is provided in the parts \code{:hmomentum} ($L_0$), \code{:hthermo}
 ($K_0$, $f_a$, $f_b$) and \code{:vertical} ($K_1$, $L_1$), and the column solve by \code{moist\_column\_solve!} with
 separate weights for the cell-centred and the momentum rows. The small steps of a stage are combined into the
@@ -993,6 +1101,8 @@ forward--backward form (\code{\_cs\_loop!}); the phase change is re-evaluated th
 \begin{thebibliography}{99}
 \bibitem{arakawa} A.~Arakawa, V.R.~Lamb: Computational design of the basic dynamical processes of the UCLA
 general circulation model. Methods Comput.\ Phys.\ 17 (1977), 173--265.
+\bibitem{bannon} P.R.~Bannon: Theoretical foundations for models of moist convection. J.\ Atmos.\ Sci.\ 59 (2002),
+1967--1982.
 \bibitem{baldauf} M.~Baldauf: Linear stability analysis of Runge--Kutta-based partial time-splitting
 schemes for the Euler equations. Mon.\ Wea.\ Rev.\ 138 (2010), 4475--4496.
 \bibitem{bauer} S.~Bauer, O.~Knoth: Extended multirate infinitesimal step methods: derivation of order
@@ -1011,7 +1121,13 @@ solution of the Navier--Stokes equations. J.\ Comput.\ Phys.\ 17 (1975), 209--22
 \bibitem{gardner} D.J.~Gardner, J.E.~Guerra, F.P.~Hamon, D.R.~Reynolds, P.A.~Ullrich, C.S.~Woodward:
 Implicit--explicit (IMEX) Runge--Kutta methods for non-hydrostatic atmospheric models. Geosci.\ Model
 Dev.\ 11 (2018), 1497--1515.
+\bibitem{horn} S.~Horn: ASAMgpu V1.0 -- a moist fully compressible atmospheric model using graphics processing
+units (GPUs). Geosci.\ Model Dev.\ 5 (2012), 345--353, doi:10.5194/gmd-5-345-2012.
 \bibitem{hlw} E.~Hairer, C.~Lubich, G.~Wanner: Geometric Numerical Integration, 2nd ed. Springer 2006.
+\bibitem{gassmann08} A.~Gassmann, H.-J.~Herzog: Towards a consistent numerical compressible non-hydrostatic model
+using generalized Hamiltonian tools. Quart.\ J.\ Roy.\ Meteor.\ Soc.\ 134 (2008), 1597--1613.
+\bibitem{gassmann15} A.~Gassmann, H.-J.~Herzog: How is local material entropy production represented in a numerical
+model? Quart.\ J.\ Roy.\ Meteor.\ Soc.\ 141 (2015), 854--869.
 \bibitem{hicken} J.E.~Hicken, F.E.~Ham, J.~Militzer, M.~Koksal: A shift transformation for fully conservative
 methods: turbulence simulation on complex, unstructured grids. J.\ Comput.\ Phys.\ 208 (2005), 704--734.
 \bibitem{hochbruck} M.~Hochbruck, A.~Ostermann: Exponential integrators. Acta Numerica 19 (2010), 209--286.
@@ -1027,12 +1143,20 @@ explicit vertically implicit (HEVI) and split-explicit time integration schemes.
 compressible Euler equations. Mon.\ Wea.\ Rev.\ 142 (2014), 2067--2081.
 \bibitem{krogstad} S.~Krogstad: Generalized integrating factor methods for stiff PDEs. J.\ Comput.\ Phys.\
 203 (2005), 72--88.
+\bibitem{marquet} P.~Marquet: Definition of a moist entropy potential temperature: application to FIRE-I data
+flights. Quart.\ J.\ Roy.\ Meteor.\ Soc.\ 137 (2011), 768--791.
+\bibitem{ooyama} K.V.~Ooyama: A dynamic and thermodynamic foundation for modeling the moist atmosphere with
+parameterized microphysics. J.\ Atmos.\ Sci.\ 58 (2001), 2073--2102.
+\bibitem{pauluis} O.~Pauluis: Thermodynamic consistency of the anelastic approximation for a moist atmosphere.
+J.\ Atmos.\ Sci.\ 65 (2008), 2719--2729.
 \bibitem{pinty} J.-P.~Pinty, R.~Benoit, E.~Richard, R.~Laprise: Simple tests of a semi-implicit semi-Lagrangian
 model on 2D mountain wave problems. Mon.\ Wea.\ Rev.\ 123 (1995), 3042--3058.
 \bibitem{satoh} M.~Satoh: Conservative scheme for a compressible nonhydrostatic model with moist processes.
 Mon.\ Wea.\ Rev.\ 131 (2003), 1033--1050.
 \bibitem{schaer} C.~Schär, D.~Leuenberger, O.~Fuhrer, D.~Lüthi, C.~Girard: A new terrain-following vertical
 coordinate formulation for atmospheric prediction models. Mon.\ Wea.\ Rev.\ 130 (2002), 2459--2480.
+\bibitem{schubert} W.H.~Schubert, S.A.~Hausman, M.~Garcia, K.V.~Ooyama, H.-C.~Kuo: Potential vorticity in a moist
+atmosphere. J.\ Atmos.\ Sci.\ 58 (2001), 3148--3157.
 \bibitem{sk92} W.C.~Skamarock, J.B.~Klemp: The stability of time-split numerical methods for the
 hydrostatic and the nonhydrostatic elastic equations. Mon.\ Wea.\ Rev.\ 120 (1992), 2109--2127.
 \bibitem{sk94} W.C.~Skamarock, J.B.~Klemp: Efficiency and accuracy of the Klemp--Wilhelmson

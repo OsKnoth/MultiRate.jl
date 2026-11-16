@@ -28,6 +28,11 @@
 #     X_t + ∇·(e M) + p ∇·(M/ρ) = 0   (no phase source: ρe is constant in an isochoric phase change),
 # frozen as -δ(e_f F) - p_c δ(F/ρ̄_f): live mass flux F, frozen e_f, cell pressure p_c (the prognostic one) and
 # face density; a transport coefficient χ = e_f + p_c/ρ̄_f per face and neighbour cell (χ = θ_f for :thetarho).
+# :entropy, the moist entropy X = ρs = ρ_d s_d + ρ_v s_v + ρ_c s_l with
+#     s_d = c_vd ln(T/T0) - R_d ln(ρ_d/ρ_d0),  s_v = c_vv ln(T/T0) - R_v ln(ρ_v/ρ_v0) + L0V/T0,  s_l = c_pl ln(T/T0),
+# ρ_d0 = p0/(R_d T0), ρ_v0 = e_s(T0)/(R_v T0) (s_v - s_l = L/T at saturation at T0), consistent with ρe above;
+#     X_t + ∇·(s M) = Q_s,  Q_s = (∂X/∂ρ_c at fixed ρ and ρe) S_c   (`theta_phase_factor`),
+# flux form as ρθ_ρ (χ = s_f), T = T0 exp((X - B)/c_vm) explicit (B the density terms).
 # Only the X row and the coefficients κ of the pressure row depend on the choice; the column solve does not.
 # Frozen form (fast part linear in z apart from the :fast phase source), per face f and its two cells:
 #     ρ, X, V, C, π rows: -δ(F), -δ(χ_cell,f F), -δ(qv_f F), -δ(qc_f F), -δ(κ_cell,f F),
@@ -43,13 +48,21 @@ Base.@kwdef struct MoistGas
     L0V::Float64 = 2.5e6
     T0::Float64 = 273.15
     p0::Float64 = 1.0e5
-    thvar::Symbol = :thetarho      # thermodynamic variable X: :thetarho (ρθ_ρ) or :energy (internal energy ρe)
+    thvar::Symbol = :thetarho      # thermodynamic variable X: :thetarho (ρθ_ρ), :energy (internal energy ρe) or :entropy (ρs)
 end
 """Energy constant of the vapour: e_v = c_vv T + e0v, so that L(T) = h_v - h_l = e0v + (c_pv - c_pl) T."""
 @inline _e0v(mg::MoistGas) = mg.L0V - (mg.Cpv - mg.Cpl) * mg.T0
 
 """Saturation vapour pressure over water (CGDycore `fpws`)."""
 @inline psat(mg::MoistGas, T) = 661.2 * exp(17.368 * (T - mg.T0) / (238.88 + T - mg.T0))
+
+"""x ln(x/r) (0 for x ≤ 0)."""
+@inline _xlog(x, r) = x > 0 ? x * log(x / r) : 0.0
+"""Density part B of the moist entropy, ρs = c_vm ln(T/T0) + B (thvar = :entropy)."""
+@inline function _sB(mg::MoistGas, ρd, ρv)
+    ρd0 = mg.p0 / (mg.Rd * mg.T0); ρv0 = psat(mg, mg.T0) / (mg.Rv * mg.T0)
+    return -mg.Rd * _xlog(ρd, ρd0) - mg.Rv * _xlog(ρv, ρv0) + mg.L0V / mg.T0 * ρv
+end
 """Latent heat of vaporization L(T) = L0V + (c_pv - c_pl)(T - T0)."""
 @inline latent(mg::MoistGas, T) = mg.L0V + (mg.Cpv - mg.Cpl) * (T - mg.T0)
 
@@ -60,6 +73,10 @@ end
     if mg.thvar === :energy                # ρe = c_vm T + e0v ρ_v, c_vm = c_vd ρ_d + c_vv ρ_v + c_pl ρ_c
         cvm = (mg.Cpd - mg.Rd) * ρd + (mg.Cpv - mg.Rv) * ρv + mg.Cpl * (Q - ρv)
         return (Θ - _e0v(mg) * ρv) / cvm, Rm
+    end
+    if mg.thvar === :entropy               # ρs = c_vm ln(T/T0) + B(ρ_d, ρ_v)
+        cvm = (mg.Cpd - mg.Rd) * ρd + (mg.Cpv - mg.Rv) * ρv + mg.Cpl * (Q - ρv)
+        return mg.T0 * exp((Θ - _sB(mg, ρd, ρv)) / cvm), Rm
     end
     κ = Rm / (mg.Cpd * ρd + mg.Cpv * ρv + mg.Cpl * (Q - ρv))
     return (mg.Rd * Θ / mg.p0^κ)^(1 / (1 - κ)) / Rm, Rm
@@ -111,11 +128,13 @@ end
 theta_e(mg::MoistGas, ρ, Θ, Q) = (s = moist_state(mg, ρ, Θ, Q); _theta_e(mg, ρ, Q, s[1], s[2]))
 theta_e(mg::MoistGas, ρ, Θ, ρv, ρc) = _theta_e(mg, ρ, ρv + ρc, moist_state(mg, ρ, Θ, ρv, ρc)[1], ρv)
 
-"""Thermodynamic variable of (ρ, T, ρv, ρc): Θ = ρθ_ρ (thvar = :thetarho) or the internal energy ρe (:energy)."""
+"""Thermodynamic variable of (ρ, T, ρv, ρc): Θ = ρθ_ρ (thvar = :thetarho), the internal energy ρe (:energy)
+or the moist entropy ρs (:entropy)."""
 @inline function _Θof(mg::MoistGas, ρ, T, ρv, ρc)
     ρd = ρ - ρv - ρc
     Rm = mg.Rd * ρd + mg.Rv * ρv
     mg.thvar === :energy && return ((mg.Cpd - mg.Rd) * ρd + (mg.Cpv - mg.Rv) * ρv + mg.Cpl * ρc) * T + _e0v(mg) * ρv
+    mg.thvar === :entropy && return ((mg.Cpd - mg.Rd) * ρd + (mg.Cpv - mg.Rv) * ρv + mg.Cpl * ρc) * log(T / mg.T0) + _sB(mg, ρd, ρv)
     κ = Rm / (mg.Cpd * ρd + mg.Cpv * ρv + mg.Cpl * ρc)
     return (Rm * T)^(1 - κ) * mg.p0^κ / mg.Rd
 end
@@ -140,10 +159,18 @@ as CGDycore `SimpleMicrophysicsPot` (there with the evaporation rate F_Ph = -S_c
     Q_Θ = -Θ P S_c,  P = -L/(c_pm T) - ln(p/p0) (R_m/c_pm) (R_v/R_m + (c_pl - c_pv)/c_pm) + R_v/R_m,
 with the density-weighted R_m = R_d ρ_d + R_v ρ_v, c_pm = c_pd ρ_d + c_pv ρ_v + c_pl ρ_c. Through the
 equation of state this is the isochoric first law, dT/dρ_c = (L - R_v T)/c_vm, c_vm = c_pm - R_m.
+:energy: 0. :entropy: dρs/dρ_c = c_vm/T dT/dρ_c + ∂ρs/∂ρ_c - ∂ρs/∂ρ_v (at fixed T)
+    = (L - R_v T)/T + (c_pl - c_vv) ln(T/T0) + R_v (ln(ρ_v/ρ_v0) + 1) - L0V/T0
+(zero in phase equilibrium at T0: no entropy production at equilibrium).
 """
 function theta_phase_factor(mg::MoistGas, ρ, Θ, T, p, ρv, ρc)
     mg.thvar === :energy && return 0.0     # the internal energy does not change in an isochoric phase change
     ρd = ρ - ρv - ρc
+    if mg.thvar === :entropy
+        ρv0 = psat(mg, mg.T0) / (mg.Rv * mg.T0)
+        return (latent(mg, T) - mg.Rv * T) / T + (mg.Cpl - mg.Cpv + mg.Rv) * log(T / mg.T0) +
+               mg.Rv * (log(max(ρv, 1e-12 * ρv0) / ρv0) + 1) - mg.L0V / mg.T0
+    end
     cpm = mg.Cpd * ρd + mg.Cpv * ρv + mg.Cpl * ρc; Rm = mg.Rd * ρd + mg.Rv * ρv
     L = latent(mg, T)
     P = -L / (cpm * T) - log(p / mg.p0) * (Rm / cpm) * (mg.Rv / Rm + (mg.Cpl - mg.Cpv) / cpm) + mg.Rv / Rm
@@ -197,7 +224,7 @@ end
 function MoistExnerModel(base::FVModel; mgas::MoistGas = MoistGas(), pvar::Symbol = :pi,
                          micro::Symbol = :fast, τfac::Real = 0.25, cs::Real = 350.0, wτ = nothing, τ = nothing)
     pvar in (:pi, :p) || error("pvar: :pi or :p")
-    mgas.thvar in (:thetarho, :energy) || error("thvar: :thetarho or :energy")
+    mgas.thvar in (:thetarho, :energy, :entropy) || error("thvar: :thetarho, :energy or :entropy")
     micro in (:slow, :fast, :none) || error("micro: :slow, :fast or :none")
     _no_cutcell(base); _no_background(base)
     g = base.grid
@@ -270,7 +297,7 @@ frozen_ncoef(m::MoistExnerModel) = length(m.C)
 """∂π/∂(ρ, Θ, V, C) (or ∂p, `f = _moist_p`) of the equation of state (central differences)."""
 function exner_derivatives(mg::MoistGas, ρ, Θ, ρv, ρc; f = moist_exner)
     h = 1e-6
-    dρ, dΘ, dQ = h * ρ, h * Θ, h * ρ
+    dρ, dΘ, dQ = h * ρ, mg.thvar === :entropy ? h * mg.Cpd * ρ : h * Θ, h * ρ   # ρs may be near zero
     return ((f(mg, ρ + dρ, Θ, ρv, ρc) - f(mg, ρ - dρ, Θ, ρv, ρc)) / 2dρ,
             (f(mg, ρ, Θ + dΘ, ρv, ρc) - f(mg, ρ, Θ - dΘ, ρv, ρc)) / 2dΘ,
             (f(mg, ρ, Θ, ρv + dQ, ρc) - f(mg, ρ, Θ, ρv - dQ, ρc)) / 2dQ,
@@ -396,7 +423,7 @@ function mmetric!(out, m::MoistExnerModel, C, z)
     return out
 end
 function mmomentum_v!(out, m::MoistExnerModel, C, z)
-    g = m.base.grid; grav = m.base.gas.g
+    g = m.base.grid; grav = _grav_implicit(m)        # gravity here only with FV_GRAVITY_IMPLICIT
     @inbounds for k in 2:g.nz, i in 1:g.nx
         out[iW(g, i, k)] -= mPz(C, g, i, k) * (z[iπ(m, i, k)] - z[iπ(m, i, k - 1)]) / dzc(g, i) +
                             grav * 0.5 * (z[iρ(g, i, k - 1)] + z[iρ(g, i, k)])
@@ -423,14 +450,14 @@ function mphase!(out, m::MoistExnerModel, C, z)
 end
 
 _mfast!(::Val{:all}, out, m, C, z, F) = (mthermo_h!(out, m, C, z); mthermo_v!(out, m, C, z); mphase!(out, m, C, z);
-    mmomentum_h!(out, m, C, z); mmomentum_v!(out, m, C, z); mmetric!(out, m, C, z);
+    mmomentum_h!(out, m, C, z); mmomentum_v!(out, m, C, z); mmetric!(out, m, C, z); gravity_explicit!(out, m, z);
     mforcing_thermo!(out, m, F); forcing_U!(out, m.base, F); forcing_W!(out, m.base, F); sponge!(out, m.base, z))
 _mfast!(::Val{:thermo}, out, m, C, z, F) = (mthermo_h!(out, m, C, z); mthermo_v!(out, m, C, z); mphase!(out, m, C, z); mforcing_thermo!(out, m, F))
-_mfast!(::Val{:momentum}, out, m, C, z, F) = (mmomentum_h!(out, m, C, z); mmomentum_v!(out, m, C, z); mmetric!(out, m, C, z);
+_mfast!(::Val{:momentum}, out, m, C, z, F) = (mmomentum_h!(out, m, C, z); mmomentum_v!(out, m, C, z); mmetric!(out, m, C, z); gravity_explicit!(out, m, z);
     forcing_U!(out, m.base, F); forcing_W!(out, m.base, F); sponge!(out, m.base, z))
 _mfast!(::Val{:hthermo}, out, m, C, z, F) = (mthermo_h!(out, m, C, z); mphase!(out, m, C, z); mforcing_thermo!(out, m, F);
     forcing_W!(out, m.base, F); sponge!(out, m.base, z))
-_mfast!(::Val{:hmomentum}, out, m, C, z, F) = (mmomentum_h!(out, m, C, z); forcing_U!(out, m.base, F))
+_mfast!(::Val{:hmomentum}, out, m, C, z, F) = (mmomentum_h!(out, m, C, z); gravity_explicit!(out, m, z); forcing_U!(out, m.base, F))
 _mfast!(::Val{:vertical}, out, m, C, z, F) = (mthermo_v!(out, m, C, z); mmomentum_v!(out, m, C, z); mmetric!(out, m, C, z))
 _mfast!(::Val{P}, out, m, C, z, F) where {P} = error("frozen_fast!: unknown part $P")
 
@@ -476,7 +503,7 @@ end
 
 function moist_column_solve!(Y, m::MoistExnerModel, c, R, cw = c)
     s = m.column; g = m.base.grid
-    nz, grav = g.nz, m.base.gas.g
+    nz, grav = g.nz, _grav_implicit(m)
     imp = _metric_implicit(g)                    # FV_METRIC_IMPLICIT: Ω solve, as exner_column_solve!
     sub, cpr, iden = _exner_factor(s, m, c, cw)
     W = s.W

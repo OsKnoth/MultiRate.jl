@@ -122,6 +122,28 @@ follow from the new pressure with the exact discrete metric term. The sum of the
 const FV_METRIC_IMPLICIT = Ref(false)
 @inline _metric_implicit(g::FVGrid) = FV_METRIC_IMPLICIT[] && g.terrain
 
+"""
+Gravity in the vertical (implicit) part (true, default) or in the explicit horizontal momentum part
+(false) of the Exner and moist models. false: -g ρ̄ on the W rows moves from :vertical to :hmomentum
+(evaluated at the extrapolated state of the explicit momentum step, the midpoint ã½ of :cs), the
+column matrix and the column solve contain only the vertical pressure gradient. The sum of the parts
+is unchanged.
+"""
+const FV_GRAVITY_IMPLICIT = Ref(true)
+"""Gravity of the column system: g (FV_GRAVITY_IMPLICIT) or 0."""
+@inline _grav_implicit(m) = FV_GRAVITY_IMPLICIT[] ? m.base.gas.g : 0.0
+
+"""Gravity -g ρ̄ on the W rows (`grav` = g; in :vertical or :hmomentum, see FV_GRAVITY_IMPLICIT)."""
+function gravity_w!(out, m, z)
+    g = m.base.grid; grav = m.base.gas.g
+    @inbounds for k in 2:g.nz, i in 1:g.nx
+        out[iW(g, i, k)] -= grav * 0.5 * (z[iρ(g, i, k - 1)] + z[iρ(g, i, k)])
+    end
+    return out
+end
+"""Gravity in the explicit momentum part (FV_GRAVITY_IMPLICIT[] = false)."""
+@inline gravity_explicit!(out, m, z) = FV_GRAVITY_IMPLICIT[] ? out : gravity_w!(out, m, z)
+
 """Vertical-derivative part of the metric term of ∂x f|_z at the x-face (i, k):
 z̄_x (c_t - c_b)/(Jx Δη), so that ∂x f|_z = `gradx_rest` - `mvert`."""
 @inline function mvert(f, g::FVGrid, i, k)
@@ -242,9 +264,10 @@ function emetric!(out, m::ExnerModel, C, z)
     return out
 end
 
-"""Momentum part, vertical (W rows): -P_z δη π/(J Δη) - g ρ̄ (or -δη p/(J Δη) - g ρ̄)."""
+"""Momentum part, vertical (W rows): -P_z δη π/(J Δη) - g ρ̄ (or -δη p/(J Δη) - g ρ̄); gravity only with
+FV_GRAVITY_IMPLICIT (otherwise in :hmomentum, `gravity_explicit!`)."""
 function emomentum_v!(out, m::ExnerModel, C, z)
-    g = m.base.grid; grav = m.base.gas.g
+    g = m.base.grid; grav = _grav_implicit(m)
     @inbounds for k in 2:g.nz, i in 1:g.nx
         out[iW(g, i, k)] -= eΘz(C, g, i, k) * (z[iπ(m, i, k)] - z[iπ(m, i, k - 1)]) / dzc(g, i) +
                             grav * 0.5 * (z[iρ(g, i, k - 1)] + z[iρ(g, i, k)])
@@ -264,14 +287,14 @@ end
 
 # parts as in frozen.jl (table there); the thermodynamic rows include π
 _efast!(::Val{:all}, out, m, C, z, F) = (ethermo_h!(out, m, C, z); ethermo_v!(out, m, C, z);
-    emomentum_h!(out, m, C, z); emomentum_v!(out, m, C, z); emetric!(out, m, C, z);
+    emomentum_h!(out, m, C, z); emomentum_v!(out, m, C, z); emetric!(out, m, C, z); gravity_explicit!(out, m, z);
     eforcing_thermo!(out, m, F); forcing_U!(out, m.base, F); forcing_W!(out, m.base, F); sponge!(out, m.base, z))
 _efast!(::Val{:thermo}, out, m, C, z, F) = (ethermo_h!(out, m, C, z); ethermo_v!(out, m, C, z); eforcing_thermo!(out, m, F))
-_efast!(::Val{:momentum}, out, m, C, z, F) = (emomentum_h!(out, m, C, z); emomentum_v!(out, m, C, z); emetric!(out, m, C, z);
+_efast!(::Val{:momentum}, out, m, C, z, F) = (emomentum_h!(out, m, C, z); emomentum_v!(out, m, C, z); emetric!(out, m, C, z); gravity_explicit!(out, m, z);
     forcing_U!(out, m.base, F); forcing_W!(out, m.base, F); sponge!(out, m.base, z))
 _efast!(::Val{:hthermo}, out, m, C, z, F) = (ethermo_h!(out, m, C, z); eforcing_thermo!(out, m, F);
     forcing_W!(out, m.base, F); sponge!(out, m.base, z))
-_efast!(::Val{:hmomentum}, out, m, C, z, F) = (emomentum_h!(out, m, C, z); forcing_U!(out, m.base, F))
+_efast!(::Val{:hmomentum}, out, m, C, z, F) = (emomentum_h!(out, m, C, z); gravity_explicit!(out, m, z); forcing_U!(out, m.base, F))
 _efast!(::Val{:vertical}, out, m, C, z, F) = (ethermo_v!(out, m, C, z); emomentum_v!(out, m, C, z); emetric!(out, m, C, z))
 _efast!(::Val{P}, out, m, C, z, F) where {P} = error("frozen_fast!: unknown part $P")
 
@@ -317,13 +340,14 @@ end
 function _exner_factor(s::ExnerColumn, m, c, cw = c)
     g = m.base.grid
     imp = _metric_implicit(g)
-    get!(s.factors, imp ? -Float64(c * cw) : Float64(c * cw)) do
+    key = (imp ? -1 : 1) * Float64(c * cw) + (FV_GRAVITY_IMPLICIT[] ? 0.0 : 1e30)
+    get!(s.factors, key) do
         nz = g.nz
         sub = zeros(nz + 1, g.nx); cpr = zeros(nz + 1, g.nx); iden = zeros(nz + 1, g.nx)
         @inbounds for i in 1:g.nx, k in 2:nz
             dz = dzc(g, i)                       # J Δη of the column
             r = c * cw / dz^2 * (imp ? 1 + g.zx_f[i, k]^2 : 1.0)   # Ω system: 1 + z_x² on the pressure part
-            gg = c * cw * m.base.gas.g / (2dz)
+            gg = c * cw * _grav_implicit(m) / (2dz)
             a = k > 2 ? -r * s.P[i, k] * s.cT[i, k-1] + gg : 0.0
             d = 1 + r * s.P[i, k] * (s.cT[i, k] + s.cB[i, k])
             b = k < nz ? -r * s.P[i, k] * s.cB[i, k+1] - gg : 0.0
@@ -339,7 +363,7 @@ FV_METRIC_IMPLICIT: solve in Ω = W - z_x Ū (column-local 1 + z_x², right-hand
 substitution of the thermodynamic rows with Ω, then U and W from the new pressure (`_momenta_from_pressure!`)."""
 function exner_column_solve!(Y, m::ExnerModel, c, R, cw = c)
     s = m.column; g = m.base.grid
-    nz, grav = g.nz, m.base.gas.g
+    nz, grav = g.nz, _grav_implicit(m)
     imp = _metric_implicit(g)
     sub, cpr, iden = _exner_factor(s, m, c, cw)
     W = s.W
@@ -373,7 +397,7 @@ end
 """U and W from the new pressure (FV_METRIC_IMPLICIT, after the Ω solve and the back substitution):
 Y_W = R_W + cw (-P_z δη Y_π/(J Δη) - g Ȳ_ρ), Y_U = R_U + cw P_x `mvert`(Y_π) (exact discrete metric term)."""
 function _momenta_from_pressure!(Y, m, s, R, cw)
-    g = m.base.grid; grav = m.base.gas.g
+    g = m.base.grid; grav = _grav_implicit(m)
     f(i, k) = Y[iπ(m, i, k)]
     @inbounds for k in 2:g.nz, i in 1:g.nx
         Y[iW(g, i, k)] = R[iW(g, i, k)] - cw * (s.P[i, k] * (Y[iπ(m, i, k)] - Y[iπ(m, i, k - 1)]) / dzc(g, i) +
