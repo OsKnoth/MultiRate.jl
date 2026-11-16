@@ -36,8 +36,8 @@ xm = LX / 2
 
 const THVAR = Symbol(get(ENV, "THVAR", "thetarho"))
 const FAST = Symbol(get(ENV, "FAST", "cs"))
-const OFFC = parse(Float64, get(ENV, "OFFCENTER", FAST in (:ei, :cs) ? "0.1" : "0"))   # CS, EI: off-centring 0.1 (docs/moist_verlet)
-const SMDIV = parse(Float64, get(ENV, "SMDIV", FAST === :cs ? "0.1" : "0"))   # CS: extrapolation γd = 0.1
+const OFFC = parse(Float64, get(ENV, "OFFCENTER", FAST in (:ei, :cs, :csfb) ? "0.1" : "0"))   # CS, EI: off-centring 0.1 (docs/moist_verlet)
+const SMDIV = parse(Float64, get(ENV, "SMDIV", FAST in (:cs, :csfb) ? "0.1" : "0"))   # CS: extrapolation γd = 0.1
 const METRIC = Symbol(get(ENV, "METRIC", "implicit"))         # vertical metric term: implicit (Ω column solve) or explicit
 METRIC in (:implicit, :explicit) || error("METRIC: implicit or explicit")
 FV.FV_METRIC_IMPLICIT[] = METRIC === :implicit
@@ -96,7 +96,7 @@ for i in 1:nx
 end
 cgz = U0 * min(1.0, U0 / (NBV * a))
 base = FV.with_sponge(base0, zeros(base0.nq); zD = ZD, αtop = 5cgz / (HTOP - ZD))
-m = FV.MoistExnerModel(base; mgas = mg, pvar = PVAR, micro = :fast, τfac = parse(Float64, get(ENV, "TAUFAC", FAST in (:ei, :cs) ? "0.5" : "0.25")))
+m = FV.MoistExnerModel(base; mgas = mg, pvar = PVAR, micro = :fast, τfac = parse(Float64, get(ENV, "TAUFAC", FAST in (:ei, :cs, :csfb) ? "0.5" : "0.25")))
 rest = FV.moist_exner_state(m, qb, Q)
 Nr = TS.rhs_nonlinear(m, rest)
 @printf("moist hill: %d × %d cells, Δx = %.0f m, Δη = %.0f m, h0 = %.0f m, RH0 = %.2f, %s, τ = %.2f s\n",

@@ -79,7 +79,9 @@ compositions `:verlet_s4`, `_y4`, `_y6` (see `composition`);
 :cs component splitting (Verwer 2011) in the two variables a = thermodynamic rows, b = (U, W):
 a-equation in two half steps h/2 (horizontal and vertical divergence, phase change), horizontal
 pressure force at the midpoint (extrapolated with smdiv), vertical pressure force, metric term and
-gravity trapezoidal, off-centred with β only there; one column solve per step (docs/moist_verlet).
+gravity trapezoidal, off-centred with β only there; one column solve per step (docs/moist_verlet);
+:csfb the same splitting as a forward–backward step (a and b at the same level, a⁺ with the full
+step h and b⁺, the trapezoid in the force only; see `_cs_loop!`).
 
 `smdiv = β > 0`: divergence damping by forward extrapolation of the thermodynamic variables in the
 momentum part (as WRF, `WRF_SMDIV`): the momentum rows are evaluated at Z̃ = Z + β (Z - Z_prev),
@@ -200,7 +202,7 @@ const CS_MERGE = Ref(true)
 """
     _cs_loop!(Z, model, C, F, h, N, k, tmp, damp, ε, momentum!; halfsteps)
 
-Small steps (eq:CS) of docs/moist_verlet in the forward–backward form. halfsteps = true (:cs):
+halfsteps = true (:cs): small steps (eq:CS) of docs/moist_verlet in the forward–backward form,
     a½ = a⁰ + h/2 (-K b⁰ + f_a(a⁰))                                     (first half step)
     for n: b⁺ = b + h L₀ã½ + h[(1-β)L₁a + βL₁a⁺] + h f_b,  a⁺ = a½ + h/2(-K b⁺ + f_a(a½))   (column solve)
            a½ ← a⁺ + h/2(-K b⁺ + f_a(a⁺))      (n < N; the last step ends with a⁺)
@@ -208,27 +210,44 @@ The half step after the solve reuses the explicit part E of the half step before
 transport K₀b⁺, slow forcing, W forcing and sponge, evaluated once per small step) and evaluates only the
 phase change anew: E(a⁺) = E(a½) - P(a½) + P(a⁺), P = `frozen_phase!`; the vertical part (K₁b⁺ on a with
 h/2, L₁a⁺ on b with (1-β)h) is evaluated at (a⁺, b⁺). With the implicit metric term E uses the
-predictor Û of the solve. halfsteps = false (:csfb): no first half step, and the last step also ends
-with the half step after the solve (the forward–backward step of WRF/MPAS with the same vertical part).
+predictor Û of the solve.
+
+halfsteps = false (:csfb): the forward–backward step of WRF/MPAS with the same vertical part, a and b
+at the same time level,
+    b⁺ = b + h L₀ã + h[(1-β)L₁a + βL₁a⁺] + h f_b,   a⁺ = a + h(-K b⁺ + f_a(a))   (column solve, weights h, βh)
+(off-centring only in the force, a⁺ with the full b⁺; ã = a + γd(a - a_prev)).
 Work vectors: tmp[1] column, tmp[2:3] extrapolation, tmp[4] E, tmp[5] P(a½).
 """
 function _cs_loop!(Z, model, C, F, h, N, k, tmp, damp, ε, momentum!; halfsteps::Bool)
     (tmp === nothing || length(tmp) < 5) && error(":cs/:csfb need 5 work vectors (tmp)")
     y, E, P = tmp[1], tmp[4], tmp[5]
     β = (1 + ε) / 2
-    if halfsteps
-        frozen_fast!(k, model, C, Z, :hthermo, F)
-        frozen_vertical_rhs!(y, model, C, Z, h / 2, (1 - β) * h)
-        @. Z += (h / 2) * k + y
-        damp && (tmp[2] .= Z)                                 # no extrapolation in the first step
+    if !halfsteps
+        frozen_vertical_rhs!(y, model, C, Z, 0.0, (1 - β) * h)    # (1-β)h L₁a⁰ on b
+        @. Z += y
+        for n in 1:N
+            momentum!(:hmomentum); @. Z += h * k                  # U⁺ = U + h L₀ã + h f_U
+            frozen_hthermo!(E, model, C, Z, F, β * h)             # E at (a, b⁺)
+            @. Z += h * E
+            frozen_vertical_implicit!(Z, model, C, h, β * h, k, y)   # a⁺ = .. - h K₁b⁺, b⁺ = .. + βh L₁a⁺
+            if n < N
+                frozen_vertical_rhs!(y, model, C, Z, 0.0, (1 - β) * h)   # (1-β)h L₁a⁺ of the next b⁺
+                @. Z += y
+            end
+        end
+        return Z
     end
+    frozen_fast!(k, model, C, Z, :hthermo, F)
+    frozen_vertical_rhs!(y, model, C, Z, h / 2, (1 - β) * h)
+    @. Z += (h / 2) * k + y
+    damp && (tmp[2] .= Z)                                     # no extrapolation in the first step
     for n in 1:N
         momentum!(:hmomentum); @. Z += h * k                  # U⁺ = U + h L₀ã½ + h f_U
         frozen_hthermo!(E, model, C, Z, F, β * h)             # E at (a½, b⁺)
         has_p = frozen_phase!(P, model, C, Z)                 # P(a½)
         @. Z += (h / 2) * E
         frozen_vertical_implicit!(Z, model, C, h / 2, β * h, k, y)   # (a⁺, b⁺)
-        if n < N || !halfsteps                                # half step after the solve
+        if n < N                                              # half step after the solve
             frozen_vertical_rhs!(y, model, C, Z, h / 2, (1 - β) * h)
             if has_p
                 frozen_phase!(k, model, C, Z)                 # P(a⁺)
