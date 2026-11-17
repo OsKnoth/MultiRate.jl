@@ -24,7 +24,7 @@
 # horizontal mass flux of a⁺ is evaluated), :vertical = η part (no forcing); :thermo, :momentum, :all
 # as in the base model.
 
-using SparseArrays: sparse, SparseMatrixCSC, spzeros
+using SparseArrays: sparse, SparseMatrixCSC, spzeros, findnz
 using LinearAlgebra: lu, lu!, ldiv!, mul!, Diagonal, I
 
 """Stage data: the coefficients C of the stage (`frozen_stage_begin!`), the operator assembled as sparse
@@ -41,6 +41,13 @@ mutable struct DGVertical
     lus::Dict{Tuple{Float64,Float64},Any}               # LU objects kept across stages (symbolic reuse)
     zp::Vector{Float64}                                 # work: predicted state
     zv::Vector{Float64}                                 # work
+    zs::Vector{Float64}                                 # work
+    groups::Vector{Vector{Int}}                         # diagonal blocks of D₀ (ξ-face dissipation, a←a and b←b of J_h)
+    jpos::Vector{Matrix{Int}}                           # positions of the block entries in J_h.nzval (0: none)
+    epos::Vector{Matrix{Int}}                           # positions of the blocks in Epat.nzval
+    diagpos::Vector{Int}                                # identity entries of Epat outside the blocks
+    Epat::SparseMatrixCSC{Float64,Int}                  # pattern of e^{cD₀} and c φ₁(cD₀)
+    flows::Dict{Float64,Tuple{SparseMatrixCSC{Float64,Int},SparseMatrixCSC{Float64,Int}}}   # c -> (e^{cD₀}, c φ₁(cD₀))
 end
 
 """
@@ -66,7 +73,9 @@ function DGPressureModel(base::Euler2DModel; pvar::Symbol = :p)
     nc = frozen_ncoef(base) + M.np^2 * M.Ne
     return DGPressureModel(base, pvar, nq, zeros(nc), zeros(nq),
                            DGVertical(zeros(nc), spzeros(nq, nq), spzeros(nq, nq), false, Int[], Int[],
-                                      Dict{Tuple{Float64,Float64},Any}(), Dict{Tuple{Float64,Float64},Any}(), zeros(nq), zeros(nq)))
+                                      Dict{Tuple{Float64,Float64},Any}(), Dict{Tuple{Float64,Float64},Any}(), zeros(nq), zeros(nq),
+                                      zeros(nq), Vector{Int}[], Matrix{Int}[], Matrix{Int}[], Int[], spzeros(nq, nq),
+                                      Dict{Float64,Tuple{SparseMatrixCSC{Float64,Int},SparseMatrixCSC{Float64,Int}}}()))
 end
 
 @inline _pnode(np, e, i, j) = ((e - 1) * np + (j - 1)) * np + i
@@ -302,7 +311,151 @@ function frozen_stage_begin!(m::DGPressureModel, C, z)
     v.Jv = _dgp_matrix!(v.Jv, v.vmap, m, C, (2,))
     v.valid = true
     empty!(v.factors)
+    _dgp_dissipation!(m)                               # blocks of D₀ (once)
+    empty!(v.flows)
     return nothing
+end
+
+# --------------------------------------------------------------- Bokhove's partition (:csb)
+# J_h = [D_a0 -K₀; L₀ D_b0] (a = ρ, Θ, p; b = m_x, m_z). D₀ = diag(D_a0, D_b0) is the LMARS dissipation of the
+# ξ-faces (D_a0: the [p] term of m*, D_b0: the [m_n] term of p*) and couples only the two nodes of a ξ-face:
+# block diagonal with blocks of at most 6 unknowns. Xu, van der Vegt, Bokhove (J. Sci. Comput. 35 (2008), eq. 4.6)
+# integrate the local self-coupling of a block row exactly inside the split flows; here
+#   A_c: a' = -K₀ b, b' = D_b0 b:   b ← e^{cD₀} b,  a ← a + (J_h Φ_c b)_a,
+#   B_c: a' = D_a0 a, b' = L₀ a:    a ← e^{cD₀} a,  b ← b + (J_h Φ_c a)_b,     Φ_c = c φ₁(cD₀),
+# exact for these flows (block triangular), Φ_c b the mean momentum over the substep (Bokhove's U_int).
+# docs/frozen_dg, Section sec:implicitD.
+
+"""Diagonal blocks of D₀ (the a←a and b←b entries of J_h), computed once (the pattern of J_h is fixed): the
+unknowns of each block, the positions of its entries in J_h.nzval (0: none), and the fixed pattern of
+e^{cD₀} and c φ₁(cD₀) (the blocks plus the identity elsewhere) with the positions of the blocks in it."""
+function _dgp_dissipation!(m::DGPressureModel)
+    v = m.vert
+    isempty(v.groups) || return nothing
+    n = m.nq
+    Is, Js, _ = findnz(v.Jh)
+    keep = [_dgp_isthermo(m, Is[t]) == _dgp_isthermo(m, Js[t]) for t in eachindex(Is)]
+    parent = collect(1:n)
+    root(x) = (while parent[x] != x; parent[x] = parent[parent[x]]; x = parent[x]; end; x)
+    act = falses(n)
+    for t in eachindex(Is)
+        keep[t] || continue
+        r, c = Is[t], Js[t]
+        act[r] = act[c] = true
+        a, b = root(r), root(c)
+        a != b && (parent[a] = b)
+    end
+    g = Dict{Int,Vector{Int}}()
+    for k in 1:n
+        act[k] && push!(get!(g, root(k), Int[]), k)
+    end
+    v.groups = sort!(collect(values(g)); by = first)
+    # pattern of e^{cD₀}, c φ₁(cD₀)
+    IE, JE = Int[], Int[]
+    for idx in v.groups, j in idx, i in idx
+        push!(IE, i); push!(JE, j)
+    end
+    for k in 1:n
+        act[k] || (push!(IE, k); push!(JE, k))
+    end
+    v.Epat = sparse(IE, JE, zeros(length(IE)), n, n)
+    pos(A, i, j) = (r = A.colptr[j]:A.colptr[j+1]-1; t = searchsortedfirst(view(A.rowval, r), i);
+                    t <= length(r) && A.rowval[r[t]] == i ? r[t] : 0)
+    v.jpos = [[keep_pos(v.Jh, i, j, m) for i in idx, j in idx] for idx in v.groups]
+    v.epos = [[pos(v.Epat, i, j) for i in idx, j in idx] for idx in v.groups]
+    v.diagpos = [pos(v.Epat, k, k) for k in 1:n if !act[k]]
+    return nothing
+end
+"""Position of entry (i, j) of J_h in its nzval if it belongs to D₀ (rows and column both a or both b), else 0."""
+function keep_pos(A, i, j, m)
+    _dgp_isthermo(m, i) == _dgp_isthermo(m, j) || return 0
+    r = A.colptr[j]:A.colptr[j+1]-1
+    t = searchsortedfirst(view(A.rowval, r), i)
+    return t <= length(r) && A.rowval[r[t]] == i ? r[t] : 0
+end
+
+const _INVFACT = [Float64(1 / factorial(big(j))) for j in 1:16]      # 1/j!
+"""E = e^X and P = φ₁(X) = (e^X - I)/X of a small dense X: Taylor series of φ₁ after scaling to
+‖X‖₁ ≤ 1/2, then squaring with φ₁(2X) = ½ φ₁(X)(e^X + I), e^{2X} = (e^X)²."""
+function _phi1exp(X::Matrix{Float64})
+    s = size(X, 1)
+    nrm = maximum(sum(abs, X; dims = 1))
+    q = nrm > 0.5 ? ceil(Int, log2(nrm / 0.5)) : 0
+    Y = X ./ 2.0^q
+    Id = Matrix(1.0I, s, s)
+    K = 14
+    P = Id .* _INVFACT[K+1]
+    for k in K-1:-1:0
+        P = Y * P .+ Id .* _INVFACT[k+1]
+    end
+    E = Id .+ Y * P
+    for _ in 1:q
+        P = 0.5 .* (P * (E .+ Id))
+        E = E * E
+    end
+    return E, P
+end
+
+"""(e^{cD₀}, c φ₁(cD₀)) of the stage, blockwise from the entries of J_h."""
+function _dgp_flowmats(m::DGPressureModel, c)
+    v = m.vert
+    get!(v.flows, Float64(c)) do
+        E = copy(v.Epat); Φ = copy(v.Epat)
+        nzE, nzΦ, nzJ = E.nzval, Φ.nzval, v.Jh.nzval
+        @inbounds for k in v.diagpos
+            nzE[k] = 1.0; nzΦ[k] = c
+        end
+        @inbounds for (g, idx) in enumerate(v.groups)
+            jp, ep = v.jpos[g], v.epos[g]
+            X = [jp[i, j] == 0 ? 0.0 : c * nzJ[jp[i, j]] for i in eachindex(idx), j in eachindex(idx)]
+            Eb, Pb = _phi1exp(X)
+            for j in eachindex(idx), i in eachindex(idx)
+                nzE[ep[i, j]] = Eb[i, j]; nzΦ[ep[i, j]] = c * Pb[i, j]
+            end
+        end
+        (E, Φ)
+    end
+end
+
+"""
+    frozen_hflow!(z, m, C, F, flow, c, zsrc, w)
+
+Exact flow of length c of Bokhove's partition (horizontal part):
+  flow = :a (A_c): a ← a + (J_h Φ_c b̂)_a + c (F_a + sponge(z)), b ← (e^{cD₀} z)_b, with b̂ the momenta of
+      zsrc + w (J_v zsrc) (w = βh: the predictor of the implicit vertical force, as in `frozen_hthermo!`);
+  flow = :b (B_c): b ← b + (J_h Φ_c ã)_b + c F_b, a ← (e^{cD₀} z)_a, ã the thermodynamic rows of zsrc
+      (the extrapolated state of the divergence damping).
+"""
+function frozen_hflow!(z, m::DGPressureModel, C, F, flow::Symbol, c, zsrc, w = 0.0)
+    v = m.vert
+    v.valid && C === v.C || error("frozen_hflow!: frozen_stage_begin! with these coefficients first")
+    E, Φ = _dgp_flowmats(m, c)
+    tha = flow === :a ? false : flow === :b ? true : error("frozen_hflow!: flow :a or :b")
+    # source: the b rows (flow A) or the a rows (flow B) of zsrc
+    if tha
+        @inbounds for k in eachindex(z); v.zs[k] = _dgp_isthermo(m, k) ? zsrc[k] : 0.0; end
+    else
+        if w != 0
+            mul!(v.zv, v.Jv, zsrc)
+            @inbounds for k in eachindex(z); v.zs[k] = _dgp_isthermo(m, k) ? 0.0 : zsrc[k] + w * v.zv[k]; end
+        else
+            @inbounds for k in eachindex(z); v.zs[k] = _dgp_isthermo(m, k) ? 0.0 : zsrc[k]; end
+        end
+    end
+    mul!(v.zp, Φ, v.zs)
+    mul!(v.zv, v.Jh, v.zp)                       # coupling increment (a rows for A, b rows for B)
+    mul!(v.zp, E, z)                             # e^{cD₀} z
+    if !tha
+        fill!(v.zs, 0.0); sponge!(v.zs, m.base, z)
+    end
+    @inbounds for k in eachindex(z)
+        if _dgp_isthermo(m, k)
+            z[k] = tha ? v.zp[k] : z[k] + v.zv[k] + c * F[k]
+        else
+            z[k] = tha ? z[k] + v.zv[k] + c * F[k] : v.zp[k] + c * v.zs[k]
+        end
+    end
+    return z
 end
 
 """Scale the thermodynamic rows by ct and the momentum rows by cw."""

@@ -1375,6 +1375,16 @@ end
     zr = fs(:rk4, 400)
     e = [norm(fs(:cs, n) .- zr) for n in (10, 20, 40)]
     @test e[1] / e[2] > 3.3 && e[2] / e[3] > 3.2
+    # Bokhove's partition (:csb): the flows A_c, B_c are exact (semigroup), the step is second order
+    TS.frozen_stage_begin!(m, C, z)
+    for fl in (:a, :b)
+        z1 = copy(z); TS.frozen_hflow!(z1, m, C, S, fl, 1.5, z1); TS.frozen_hflow!(z1, m, C, S, fl, 1.5, z1)
+        z2 = copy(z); TS.frozen_hflow!(z2, m, C, S, fl, 3.0, z2)
+        @test norm(z1 .- z2) < 1e-10 * norm(z2 .- z)
+    end
+    @test maximum(length, m.vert.groups) <= 6                       # face-local blocks
+    eb = [norm(fs(:csb, n) .- zr) for n in (10, 20, 40)]
+    @test eb[1] / eb[2] > 3.5 && eb[2] / eb[3] > 3.5
     # MIS54 with :cs at the horizontal limit (4 times the Verlet step) is as accurate as explicit Verlet of the
     # base model (θ changes by 0.8 K; both ≈ 1.5e-2 K from RK4)
     dτv = 0.85 * 0.63 * minimum(M.Z[:, end, :] .- M.Z[:, 1, :]) / (7 * CM.sound_speed_max(base, qb))
@@ -1387,6 +1397,8 @@ end
     @test dτh > 3dτv
     ev, ec = maximum(abs.(θ(qv) .- θ(qr))), maximum(abs.(θ(qc) .- θ(qr)))
     @test ev < 2e-2 && ec < 1.6ev
+    qb2 = TS.run_frozen(m, q, Δt, nst; tab = TS.mis_tableau(:MIS54), nsub = ceil(Int, Δt / (1.6dτh)), fast = :csb)
+    @test maximum(abs.(θ(qb2) .- θ(qr))) < 1.6ev                    # :csb with a 1.6 times larger small step
     @test qc[base.nq+1:end] ≈ [CM.pressure(gas, qc[E2.node_iq(np, e, 4, i, j)]) for e in 1:M.Ne for j in 1:np for i in 1:np]
 end
 

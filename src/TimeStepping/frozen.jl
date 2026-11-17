@@ -42,6 +42,14 @@ frozen_hmomentum!(out, model, C, z, F, h) = frozen_fast!(out, model, C, z, :hmom
 pressure jump in the LMARS mass flux); the combined :cs loop then evaluates :hthermo anew after the column
 solve instead of reusing E (which would be explicit Euler at a½, first order). Default false (FV)."""
 frozen_hthermo_reeval(model) = false
+"""
+    frozen_hflow!(z, model, C, F, flow, c, zsrc, w)
+
+Exact horizontal flow of length c of Bokhove's partition (`fast = :csb`): flow = :a, a' = -K₀b + f_a,
+b' = D_b0 b (b̂ of zsrc with the vertical predictor w); flow = :b, a' = D_a0 a, b' = L₀ã + f_b (ã of zsrc).
+Only for models whose horizontal self-coupling D₀ is local (DG: the LMARS dissipation of the ξ-faces).
+"""
+frozen_hflow!(z, model, C, F, flow, c, zsrc, w = 0.0) = error("fast = :csb needs frozen_hflow! for $(typeof(model))")
 """out = the phase-change part of :hthermo (:cs/:csfb, re-evaluated in the half step after the solve);
 returns false (out unused) for models without phase change."""
 frozen_phase!(out, model, C, z) = false
@@ -124,6 +132,7 @@ function frozen_fast_solve!(Z, model, C, F, dt, nsteps, k; method::Symbol = :ver
         return _ei_merged!(Z, model, C, F, dt, nsteps, k, tmp, damp ? tmp[2] : nothing, offcenter, momentum!)
     (base == :csfb || (base == :cs && CS_MERGE[])) && length(ws) == 1 &&
         return _cs_loop!(Z, model, C, F, dt, nsteps, k, tmp, damp, offcenter, momentum!; halfsteps = base == :cs)
+    base == :csb && return _csb_loop!(Z, model, C, F, dt, nsteps, k, tmp, damp ? smdiv : 0.0, offcenter)
     first = true
     for _ in 1:nsteps, wt in ws
         h = wt * dt
@@ -197,6 +206,46 @@ function frozen_fast_solve!(Z, model, C, F, dt, nsteps, k; method::Symbol = :ver
         else
             error("frozen fast integrator $method: :verlet, :fb, :hevi, :ei, :cs, :wrf, :rk4 (or a composition of :verlet, :hevi, :ei, :cs)")
         end
+    end
+    return Z
+end
+
+"""
+    _csb_loop!(Z, model, C, F, h, N, k, tmp, γd, ε)
+
+CS with Bokhove's partition of the horizontal part (docs/frozen_dg, Section sec:implicitD; Xu, van der
+Vegt, Bokhove, J. Sci. Comput. 35 (2008), eq. 4.6): the local horizontal self-couplings D_a0, D_b0 are
+integrated exactly inside the split flows A (a' = -K₀b + f_a, b' = D_b0 b) and B (a' = D_a0 a, b' = L₀a + f_b).
+One small step is the symmetric composition
+    V_I ∘ A_{h/2} ∘ B_h ∘ A_{h/2} ∘ V_E,
+V_E: z += D G_v(z) and V_I: (I - D J_v) z⁺ = z, D = (h/2 on a, (1-β)h resp. βh on b) (the vertical part of
+CS: explicit, then implicit; for β = 1/2 adjoint to each other); B with ã = a + γd (a - a_prev). V_I of one
+step and V_E of the next must stay adjacent (together Crank–Nicolson for the stiff vertical part; with
+A_{h/2} ∘ A_{h/2} between them the step is unstable). The horizontal mass flux of the two A uses the
+momenta b̂ = b - (1-β)h (J_v z)_b ≈ bⁿ (without the vertical force of V_E) and b̂ = b + βh (J_v z)_b ≈ bⁿ⁺¹
+(with the force of the column solve): the trapezoidal rule for -K₀b, mirrored, so the step stays symmetric
+(correction 1 of the note; without it the error on terrain is 10 times larger). Work vectors: tmp[1]
+column, tmp[2:3] extrapolation.
+"""
+function _csb_loop!(Z, model, C, F, h, N, k, tmp, γd, ε)
+    (tmp === nothing || length(tmp) < 3) && error(":csb needs 3 work vectors (tmp)")
+    y, zl, zt = tmp[1], tmp[2], tmp[3]
+    β = (1 + ε) / 2
+    for n in 1:N
+        frozen_vertical_rhs!(y, model, C, Z, h / 2, (1 - β) * h)    # V_E
+        @. Z += y
+        frozen_hflow!(Z, model, C, F, :a, h / 2, Z, -(1 - β) * h)     # A_{h/2}, b̂ ≈ bⁿ (before V_E)
+        if γd > 0 && n > 1
+            @. zt = Z + γd * (Z - zl)
+        else
+            zt .= Z
+        end
+        γd > 0 && (zl .= Z)
+        frozen_hflow!(Z, model, C, F, :b, h, zt)                      # B_h
+        frozen_hflow!(Z, model, C, F, :a, h / 2, Z, β * h)            # A_{h/2}, b̂ ≈ bⁿ⁺¹ (after V_I)
+        frozen_vertical_rhs!(k, model, C, Z, h / 2, β * h)            # V_I: z⁺ = z + (I - D J_v)⁻¹ D J_v z
+        frozen_vertical_solve!(y, model, C, h / 2, β * h, k)
+        @. Z += y
     end
     return Z
 end
@@ -507,7 +556,7 @@ function run_frozen(model, q0, Δt, nsteps; tab::SplitTableau = mis_tableau(:MIS
                     fast::Symbol = :verlet, smdiv::Real = 0.0, offcenter::Real = 0.0, monitor = nothing, every::Int = 1)
     q = Vector{Float64}(q0)
     w = FrozenWork(model, length(q), tab)
-    tmp = (composition(fast)[1] in (:rk4, :hevi, :ei, :cs, :csfb, :wrf) || smdiv > 0) ? ntuple(_ -> zeros(length(q)), 6) : nothing
+    tmp = (composition(fast)[1] in (:rk4, :hevi, :ei, :cs, :csfb, :csb, :wrf) || smdiv > 0) ? ntuple(_ -> zeros(length(q)), 6) : nothing
     for n in 1:nsteps
         frozen_mis_step!(q, model, q, Δt, tab, w; nsub, fast, tmp, smdiv = Float64(smdiv), offcenter = Float64(offcenter))
         frozen_step_end!(model, q)

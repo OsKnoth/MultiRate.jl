@@ -4,11 +4,13 @@
 # a = 10 km; initial flow along the terrain-following coordinate surfaces). Error of θ (minus its mean) at
 # T = 3000 s against RK4 of the base DG model; explicit Verlet of the base model for comparison.
 #
-#     [TERRAIN=flat|hill] [METHODS=MIS54,WSRK3,EB4] [FASTS=verlet,cs,csfb] [OFFCENTER=ε] [SMDIV=γ]
+#     [TERRAIN=flat|hill] [METHODS=MIS54,WSRK3,EB4] [FASTS=verlet,cs,csfb,csb] [OFFCENTER=ε] [SMDIV=γ]
 #     [DTS=100,50] [NSUBFAC=1,2] julia --project=examples examples/frozen_dg_cs.jl
 #
 # Small steps: Verlet at the vertical limit (`fast_step(:verlet)`, the vertical node spacing), :cs/:csfb at the
-# horizontal limit 0.85·0.63 Δx_e/((2p+1) c) (Δx_e the element width), divided by NSUBFAC.
+# horizontal limit 0.85·0.63 Δx_e/((2p+1) c) (Δx_e the element width), divided by NSUBFAC. :csb is CS with
+# Bokhove's partition (the ξ-face dissipation integrated exactly in the split flows, docs/frozen_dg
+# Section sec:implicitD); it is stable up to about twice this step (NSUBFAC = 0.5).
 
 include(joinpath(@__DIR__, "euler2d_common.jl"))
 

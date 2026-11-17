@@ -255,27 +255,95 @@ matrix-vector product, and $I-DJ_v$ is factored by a sparse LU (UMFPACK) per sta
 pattern is fixed: later stages refill the values and reuse the symbolic factorization (assembly 1\,ms, LU
 20\,ms on $30\times4$ elements of degree 4).
 
-\paragraph{The small step.} The component splitting CS of the moist Verlet note (\code{docs/moist\_verlet}, \code{fast = :cs}),
-\[
-a^{1/2}=a+\tfrac h2(-Kb+f_a),\quad b^+=b+hL_0\tilde a^{1/2}+h\big[(1-\beta)L_1a+\beta L_1a^+\big]+hf_b,\quad a^+=a^{1/2}+\tfrac h2(-Kb^++f_a),
-\]
-($K=K_0+K_1$, $L=L_0+L_1$, 0 horizontal and explicit, 1 vertical and implicit, $\beta=(1+\varepsilon)/2$, $\tilde a$ extrapolated with $\gamma_d$),
-and its forward--backward form CSFB (\code{fast = :csfb}), with $a=(\rho,\Theta,p)$, $b=(m_x,m_z)$. Three
-corrections are needed for second order on terrain; they appear neither in the flat case nor in the FV code.
+\subsection{Block structure of the fast operator}\label{sec:block}
+With $a=(\rho,\Theta,p)$ (the thermodynamic rows) and $b=(m_x,m_z)$ (the momenta) the fast operator of a stage,
+$J=J_h+J_v$, has the block form
+\begin{equation}
+a'=-K\,b+D_a\,a+f_a,\qquad b'=L\,a+D_b\,b+f_b,\label{eq:blocks}
+\end{equation}
+where the LMARS face values $m^*=\avg{m_n}-\jump p/(2c)$, $p^*=\avg p-\tfrac c2\jump{m_n}$ are split into their
+central and their dissipative parts:
+\begin{itemize}
+\item $K$: the divergence of the momentum in the $\rho$ row, times $\theta$ in the $\Theta$ row and times $P'$ in the $p$ row
+  (volume pairs and the central face value $\avg{m_n}$);
+\item $L$: the pressure force with the central face value $\avg p$, and gravity;
+\item $D_a$: the pressure jump $-\jump p/(2c)$ of $m^*$ in the face fluxes of $\rho,\Theta,p$; it acts from $a$ on $a$;
+\item $D_b$: the momentum jump $-\tfrac c2\jump{m_n}$ of $p^*$, and the wall pressure $c\,m_n$; it acts from $b$ on $b$.
+\end{itemize}
+For constant coefficients, in the acoustic energy norm (as in property 4 of the Properties section), the central part
+$\begin{pmatrix}0&-K\\L&0\end{pmatrix}$ is skew and $D_a,D_b\le0$: the central part is the Hamiltonian (energy conserving)
+DG operator of Xu, van der Vegt and Bokhove \cite{xvb} (their alternating/central flux), the dissipation is the
+upwinding. With LGL collocation the face values are nodal values, so $D_a$ and $D_b$ are \emph{face local}: the term of a
+face couples only its two face nodes $L$ and $R$ ($D_a$: the $p$ columns of the two nodes into their $\rho,\Theta,p$ rows;
+$D_b$: the normal momenta of the two nodes into their momentum rows). In the language of hybridized DG they are the
+dependence of the face traces $\hat M=m^*$, $\hat P=p^*$ on the jumps; with the traces as unknowns (\code{fast\_split.jl},
+\code{HDGFast2D}) the element rows see only the traces and the trace equations are local to the face.
+
+Every operator splits into a horizontal part (index 0: $\xi$ pairs, $\xi$ faces) and a vertical part (index 1: $\eta$ pairs,
+$\eta$ faces, walls): $K=K_0+K_1$, $L=L_0+L_1$, $D_a=D_{a0}+D_{a1}$, $D_b=D_{b0}+D_{b1}$, i.e.\ $J_h=\begin{pmatrix}D_{a0}&-K_0\\L_0&D_{b0}\end{pmatrix}$,
+$J_v=\begin{pmatrix}D_{a1}&-K_1\\L_1&D_{b1}\end{pmatrix}$. On terrain $L_1$ and $D_{b1}$ have $m_x$ rows (metric term
+$J\eta_x\partial_\eta p$, the $\eta$ part of gravity, the wall normal), and $K_0$, $D_{b0}$ have $m_x$ and $m_z$ columns.
+
+\subsection{The small step CS in detail}\label{sec:csdetail}
+The small step is the component splitting CS of the moist Verlet note (\code{docs/moist\_verlet}, \code{fast = :cs}):
+Verwer's scheme for the Maxwell equations \cite{verwer}, a half step in $a$, a full step in $b$, a half step in $a$, in
+which the vertical (stiff) part is taken implicitly. With \eqref{eq:blocks} written out, one small step of length $h$ is
+\begin{align}
+a^{1/2}&=a+\tfrac h2\big(-K_0b+D_{a0}a+f_a\big)+\tfrac h2\big(-K_1b+D_{a1}a\big),\nonumber\\
+b^{+}&=b+h\big(L_0\tilde a^{1/2}+D_{b0}b+f_b\big)+h\big[(1-\beta)(L_1a+D_{b1}b)+\beta(L_1a^++D_{b1}b^+)\big],\label{eq:csdg}\\
+a^{+}&=a^{1/2}+\tfrac h2\big(-K_0b^++D_{a0}a^{1/2}+f_a\big)+\tfrac h2\big(-K_1b^++D_{a1}a^+\big),\nonumber
+\end{align}
+$\beta=(1+\varepsilon)/2$, $\tilde a^{1/2}=a^{1/2}+\gamma_d(a^{1/2}-a^{-1/2})$ (divergence damping, $\tilde a^{1/2}=a^{1/2}$ in the first
+small step), and $f_a$, $f_b$ the slow forcing of the stage and the sponge.
+\begin{itemize}
+\item \emph{Vertical part.} The last two lines are coupled only through $J_v$. Collecting the unknowns,
+  \[
+  \big(I-\Delta\,J_v\big)\,z^+=r,\qquad \Delta=\mathrm{diag}\big(\tfrac h2\text{ on }a,\ \beta h\text{ on }b\big),
+  \]
+  is one block per node column (\code{frozen\_vertical\_implicit!}, sparse LU per stage and weight pair). The vertical
+  dissipation is treated as Verwer treats the conductivity $\sigma$ in the second block row of Maxwell's equations: $D_{b1}$
+  with the trapezoidal rule (off-centred by $\beta$), $D_{a1}$ with the trapezoidal rule through the two half steps
+  ($D_{a1}a$ explicit in the first, $D_{a1}a^+$ implicit in the second). Since $D_{a1},D_{b1}\le0$ this part is stable for every
+  $h$; with $\varepsilon>0$ it damps.
+\item \emph{Horizontal part.} $K_0$ and $L_0$ form the explicit Störmer--Verlet step, stable for $h\,\omega_{\max}\le2$, $\omega_{\max}$
+  the largest frequency of the central horizontal operator. The horizontal dissipation $D_{a0}$, $D_{b0}$ is taken
+  explicitly: $D_{a0}$ at $a$ and at $a^{1/2}$ in the two half steps, $D_{b0}$ in the momentum step. This limits the step more
+  than $K_0$, $L_0$ do (Section~\ref{sec:implicitD}).
+\item \emph{Combined loop.} The second half step of step $n$ and the first of step $n+1$ have the same $b^+$; the code
+  (\code{\_cs\_loop!}) does them together, so that a small step is
+  \begin{enumerate}
+  \item momentum step: $b\leftarrow b+h(L_0\tilde a+D_{b0}b+f_b)$ (\code{frozen\_hmomentum!}, the horizontal force at the
+    extrapolated state; $(1-\beta)h(L_1a+D_{b1}b)$ was added at the end of the previous step);
+  \item horizontal half step of $a$: $a\leftarrow a+\tfrac h2(-K_0b+D_{a0}a+f_a)$ (\code{frozen\_hthermo!});
+  \item column solve with the weights $(\tfrac h2,\beta h)$: $(a^+,b^+)$;
+  \item explicit parts of the next half step at $(a^+,b^+)$: $\tfrac h2(-J_hz^+)_a$ and the vertical rows $\tfrac h2(-K_1b^++D_{a1}a^+)$,
+    $(1-\beta)h(L_1a^++D_{b1}b^+)$ (\code{frozen\_vertical\_rhs!}).
+  \end{enumerate}
+  Only the first and the last step of a stage are half steps in $a$.
+\item \emph{CSFB} (\code{fast = :csfb}) is the forward--backward form with $a$ and $b$ on the same level: the same momentum step,
+  then $a^+=a+h(-K_0b^++D_{a0}a+f_a)+h(-K_1b^++D_{a1}a^+)$ with the column weights $(h,\beta h)$. It is of first order, has
+  no half steps and needs one horizontal evaluation of $a$ per small step.
+\end{itemize}
+On a flat grid \eqref{eq:csdg} is of second order as it stands. On terrain three corrections are needed; they appear
+neither in the flat case nor in the FV code (where $D_{a0}$, $D_{b0}$ are absent in the $p$/$\pi$ form). Two of them
+concern the explicit horizontal dissipation.
 \begin{enumerate}
 \item \emph{Horizontal mass flux.} The $\xi$ divergence uses $m_x$, which receives the large vertical metric
   force $\beta h\,L_1a^+$ only in the column solve. Evaluated before the solve, $K_0b^+$ lags by that force.
   As in the FV metric predictor, \code{frozen\_hthermo!} evaluates it at $\hat b=b+\beta h\,(J_vz)_b$; the
   remaining lag $\beta hJ_v(z^+-z)=O(h^2)$ keeps the order.
-\item \emph{Horizontal momentum.} The LMARS dissipation of the $\xi$ faces depends on $b$ itself ($b\leftarrow b$). It is
+\item \emph{Horizontal momentum ($D_{b0}$).} The LMARS dissipation of the $\xi$ faces depends on $b$ itself. It is
   large at the wall corners, where the terrain normal of neighbouring elements differs and $m_x$ jumps. In the
-  momentum step it was explicit Euler with $h$. \code{frozen\_hmomentum!} evaluates it at the midpoint
-  predictor $b+\tfrac h2(J_hz)_b$. The momentum forcing belongs to this step, so that $b^+$ contains it before
-  the mass flux is evaluated.
-\item \emph{Pressure jump in the mass flux.} The LMARS mass flux contains $-\jump p/(2\rho c)$, so the horizontal
-  $a$ part depends on $a$. The combined loop must not reuse $E(a^{1/2})$ after the solve
+  momentum step it is explicit Euler with $h$, a first-order error $\tfrac{h^2}2D_{b0}(L_1a+\dots)$ per step that does not cancel.
+  \code{frozen\_hmomentum!} evaluates it at the midpoint predictor $b+\tfrac h2(J_hz)_b$. The momentum forcing belongs to this
+  step, so that $b^+$ contains it before the mass flux is evaluated.
+\item \emph{Pressure jump in the mass flux ($D_{a0}$).} The first half step of the next small step uses $D_{a0}a^+$ of the
+  new state. The combined loop must not reuse the horizontal part $E(a^{1/2})$ of the half step before the solve
   (\code{frozen\_hthermo\_reeval}).
 \end{enumerate}
+Even with the corrections the horizontal dissipation is not symmetric in \eqref{eq:csdg}: $D_{a0}$ is integrated by two
+explicit Euler half steps, $D_{b0}$ by an explicit midpoint step. The remaining error is of the size $h^2D_0^2$ times the face
+jumps, which are small for smooth solutions; the order tests below do not see it.
 Order of the fast loop alone (stage coefficients fixed, 20\,s against RK4, ratios of the errors at
 $N=12/24/48/96$, hill, $U=20$\,m/s): without the corrections 2.1/2.0/2.0; with (1) only the error is 27 times
 smaller but still first order; with (1)--(3) 5.7/3.9/3.0 (uncombined 5.8/4.3/3.6). With $\varepsilon=0.1$, and for
@@ -306,11 +374,172 @@ $\dt=100$\,s fails, and EB4 at 100\,s on the hill is wrong by 9\,K, with every s
 (MIS54, $\dt=100$\,s): Verlet 18\,s, CS 18\,s, CSFB 9\,s. The predictors and the re-evaluation cost
 CS about six matrix-vector products and one column solve per small step, which still has to be reduced.
 
+\subsection{Implicit face dissipation: Verwer's $D$, Bokhove's Verlet and the HDG traces}\label{sec:implicitD}
+In Verwer's Maxwell system the second block row contains the conductivity, $b'=K^{\rm T}a-\sigma b$, and his component
+splitting takes it with the trapezoidal rule. In \eqref{eq:csdg} this is done for the vertical $D_{b1}$ (and, through
+the half steps, for $D_{a1}$), but not for the horizontal $D_{a0}$, $D_{b0}$.
+
+Xu, van der Vegt and Bokhove \cite{xvb} discretize the linear system $\partial_tv+\mathcal D(C\eta)+fv^\perp=0$,
+$\partial_t\eta+\mathcal D\cdot(Bv)=0$ (shallow water, acoustics, Maxwell) by discretizing its Poisson bracket. With the
+flux $\hat r=\theta r_L+(1-\theta)r_R$, $\widehat{N\cdot Q}=(1-\theta)N\cdot Q_L+\theta N\cdot Q_R$, $0\le\theta\le1$ (their (3.14); $\theta=\tfrac12$
+central, $\theta=0,1$ alternating) the discrete bracket is skew for every $\theta$: there is no dissipation. The semi-discrete
+system is $\dot v=L_1v+L_2\eta$, $\dot\eta=L_3v$ (their (4.5)); $L_1$ is the Coriolis term, local to the element without face
+integrals. The time step (their (4.6)) splits the Hamiltonian, $H=H_v+H_\eta$: a half step of the $H_v$ flow, in which the
+velocity is rotated exactly by $L_1$ element by element and $\eta$ is advanced with $L_3$ applied to the \emph{time integral}
+of that velocity ($U_{\rm int}$, (4.6a)--(4.6c)); a full step $v\leftarrow v-\tau L_2\eta$ ((4.6d)); and again the half step of $H_v$
+((4.6e)--(4.6g)). For $f=0$ it is Störmer--Verlet. The point for us: the self-coupling of the second block row ($L_1$, the
+analogue of Verwer's $\sigma$ and of our $D_b$) sits in the half steps and is integrated exactly, because it is local. The
+existing \code{:verlet} of \code{HDGFast2D} is their step with $f=0$ and \code{tau\_scale = 0} ($\theta=\tfrac12$).
+
+\paragraph{Why it is cheap.} By Section~\ref{sec:block}, $D_0=\mathrm{diag}(D_{a0},D_{b0})$ is face local: per node pair of a $\xi$
+face a $2\times2$ block in $p$ (and the induced $\rho,\Theta$ rows) and a rank-one block in the normal momenta. Its
+Cayley transform
+\[
+C_c(D_0)=(I-\tfrac c2D_0)^{-1}(I+\tfrac c2D_0)
+\]
+is the trapezoidal rule for $z'=D_0z$; it leaves the face means $\avg p$, $\avg{m_n}$ unchanged and multiplies the jumps
+$\jump p$, $\jump{m_n}$ by $(1-\tfrac c2\delta)/(1+\tfrac c2\delta)$, $\delta$ the jump rate of the face ($\delta=c_f\,s/(J\,w_{\rm end})$ up to the
+frozen coefficients). In HDG terms it is the implicit, trapezoidal update of the traces $\hat M$, $\hat P$; the
+existing relaxation of $\hat M$ in \code{HDGFast2D} (\code{eps\_if}) is the first-order (implicit Euler) form of it.
+
+\paragraph{Proposed step.}
+\[
+\Phi_h=C_{h/2}(D_0)\circ\mathrm{CS}_h\big(K_0,L_0;\,J_v\big)\circ C_{h/2}(D_0),
+\]
+$\mathrm{CS}_h$ the step \eqref{eq:csdg} with $D_{a0}=D_{b0}=0$, i.e.\ with the central horizontal face values. $C_c$ is
+symmetric ($C_c^{-1}=C_{-c}$), so $\Phi_h$ is symmetric and of second order for $\varepsilon=\gamma_d=0$, and A-stable in $D_0$. The
+corrections 2 and 3 disappear, since the explicit part no longer contains $b\leftarrow b$ or $a\leftarrow a$ terms; correction 1
+(the vertical force in the horizontal mass flux) remains. Fully implicit $D_{b0}$ in the momentum step (the general
+Störmer--Verlet step of \cite{hlw} for non-separable systems) would couple $D_{b0}$ with the column solve and therefore the
+columns with each other; the Strang form avoids this. $D_{a0}$ alone could be taken implicitly in the half step before
+the solve (general Störmer--Verlet), at the same cost.
+
+\paragraph{Bokhove's partition.} Following (4.6) of \cite{xvb}, the local self-couplings go into the flows that are split,
+not around them. Horizontally,
+\[
+\Phi_h=\mathcal A_{h/2}\circ\mathcal B_h\circ\mathcal A_{h/2},\qquad
+\mathcal A:\ a'=-K_0b,\ \ b'=D_{b0}b,\qquad
+\mathcal B:\ a'=D_{a0}a,\ \ b'=L_0a,
+\]
+each flow integrated exactly. Both are triangular and local except for one application of $K_0$ or $L_0$:
+\[
+\mathcal A_c:\ b\leftarrow e^{cD_{b0}}b,\quad a\leftarrow a-c\,K_0\,\varphi_1(cD_{b0})\,b;\qquad
+\mathcal B_c:\ a\leftarrow e^{cD_{a0}}a,\quad b\leftarrow b+c\,L_0\,\varphi_1(cD_{a0})\,a,
+\]
+$\varphi_1(x)=(e^x-1)/x$; $\varphi_1(cD_{b0})b$ is the mean momentum over the substep, Bokhove's $U_{\rm int}$. Per face node pair
+$e^{cD}$ leaves the mean unchanged and multiplies the jump by $e^{-c\delta}$: closed form, no solve. For $D_0=0$ this is
+the Störmer--Verlet step. How the vertical part enters is the subject of Section~\ref{sec:csb}. The
+horizontal composition is symmetric, of second order, and the exact exponential damps the face jumps for every $c\delta$ (no factor
+$\to-1$ as with the Cayley transform). The trapezoidal approximation of the two flows ($b^+=C_c(D_{b0})b$,
+$a^+=a-cK_0\tfrac12(b+b^+)$, likewise for $\mathcal B$) is also local.
+
+\paragraph{Gain in the step size.} One-dimensional periodic acoustics, DGSEM of degree $P$, LMARS (upwind) flux, element
+width $\Delta x_e$; the stability limit $c\,h/\Delta x_e$ of the small step (spectral radius of the amplification matrix,
+\code{docs/frozen\_dg/cs\_dissipation\_1d.jl}, $\varepsilon=\gamma_d=0$):
+\begin{center}\footnotesize\setlength{\tabcolsep}{4pt}
+\begin{tabular}{lcccccccc}\toprule
+$P$ & $D_0$ Euler & code & $D_0=0$ central & alternating & $C\circ\mathrm{CS}\circ C$ & general SV & Bokhove exact & Bokhove trap.\\\midrule
+2 & 0.229 & 0.333 & 0.395 & -- & 0.389 & 0.395 & -- & --\\
+3 & 0.121 & 0.167 & 0.220 & 0.121 & 0.217 & 0.220 & 0.264 & 0.230\\
+4 & 0.075 & 0.100 & 0.140 & 0.075 & 0.139 & 0.140 & 0.173 & 0.146\\\bottomrule
+\end{tabular}
+\end{center}
+(``code'': $D_{b0}$ with the midpoint predictor; ``alternating'': the flux of \cite{xvb} with $\theta=1$, no dissipation.)
+Taking the face dissipation implicitly gives at least the step of the central Verlet step, 1.85 times the explicit one and
+1.4 times that of the present code; Bokhove's partition with the exact local exponentials gives 2.3 and 1.7 times, more
+than the central flux alone, since $\mathcal A$ and $\mathcal B$ damp the shortest modes within the step. The alternating flux is
+no alternative: without dissipation its limit is that of the explicit upwind step. The step used in Section~\ref{sec:pdg}
+($0.85\cdot0.63/(2P+1)=0.060$ for $P=4$) is the explicit one with a safety factor. For the gravity wave at $\dt=100$\,s
+Bokhove's partition would reduce $n_{\rm sub}$ from 59 to about 26. Section~\ref{sec:csb} gives the 2D implementation.
+
+\subsection{Implementation: CS with Bokhove's partition (\code{fast = :csb})}\label{sec:csb}
+\paragraph{The flows.} \code{frozen\_stage\_begin!} assembles $J_h$ as before. $D_0$ is not a separate operator: it is the set of
+$a\leftarrow a$ and $b\leftarrow b$ entries of $J_h$. Their pattern is fixed, and its connected components, found once by
+union--find, are the blocks: one per $\xi$-face node pair, of at most 6 unknowns ($p_L,p_R$ with the $\rho,\Theta$ rows of the
+two nodes for $D_{a0}$; $m_{x,L},m_{z,L},m_{x,R},m_{z,R}$ for $D_{b0}$). For every step length $c$ of a stage the blocks of
+$e^{cD_0}$ and $c\varphi_1(cD_0)$ are computed together from the entries of $J_h$: Taylor series of $\varphi_1$ after scaling to
+$\|X\|_1\le\tfrac12$, then squaring with $\varphi_1(2X)=\tfrac12\varphi_1(X)(e^X+I)$, $e^{2X}=(e^X)^2$ (agrees with the exponential of
+the augmented matrix to $2\cdot10^{-15}$; 6\,ms per step length on $30\times4$ elements of degree 4). A flow
+(\code{frozen\_hflow!}) is then one product with $c\varphi_1(cD_0)$ on the masked state, one with $J_h$ and one with $e^{cD_0}$;
+the forcing enters $\mathcal A$ on $a$ and $\mathcal B$ on $b$, the sponge $\mathcal A$. The flows are exact:
+$\mathcal A_c\circ\mathcal A_c=\mathcal A_{2c}$ to $10^{-10}$ (test).
+
+\paragraph{The small step.} With $V_E$: $z\leftarrow z+\Delta_EG_v(z)$ and $V_I$: $(I-\Delta_IJ_v)z^+=z$,
+$\Delta_E=\mathrm{diag}(\tfrac h2,(1-\beta)h)$, $\Delta_I=\mathrm{diag}(\tfrac h2,\beta h)$ (the vertical part of CS, explicit and
+implicit; adjoint to each other for $\beta=\tfrac12$),
+\[
+\Phi_h=V_I\circ\mathcal A_{h/2}\circ\mathcal B_h\circ\mathcal A_{h/2}\circ V_E,
+\]
+$\mathcal B$ with the extrapolated $\tilde a$ ($\gamma_d$), the first $\mathcal A$ with the momenta $\hat b=b-(1-\beta)h(J_vz)_b\approx b^n$ and the second
+with $\hat b=b+\beta h(J_vz)_b\approx b^{n+1}$ in the horizontal mass flux. $\Phi_h$ is symmetric, since $V_E^*=V_I$, the bracket is
+symmetric and the two predictors are mirror images (up to $O(h^3)$). Two arrangements that look natural fail:
+\begin{itemize}
+\item $\mathcal A_{h/2}\circ V_I\circ\mathcal B_h\circ V_E\circ\mathcal A_{h/2}$ (symmetric too, no predictor needed, and the $\mathcal A_{h/2}$ of
+  consecutive steps combine to one $\mathcal A_h$) is unstable: growth 1.17 per small step at $c\,h/\Delta x_e=0.04$, 1.6 at 0.06, flat or hill.
+  The explicit vertical half step $V_E$ ($c\,h/\Delta z\gg1$) is only stable together with $V_I$, as Crank--Nicolson; $V_I$ of one step and
+  $V_E$ of the next must stay adjacent.
+\item $\mathcal A_{h/2}$ evaluated together with $V_E$ at the same state (as the horizontal half step of \eqref{eq:csdg}) is not
+  symmetric: first order, error ratio 2.0.
+\end{itemize}
+Without the predictors $\Phi_h$ is of second order as well, but on the hill its error is 10 times larger (the mass flux $K_0b$ of
+$m_x$ lags behind the large vertical metric force), and in the gravity wave it grows with the small step (0.15\,K at $n_{\rm sub}=36$).
+
+\paragraph{Order and stability.} Fast loop alone as in Section~\ref{sec:pdg} (hill, 20\,s against RK4, $N=12/24/48/96$):
+\begin{center}\small
+\begin{tabular}{lcccc}\toprule
+ & $N=12$ & 24 & 48 & 96\\\midrule
+CS (\code{:cs}, uncombined) & $6.9\cdot10^{-3}$ & $1.2\cdot10^{-3}$ & $2.8\cdot10^{-4}$ & $7.6\cdot10^{-5}$\\
+\code{:csb} & $1.9\cdot10^{-3}$ & $5.7\cdot10^{-4}$ & $1.5\cdot10^{-4}$ & $3.7\cdot10^{-5}$\\\bottomrule
+\end{tabular}
+\end{center}
+(relative errors; ratios 3.4/3.8/4.0 for \code{:csb}). Growth per small step (power iteration of the fast loop, stage coefficients of the
+flow $U=20$\,m/s, hill; flat alike):
+\begin{center}\small
+\begin{tabular}{lcccccc}\toprule
+$c\,h/\Delta x_e$ & 0.04 & 0.06 & 0.08 & 0.12 & 0.15 & 0.18\\\midrule
+CS & 0.997 & 0.970 & 1.018 & 2.13 & 4.54 & 8.20\\
+\code{:csb} & 0.997 & 0.969 & 1.018 & 0.975 & 1.025 & 1.157\\\bottomrule
+\end{tabular}
+\end{center}
+CS fails from 0.12 on, as the 1D analysis predicts (0.100); \code{:csb} is stable to about 0.15 (1D: 0.173). The weak growth of
+both at 0.08 belongs to the frozen operator with the mean flow and the metric terms, not to the step.
+
+\paragraph{Results.} Gravity wave of Section~\ref{sec:pdg}, MIS54 unless noted, $\varepsilon=\gamma_d=0.1$, error of $\theta$ in K
+(\code{examples/frozen\_dg\_cs.jl}, \code{FASTS=cs,csb}, \code{NSUBFAC}):
+\begin{center}\footnotesize\setlength{\tabcolsep}{4pt}
+\begin{tabular}{llcccc}\toprule
+ & & $n_{\rm sub}=59$ & 36 & 30 & 24\\\midrule
+hill, $\dt=100$\,s & CS & $5.27\cdot10^{-2}$ & $5.44\cdot10^{-2}$ & fails & fails\\
+ & \code{:csb} & $5.23\cdot10^{-2}$ & $5.26\cdot10^{-2}$ & $5.22\cdot10^{-2}$ & $5.18\cdot10^{-2}$\\
+flat, $\dt=100$\,s & CS & $9.13\cdot10^{-5}$ & $8.52\cdot10^{-5}$ & fails & fails\\
+ & \code{:csb} & $9.13\cdot10^{-5}$ & $8.55\cdot10^{-5}$ & $8.72\cdot10^{-5}$ & $9.24\cdot10^{-5}$\\\midrule
+ & & $n_{\rm sub}=30$ & 18 & 15 & 12\\\midrule
+hill, $\dt=50$\,s & CS & $9.60\cdot10^{-3}$ & $2.72\cdot10^{-2}$ & fails & fails\\
+ & \code{:csb} & $9.20\cdot10^{-3}$ & $8.91\cdot10^{-3}$ & $8.90\cdot10^{-3}$ & $7.93\cdot10^{-3}$\\
+flat, $\dt=50$\,s & CS & $3.23\cdot10^{-5}$ & $3.85\cdot10^{-5}$ & fails & fails\\
+ & \code{:csb} & $3.27\cdot10^{-5}$ & $3.76\cdot10^{-5}$ & $4.08\cdot10^{-5}$ & $4.76\cdot10^{-5}$\\\midrule
+hill, $\dt=50$\,s, WSRK3 & CS / \code{:csb} & $1.36\cdot10^{-2}$ / $1.37\cdot10^{-2}$ & & fails / $1.06\cdot10^{-2}$ & \\
+hill, $\dt=50$\,s, EB4 & CS / \code{:csb} & $5.04\cdot10^{-3}$ / $5.01\cdot10^{-3}$ & & fails / $5.31\cdot10^{-3}$ & \\\bottomrule
+\end{tabular}
+\end{center}
+\code{:csb} runs with 2.5 times fewer small steps than CS (0.4 of the explicit horizontal limit, $c\,h/\Delta x_e=0.15$) without loss of
+accuracy; on the hill at $\dt=50$\,s CS with 18 steps is already 3 times less accurate. Run time (MIS54, hill, $\dt=100$\,s, warm):
+CS 14\,s ($n_{\rm sub}=59$), CSFB 12\,s (59, error $3.3\cdot10^{-2}$), \code{:csb} 11\,s (24). A small step of \code{:csb} costs about twice
+one of CS: three products with $J_h$, four with $J_v$, six with the face-local $e^{cD_0}$, $c\varphi_1(cD_0)$ and the column solve, plus
+the exponentials per stage and step length. That is still to be reduced (the masked loops, and the exponentials only for the two step
+lengths of a stage).
+
+\paragraph{The vertical part in HDG form.} The column system can likewise be condensed onto the $\eta$-face traces: the element
+rows are eliminated locally and a tridiagonal system per node column remains for the face momentum (the \code{:hevi}
+solver of the base model, after CGDycore.jl). This replaces the sparse LU and is the second option to reduce the cost of
+CS; it does not change the scheme.
+
 \section{Relation to the current implementation and open points}
 \begin{itemize}
 \item Implemented: the pressure as an additional variable with the column-implicit small step
-  (Section~\ref{sec:pdg}); $\pi$ instead of $p$, moisture and the thermodynamic variables $\rho e$, $\rho s$ of the
-  FV model are next.
+  (Section~\ref{sec:pdg}), and CS with Bokhove's partition of the horizontal part (\code{:csb}, Section~\ref{sec:csb}),
+  stable with 2.5 times larger small steps; $\pi$ instead of $p$, moisture and the thermodynamic variables $\rho e$, $\rho s$ of the
+  FV model are next, and the cost of a \code{:csb} small step.
 \item \code{src/DGSEM/Euler2D/frozen.jl} splits the \emph{conservative} DGSEM (pressure $\{p\}$ in the
   two-point momentum flux, gravity with a logarithmic mean of $\rho$, LMARS in the velocity): there
   the frozen coefficients are $A/\rho_a$, $A/\rho_b$, $\rho_{\rm up}/\rho$, the ratio of the logarithmic
@@ -326,4 +555,11 @@ CS about six matrix-vector products and one column solve per small step, which s
   product-form $N$), test $F(q,q)=N(q)$, the frozen HEVI column solve, gravity-wave and terrain tests,
   and a comparison of the product form with the conservative DGSEM.
 \end{itemize}
+\begin{thebibliography}{9}
+\bibitem{verwer} J.G.~Verwer: Component splitting for semi-discrete Maxwell equations. BIT Numer.\ Math.\
+51 (2011), 427--445.
+\bibitem{xvb} Y.~Xu, J.J.W.~van der Vegt, O.~Bokhove: Discontinuous Hamiltonian finite element method for linear
+hyperbolic systems. J.\ Sci.\ Comput.\ 35 (2008), 241--265.
+\bibitem{hlw} E.~Hairer, C.~Lubich, G.~Wanner: Geometric Numerical Integration, 2nd ed. Springer 2006.
+\end{thebibliography}
 \end{document}
