@@ -230,8 +230,87 @@ momentum advection (slow) & everything & --\\
   found for the FV frozen split (freezing $p/\Theta$ instead of $\mathrm dp/\mathrm d\Theta$ was unstable).
 \end{enumerate}
 
+\section{The pressure as an additional variable and a column-implicit small step}\label{sec:pdg}
+\code{DGPressureModel} (\code{src/DGSEM/Euler2D/frozen\_p.jl}) takes the other route to a linear fast part:
+instead of the product form it adds the pressure $p$ as a prognostic nodal variable, as $\pi$/$p$ in the FV
+model. The state is $(\rho,m_x,m_z,\Theta,p)$,
+\[
+\partial_tp=P'(\Theta)\,\partial_t\Theta,\qquad P'=\gamma p/\Theta,
+\]
+and $p$ is reset to $P(\Theta)$ after every MIS step. In the frozen form of the conservative DGSEM
+(\code{frozen.jl}) the nodal $p(\Theta_z)$ is replaced by the live $p_z$; the $p$ row is the frozen $P'_a$
+times the $\Theta$ row of node $a$ (volume and faces). The fast part is then linear in $z=(\rho,m,\Theta,p)$, and
+$F(q,q)$ equals the DGSEM operator wherever $p=P(\Theta)$ (tested to $10^{-12}$ with terrain).
+
+\paragraph{Split.} Horizontal: the $\xi$ volume pairs and the $\xi$ faces (explicit). Vertical: the $\eta$ pairs, the
+$\eta$ faces and the walls (implicit). On terrain the vertical part acts on both momenta: the
+$\eta$ pairs carry the metric term $J\eta_x\,\partial_\eta p$ and the $\eta$ part of gravity, and the wall flux
+$p+c\,m_n$ has the terrain normal. A node column $(e_x,i)$ couples only through $\eta$, so $I-DJ_v$ is block
+diagonal over the node columns ($D=c_t$ on $\rho,\Theta,p$ and $c_w$ on $m_x,m_z$).
+
+\paragraph{Implementation.} All terms of the fast operator are written once, as a kernel that emits
+(row, column, coefficient). Applied to a vector it is the operator. Collected, it gives the stage operator as two
+sparse matrices $J_h$, $J_v$ (\code{frozen\_stage\_begin!}). Every fast evaluation of the stage is then a
+matrix-vector product, and $I-DJ_v$ is factored by a sparse LU (UMFPACK) per stage and weight pair. The
+pattern is fixed: later stages refill the values and reuse the symbolic factorization (assembly 1\,ms, LU
+20\,ms on $30\times4$ elements of degree 4).
+
+\paragraph{The small step.} The component splitting CS of the moist Verlet note (\code{docs/moist\_verlet}, \code{fast = :cs}),
+\[
+a^{1/2}=a+\tfrac h2(-Kb+f_a),\quad b^+=b+hL_0\tilde a^{1/2}+h\big[(1-\beta)L_1a+\beta L_1a^+\big]+hf_b,\quad a^+=a^{1/2}+\tfrac h2(-Kb^++f_a),
+\]
+($K=K_0+K_1$, $L=L_0+L_1$, 0 horizontal and explicit, 1 vertical and implicit, $\beta=(1+\varepsilon)/2$, $\tilde a$ extrapolated with $\gamma_d$),
+and its forward--backward form CSFB (\code{fast = :csfb}), with $a=(\rho,\Theta,p)$, $b=(m_x,m_z)$. Three
+corrections are needed for second order on terrain; they appear neither in the flat case nor in the FV code.
+\begin{enumerate}
+\item \emph{Horizontal mass flux.} The $\xi$ divergence uses $m_x$, which receives the large vertical metric
+  force $\beta h\,L_1a^+$ only in the column solve. Evaluated before the solve, $K_0b^+$ lags by that force.
+  As in the FV metric predictor, \code{frozen\_hthermo!} evaluates it at $\hat b=b+\beta h\,(J_vz)_b$; the
+  remaining lag $\beta hJ_v(z^+-z)=O(h^2)$ keeps the order.
+\item \emph{Horizontal momentum.} The LMARS dissipation of the $\xi$ faces depends on $b$ itself ($b\leftarrow b$). It is
+  large at the wall corners, where the terrain normal of neighbouring elements differs and $m_x$ jumps. In the
+  momentum step it was explicit Euler with $h$. \code{frozen\_hmomentum!} evaluates it at the midpoint
+  predictor $b+\tfrac h2(J_hz)_b$. The momentum forcing belongs to this step, so that $b^+$ contains it before
+  the mass flux is evaluated.
+\item \emph{Pressure jump in the mass flux.} The LMARS mass flux contains $-\jump p/(2\rho c)$, so the horizontal
+  $a$ part depends on $a$. The combined loop must not reuse $E(a^{1/2})$ after the solve
+  (\code{frozen\_hthermo\_reeval}).
+\end{enumerate}
+Order of the fast loop alone (stage coefficients fixed, 20\,s against RK4, ratios of the errors at
+$N=12/24/48/96$, hill, $U=20$\,m/s): without the corrections 2.1/2.0/2.0; with (1) only the error is 27 times
+smaller but still first order; with (1)--(3) 5.7/3.9/3.0 (uncombined 5.8/4.3/3.6). With $\varepsilon=0.1$, and for
+CSFB, the step is first order by design. On the flat grid CS is of second order without the
+corrections.
+
+\paragraph{Results.} The gravity wave of the DG examples ($300\times10$\,km, $30\times4$ elements of degree 4,
+node spacing 2.5\,km$\times$625\,m, $U=20$\,m/s, $N=0.01$\,s$^{-1}$), flat and over an Agnesi hill ($h_0=400$\,m,
+$a=10$\,km, initial flow along the coordinate surfaces), $T=3000$\,s. The table gives the maximum error of
+$\theta$ against RK4 of the base model. The Verlet step is limited by the vertical node spacing
+($0.43$\,s, $n_{\rm sub}=234$ at $\dt=100$\,s), CS and CSFB by the horizontal one
+($1.71$\,s, $n_{\rm sub}=59$); $\varepsilon=\gamma_d=0.1$ (\code{examples/frozen\_dg\_cs.jl}).
+\begin{center}\small
+\begin{tabular}{llccc}\toprule
+ & $\dt$ & Verlet (base) & CS & CSFB\\\midrule
+flat, MIS54 & 100 / 50\,s & $1.0\cdot10^{-4}$ / $3.4\cdot10^{-5}$ & $9.1\cdot10^{-5}$ / $3.2\cdot10^{-5}$ & $1.1\cdot10^{-4}$ / $7.6\cdot10^{-5}$\\
+flat, RK3 & 50\,s & $3.8\cdot10^{-4}$ & $2.5\cdot10^{-4}$ & $2.3\cdot10^{-4}$\\
+flat, EB4 & 100 / 50\,s & $4.2\cdot10^{-4}$ / $1.0\cdot10^{-4}$ & $3.1\cdot10^{-4}$ / $7.7\cdot10^{-5}$ & $2.6\cdot10^{-4}$ / $9.5\cdot10^{-5}$\\
+hill, MIS54 & 100 / 50\,s & $5.8\cdot10^{-2}$ / $1.1\cdot10^{-2}$ & $5.3\cdot10^{-2}$ / $9.6\cdot10^{-3}$ & $3.3\cdot10^{-2}$ / $6.4\cdot10^{-3}$\\
+hill, RK3 & 50\,s & $3.0\cdot10^{-2}$ & $1.4\cdot10^{-2}$ & $1.0\cdot10^{-2}$\\
+hill, EB4 & 50\,s & $7.7\cdot10^{-3}$ & $5.0\cdot10^{-3}$ & $3.8\cdot10^{-3}$\\\bottomrule
+\end{tabular}
+\end{center}
+With four times fewer small steps, CS and CSFB are as accurate as the explicit step and on the hill
+more accurate. Twice as many small steps change little: the large step dominates. With
+$\varepsilon=\gamma_d=0$ the errors are the same within 10--50\,\%. The limits do not come from the small step: RK3 at
+$\dt=100$\,s fails, and EB4 at 100\,s on the hill is wrong by 9\,K, with every small step, Verlet included. Run time
+(MIS54, $\dt=100$\,s): Verlet 18\,s, CS 18\,s, CSFB 9\,s. The predictors and the re-evaluation cost
+CS about six matrix-vector products and one column solve per small step, which still has to be reduced.
+
 \section{Relation to the current implementation and open points}
 \begin{itemize}
+\item Implemented: the pressure as an additional variable with the column-implicit small step
+  (Section~\ref{sec:pdg}); $\pi$ instead of $p$, moisture and the thermodynamic variables $\rho e$, $\rho s$ of the
+  FV model are next.
 \item \code{src/DGSEM/Euler2D/frozen.jl} splits the \emph{conservative} DGSEM (pressure $\{p\}$ in the
   two-point momentum flux, gravity with a logarithmic mean of $\rho$, LMARS in the velocity): there
   the frozen coefficients are $A/\rho_a$, $A/\rho_b$, $\rho_{\rm up}/\rho$, the ratio of the logarithmic

@@ -1328,6 +1328,68 @@ end
     end
 end
 
+@testset "Euler2D: pressure variable, horizontal/vertical split, column-implicit :cs (DGPressureModel)" begin
+    gas = CM.Gas()
+    ρr, Θr, θr = CM.stratified_reference(gas; θ0 = 300.0, N = 0.01)
+    L, H, U = 80e3, 10e3, 20.0
+    hill(x) = 400 / (1 + ((x - L / 2) / 5e3)^2)
+    dhill(x) = -400 * 2 * (x - L / 2) / 5e3^2 / (1 + ((x - L / 2) / 5e3)^2)^2
+    M = E2.Mesh2D(8, 4, 3, L, H; zs = hill)
+    base = E2.Euler2DModel(M, gas, ρr, Θr)
+    m = E2.DGPressureModel(base)
+    qb = CM.project2d(base, (x, z) -> (ρ = Θr(z) / (θr(z) + 0.01 * exp(-((x - L / 3) / 5e3)^2));
+                                        (ρ, ρ * U, ρ * U * dhill(x) * (H - z) / (H - hill(x)), Θr(z))))
+    q = E2.pressure_state(m, qb)
+    # N of the extended model: base N on the base rows, p_t = P'(Θ) Θ_t
+    N = TS.rhs_nonlinear(m, q)
+    Nb = TS.rhs_nonlinear(base, qb)
+    @test maximum(abs.(N[1:base.nq] .- Nb)) < 1e-11 * maximum(abs, Nb)
+    np = M.np
+    @test maximum(abs(N[E2.ip_dg(m, e, i, j)] - gas.γ * q[E2.ip_dg(m, e, i, j)] / q[E2.node_iq(np, e, 4, i, j)] * N[E2.node_iq(np, e, 4, i, j)])
+                  for e in 1:M.Ne, j in 1:np, i in 1:np) < 1e-10 * maximum(abs, N[base.nq+1:end])
+    # parts, kernel and stage matrices
+    C = zeros(TS.frozen_ncoef(m)); S = zeros(m.nq); TS.frozen_data!(C, S, m, q)
+    z = q .+ 1e-3 .* sin.(1:m.nq) .* abs.(q)
+    part(p) = TS.frozen_fast!(zeros(m.nq), m, C, z, p, S)
+    F = part(:all)
+    @test part(:hthermo) .+ part(:hmomentum) .+ part(:vertical) ≈ F
+    @test part(:thermo) .+ part(:momentum) ≈ F
+    TS.frozen_stage_begin!(m, C, z)
+    for p in (:all, :hthermo, :hmomentum, :vertical)
+        Fm = part(p); m.vert.valid = false
+        @test maximum(abs.(Fm .- part(p))) < 1e-12 * maximum(abs, Fm)
+        m.vert.valid = true
+    end
+    # exact column solve: z⁺ = z + D G_v(z⁺)
+    zz = copy(z); k = zeros(m.nq); y = zeros(m.nq)
+    TS.frozen_vertical_implicit!(zz, m, C, 2.0, 1.5, k, y)
+    r = zeros(m.nq); TS.frozen_vertical_rhs!(r, m, C, zz, 2.0, 1.5)
+    @test norm(zz .- z .- r) < 1e-10 * norm(zz .- z)
+    # :cs is second order in the small step on terrain (predictors of frozen_hthermo! / frozen_hmomentum!)
+    TS.frozen_data!(C, S, m, q)
+    tmp = ntuple(_ -> zeros(m.nq), 6)
+    function fs(meth, n)
+        Z = copy(q); TS.frozen_stage_begin!(m, C, Z)
+        TS.frozen_fast_solve!(Z, m, C, S, 10.0 / n, n, k; method = meth, tmp)
+    end
+    zr = fs(:rk4, 400)
+    e = [norm(fs(:cs, n) .- zr) for n in (10, 20, 40)]
+    @test e[1] / e[2] > 3.3 && e[2] / e[3] > 3.2
+    # MIS54 with :cs at the horizontal limit (4 times the Verlet step) is as accurate as explicit Verlet of the
+    # base model (θ changes by 0.8 K; both ≈ 1.5e-2 K from RK4)
+    dτv = 0.85 * 0.63 * minimum(M.Z[:, end, :] .- M.Z[:, 1, :]) / (7 * CM.sound_speed_max(base, qb))
+    dτh = 0.85 * 0.63 * (L / M.Nex) / (7 * CM.sound_speed_max(base, qb))
+    Δt, nst = 30.0, 10
+    qv = TS.run_frozen(base, qb, Δt, nst; tab = TS.mis_tableau(:MIS54), nsub = ceil(Int, Δt / dτv), fast = :verlet)
+    qc = TS.run_frozen(m, q, Δt, nst; tab = TS.mis_tableau(:MIS54), nsub = ceil(Int, Δt / dτh), fast = :cs)
+    qr = TS.run_rk4(base, qb, Δt * nst / 3000, 3000)
+    θ(x) = E2.field(base, x[1:base.nq], 4) ./ E2.field(base, x[1:base.nq], 1)
+    @test dτh > 3dτv
+    ev, ec = maximum(abs.(θ(qv) .- θ(qr))), maximum(abs.(θ(qc) .- θ(qr)))
+    @test ev < 2e-2 && ec < 1.6ev
+    @test qc[base.nq+1:end] ≈ [CM.pressure(gas, qc[E2.node_iq(np, e, 4, i, j)]) for e in 1:M.Ne for j in 1:np for i in 1:np]
+end
+
 @testset "LinearAnalysis: MIS amplification (Knoth–Wensch, MISDG grid)" begin
     LA = MultiRate.LinearAnalysis
     tab(n) = TS.mis_tableau(n)

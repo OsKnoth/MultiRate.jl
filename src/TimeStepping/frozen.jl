@@ -34,6 +34,14 @@ function frozen_vertical_solve! end
 """out = :hthermo of the implicit step, the horizontal mass flux with the predictor U + w (metric
 increment at the old pressure) for models with an implicit metric term; default: plain :hthermo."""
 frozen_hthermo!(out, model, C, z, F, w) = frozen_fast!(out, model, C, z, :hthermo, F)
+"""out = :hmomentum of the momentum step b⁺ = b + h(…) of :cs/:csfb; models whose horizontal momentum part
+depends on the momenta themselves (DG: LMARS dissipation at the ξ-faces) evaluate it at a midpoint
+predictor; default: plain :hmomentum."""
+frozen_hmomentum!(out, model, C, z, F, h) = frozen_fast!(out, model, C, z, :hmomentum, F)
+"""true if the horizontal thermodynamic part depends on the thermodynamic variables themselves (DG: the
+pressure jump in the LMARS mass flux); the combined :cs loop then evaluates :hthermo anew after the column
+solve instead of reusing E (which would be explicit Euler at a½, first order). Default false (FV)."""
+frozen_hthermo_reeval(model) = false
 """out = the phase-change part of :hthermo (:cs/:csfb, re-evaluated in the half step after the solve);
 returns false (out unused) for models without phase change."""
 frozen_phase!(out, model, C, z) = false
@@ -103,13 +111,13 @@ function frozen_fast_solve!(Z, model, C, F, dt, nsteps, k; method::Symbol = :ver
     zl, zt = damp ? (tmp[2], tmp[3]) : (Z, Z)
     damp && (zl .= Z)
     """Momentum part at the extrapolated state (smdiv) or at Z."""
-    function momentum!(part)
+    function momentum!(part, h = 0.0)
+        y = Z
         if damp
             @. zt = Z + smdiv * (Z - zl); zl .= Z
-            frozen_fast!(k, model, C, zt, part, F)
-        else
-            frozen_fast!(k, model, C, Z, part, F)
+            y = zt
         end
+        h > 0 ? frozen_hmomentum!(k, model, C, y, F, h) : frozen_fast!(k, model, C, y, part, F)
     end
     offcenter < 0 && error("offcenter ≥ 0")
     base == :ei && length(ws) == 1 && EI_MERGE[] &&
@@ -163,7 +171,7 @@ function frozen_fast_solve!(Z, model, C, F, dt, nsteps, k; method::Symbol = :ver
             @. Z += (h / 2) * k + y
             damp && first && (tmp[2] .= Z)                            # no extrapolation in the first step
             first = false
-            momentum!(:hmomentum); @. Z += h * k                      # U⁺ = U + h L₀ã½ + h f_U
+            momentum!(:hmomentum, h); @. Z += h * k                   # U⁺ = U + h L₀ã½ + h f_U
             frozen_hthermo!(k, model, C, Z, F, β * h); @. Z += (h / 2) * k   # explicit part of a⁺
             frozen_vertical_implicit!(Z, model, C, h / 2, β * h, k, y)       # (a⁺, b⁺): column solve
         elseif base == :wrf
@@ -222,11 +230,12 @@ function _cs_loop!(Z, model, C, F, h, N, k, tmp, damp, ε, momentum!; halfsteps:
     (tmp === nothing || length(tmp) < 5) && error(":cs/:csfb need 5 work vectors (tmp)")
     y, E, P = tmp[1], tmp[4], tmp[5]
     β = (1 + ε) / 2
+    reeval = frozen_hthermo_reeval(model)
     if !halfsteps
         frozen_vertical_rhs!(y, model, C, Z, 0.0, (1 - β) * h)    # (1-β)h L₁a⁰ on b
         @. Z += y
         for n in 1:N
-            momentum!(:hmomentum); @. Z += h * k                  # U⁺ = U + h L₀ã + h f_U
+            momentum!(:hmomentum, h); @. Z += h * k               # U⁺ = U + h L₀ã + h f_U
             frozen_hthermo!(E, model, C, Z, F, β * h)             # E at (a, b⁺)
             @. Z += h * E
             frozen_vertical_implicit!(Z, model, C, h, β * h, k, y)   # a⁺ = .. - h K₁b⁺, b⁺ = .. + βh L₁a⁺
@@ -242,14 +251,17 @@ function _cs_loop!(Z, model, C, F, h, N, k, tmp, damp, ε, momentum!; halfsteps:
     @. Z += (h / 2) * k + y
     damp && (tmp[2] .= Z)                                     # no extrapolation in the first step
     for n in 1:N
-        momentum!(:hmomentum); @. Z += h * k                  # U⁺ = U + h L₀ã½ + h f_U
+        momentum!(:hmomentum, h); @. Z += h * k               # U⁺ = U + h L₀ã½ + h f_U
         frozen_hthermo!(E, model, C, Z, F, β * h)             # E at (a½, b⁺)
         has_p = frozen_phase!(P, model, C, Z)                 # P(a½)
         @. Z += (h / 2) * E
         frozen_vertical_implicit!(Z, model, C, h / 2, β * h, k, y)   # (a⁺, b⁺)
         if n < N                                              # half step after the solve
             frozen_vertical_rhs!(y, model, C, Z, h / 2, (1 - β) * h)
-            if has_p
+            if reeval
+                frozen_fast!(k, model, C, Z, :hthermo, F)     # E(a⁺, b⁺)
+                @. Z += (h / 2) * k + y
+            elseif has_p
                 frozen_phase!(k, model, C, Z)                 # P(a⁺)
                 @. Z += (h / 2) * (E - P + k) + y
             else
