@@ -1,0 +1,230 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=2.4cm]{geometry}
+\usepackage{amsmath,amssymb,booktabs,hyperref}
+\newcommand{\avg}[1]{\{\!\{#1\}\!\}}
+\newcommand{\jump}[1]{[\![#1]\!]}
+\newcommand{\dt}{\Delta t}
+\title{The fast system of the 2D DGSEM:\\standard and extended formulation, horizontal/vertical structure\\and Verlet-type small steps}
+\author{MultiRate notes}
+\date{\today}
+\begin{document}
+\maketitle
+
+\begin{abstract}
+For split-explicit (MIS) time integration the fast part of the compressible Euler equations is linear with coefficients
+frozen at the stage values. We write this linear fast system for the 2D DGSEM on a terrain-following mesh in two
+formulations: the standard one, DGSEM with the LMARS flux in the momentum $\rho\mathbf u$, and the extended one, in which the
+contravariant interface momentum is an additional unknown on the faces and the LMARS condition is relaxed. For both we
+give the block structure in the thermodynamic variables and the momenta, the split into a horizontal (explicit) and a
+vertical (implicit) part, including the split of the contravariant vertical flux, and Verlet-type small steps written
+as sequences of stages.
+\end{abstract}
+
+\section{Setting}
+\paragraph{Fast system.} Variables $(\rho,\ m=\rho\mathbf u,\ \Theta=\rho\theta)$ and the pressure $p$ as additional variable, with the frozen
+coefficients $\theta$, $A=\mathrm dp/\mathrm d\Theta=\gamma p/\Theta$, $c^2=A\theta$ of the stage:
+\[
+\rho_t+\nabla\cdot m=0,\qquad \Theta_t+\nabla\cdot(\theta m)=0,\qquad p_t=A\,\Theta_t,\qquad m_t+\nabla p+\rho\,\nabla\phi=0,\qquad \phi=gz .
+\]
+Thermodynamic unknowns $a=(\rho,\Theta,p)$, momenta $b=(m_x,m_z)$ (Cartesian components). The slow part (advection) enters the fast
+system only as a forcing $f=(f_a,f_b)$, constant during a stage.
+
+\paragraph{Mesh.} Quadrilateral elements mapped from $[-1,1]^2$, $(\xi,\eta)\mapsto\mathbf x$; $\xi$ horizontal, $\eta$ vertical (terrain-following). Jacobian $J$,
+contravariant base vectors
+\[
+\tilde n^\xi=(J\xi_x,J\xi_z),\qquad \tilde n^\eta=(J\eta_x,J\eta_z),
+\]
+contravariant momenta $U=\tilde n^\xi\cdot m$, $W=\tilde n^\eta\cdot m=J\eta_x\,m_x+J\eta_z\,m_z$. On a flat grid $J\eta_x=0$, on terrain $J\eta_x\approx-z_x J\eta_z$. Tensor
+LGL nodes of degree $P$, collocated quadrature with weights $w$, SBP differentiation $D_\xi$, $D_\eta$ along the node lines.
+
+\paragraph{Faces.} At a face node with outward contravariant normal $\tilde n$ of element $K$: $s=|\tilde n|$, $\nu=\tilde n/s$, $m_\nu=\nu\cdot m$, and
+$\sigma=s/(Jw)$, $w$ the weight of the face node in the normal direction. Interior face node pair $(L,R)$, $n$ from $L$ to $R$, $m_n=n\cdot m$ on both
+sides, $\jump x=x_R-x_L$, $\avg x=\tfrac12(x_L+x_R)$, $c$ the frozen face sound speed. $\xi$-faces are vertical lines of the mesh (horizontal
+part), $\eta$-faces and the walls (ground, top) are coordinate surfaces $\eta=$const (vertical part).
+
+\section{The standard formulation: DGSEM with LMARS in $\rho\mathbf u$}
+\paragraph{LMARS.} The normal acoustics has the Riemann invariants $p\pm c\,m_n$. With the intermediate momentum $m^*$ the interface
+pressure of each side is
+\[
+P_L^*=p_L-c\,(m^*-m_{n,L}),\qquad P_R^*=p_R+c\,(m^*-m_{n,R}),
+\]
+and LMARS is the condition $P_L^*=P_R^*$:
+\[
+m^*=\avg{m_n}-\frac{\jump p}{2c},\qquad p^*=\avg p-\frac c2\jump{m_n}.
+\]
+Walls (mirror state): $m^*=0$, $p^*=p+c\,m_\nu$.
+
+\paragraph{Semi-discrete fast system.} At a node of element $K$ (face terms only at face nodes, $m^*_\nu$ in the direction $\nu$):
+\begin{align*}
+\rho_t&=-J^{-1}\big(D_\xi U+D_\eta W\big)-\sigma\,(m^*_\nu-m_\nu),\\
+\Theta_t&=-J^{-1}\big(D_\xi(\theta U)+D_\eta(\theta W)\big)-\sigma\,(\theta_{\rm up}m^*_\nu-\theta\,m_\nu),\qquad p_t=A\,\Theta_t,\\
+m_t&=-J^{-1}\big(\tilde n^\xi D_\xi p+\tilde n^\eta D_\eta p\big)-\rho\,J^{-1}\big(\tilde n^\xi D_\xi\phi+\tilde n^\eta D_\eta\phi\big)-\sigma\,\nu\,(p^*-p),
+\end{align*}
+(volume terms in the split two-point form of the scheme; written here in the collocation form for the structure), and by the
+characteristic form $-\sigma\nu(p^*-p_K)=\sigma c\,\nu\,(m^*_\nu-m_\nu)$.
+
+\paragraph{Linear structure.} Split $m^*$ and $p^*$ into the central and the dissipative parts:
+\begin{equation}
+a_t=-K\,b+D_a\,a+f_a,\qquad b_t=L\,a+D_b\,b+f_b,\label{eq:std}
+\end{equation}
+\begin{itemize}
+\item $K$: divergence of the momentum (volume, central face value $\avg{m_n}$); rows $\rho$, $\Theta$ ($\times\theta$), $p$ ($\times A\theta$);
+\item $L$: pressure gradient and gravity (volume, central face value $\avg p$);
+\item $D_a$: the jump $-\jump p/(2c)$ of $m^*$; it couples the pressure of the two nodes of a face node pair with their $\rho,\Theta,p$ rows ($a\leftarrow a$);
+\item $D_b$: the jump $-\tfrac c2\jump{m_n}$ of $p^*$ and the wall term $c\,m_\nu$; it couples the normal momenta of the two nodes ($b\leftarrow b$).
+\end{itemize}
+$D_a$ and $D_b$ are local to the face node pairs (corner nodes link the pairs of a $\xi$- and an $\eta$-face). Both block rows have a
+self-coupling.
+
+\section{The extended formulation: contravariant interface momentum}
+\paragraph{Unknowns.} On every interior face node one unknown $\hat M$, the contravariant interface momentum $\hat M=\tilde n\cdot\hat m=s\,\hat m_n$
+(single-valued, oriented with $n$; $\hat M_\nu=\pm\hat M$ seen from $K$). On $\eta$-faces it is the mass flux through the coordinate surface. Walls
+have no unknown ($\hat M=0$).
+
+\paragraph{Element equations.} $m^*$ is replaced by $\hat M/s$, and the interface pressure of each side is written with $\hat M$,
+$\hat P_K=p_K-c\,(\hat M_\nu/s-m_{\nu,K})$:
+\begin{align*}
+\rho_t&=-J^{-1}\big(D_\xi U+D_\eta W\big)-\sigma\,(\hat M_\nu/s-m_\nu),\\
+\Theta_t&=-J^{-1}\big(D_\xi(\theta U)+D_\eta(\theta W)\big)-\sigma\,(\theta_{\rm up}\hat M_\nu/s-\theta\,m_\nu),\qquad p_t=A\,\Theta_t,\\
+m_t&=-J^{-1}\big(\tilde n^\xi D_\xi p+\tilde n^\eta D_\eta p\big)-\rho\,J^{-1}\big(\tilde n^\xi D_\xi\phi+\tilde n^\eta D_\eta\phi\big)+\sigma\,c\,\nu\,(\hat M_\nu/s-m_\nu).
+\end{align*}
+Each element equation depends only on the unknowns of its element and on $\hat M$ of its faces; the face term of the momentum
+contains no pressure.
+
+\paragraph{Constraint and relaxation.} The LMARS condition $\hat P_L=\hat P_R$,
+\[
+0=\hat P_L-\hat P_R=p_L-p_R+c\,(m_{n,L}+m_{n,R})-2c\,\hat M/s,
+\]
+is relaxed: the time derivative of the interface momentum is a relaxation parameter times the constraint,
+\[
+\hat M_t=\kappa\,\bar\sigma\,s\,(\hat P_L-\hat P_R),\qquad \bar\sigma=\tfrac12(\sigma_L+\sigma_R),\quad \kappa=\tfrac12 .
+\]
+Since $\hat P_L-\hat P_R=2c\,(m^*-\hat M/s)$, $\hat M$ relaxes towards $s\,m^*$ with the rate $2c\kappa\bar\sigma=c\bar\sigma$, the LMARS damping rate of a face jump.
+For $\kappa\to\infty$ the constraint holds exactly and the standard formulation is recovered.
+
+\paragraph{Linear structure.} With the group $Y=(b,\hat M)$:
+\begin{equation}
+a_t=\hat K\,b+R\,\hat M+f_a,\qquad b_t=\hat L\,a+D\,b+Q\,\hat M+f_b,\qquad \hat M_t=H_a\,a+H_b\,b-\Lambda_M\hat M,\label{eq:ext}
+\end{equation}
+i.e.
+\[
+a_t=K_Y\,Y+f_a,\qquad Y_t=G\,a+D_Y\,Y+f_Y,
+\]
+\[
+K_Y=(\hat K\ \ R),\qquad G=\begin{pmatrix}\hat L\\H_a\end{pmatrix},\qquad D_Y=\begin{pmatrix}D&Q\\H_b&-\Lambda_M\end{pmatrix},
+\]
+\begin{itemize}
+\item $\hat K$: volume divergence and the face terms $+\sigma m_\nu$, $+\sigma\theta m_\nu$ of the element's own momentum (element-local); $R$: $-\sigma\hat M_\nu/s$,
+  $-\sigma\theta_{\rm up}\hat M_\nu/s$;
+\item $\hat L$: pressure gradient and gravity, volume terms only (element-local); $D$: $-\sigma c\,\nu\,m_\nu$ (the node's own momentum);
+  $Q$: $+\sigma c\,\nu\,\hat M_\nu/s$;
+\item $H_a$: $\kappa\bar\sigma s\,(p_L-p_R)$; $H_b$: $\kappa\bar\sigma s\,c\,(m_{n,L}+m_{n,R})$; $\Lambda_M=2c\kappa\bar\sigma$ (diagonal).
+\end{itemize}
+The thermodynamic tendencies depend only on momenta ($b$ and $\hat M$): the first block row has no self-coupling. The pressure jump
+enters only the equation of $\hat M$. All self-coupling is in $D_Y$, local to a face node pair (the two nodes and $\hat M$).
+
+\section{Horizontal and vertical part}
+Every operator is split into a horizontal part (index 0, explicit) and a vertical part (index 1, implicit):
+\begin{align*}
+&\text{standard:}&&K=K_0+K_1,\quad L=L_0+L_1,\quad D_a=D_{a0}+D_{a1},\quad D_b=D_{b0}+D_{b1};\\
+&\text{extended:}&&K_Y=K_{Y0}+K_{Y1},\quad G=G_0+G_1,\quad D_Y=D_{Y0}+D_{Y1}.
+\end{align*}
+\paragraph{Faces.} $\xi$-faces belong to the horizontal part, $\eta$-faces and walls to the vertical part; in the extended formulation also $\hat M$ of
+the $\xi$-faces (horizontal) and of the $\eta$-faces (vertical). Face terms depend on the momentum only through $m_n$ and act along $\nu$.
+
+\paragraph{Volume: the contravariant vertical flux.} The $\eta$ volume terms are
+\begin{align*}
+D_\eta W&=D_\eta(J\eta_x\,m_x)+D_\eta(J\eta_z\,m_z)&&(\text{mass}),\\
+-J^{-1}\tilde n^\eta D_\eta p&=-J^{-1}\big(J\eta_x D_\eta p,\ J\eta_z D_\eta p\big)&&(\text{momentum}),
+\end{align*}
+and gravity likewise. Two splits:
+\begin{itemize}
+\item \emph{full}: all $\eta$ volume terms vertical. On terrain the vertical part acts on $m_x$ (the $J\eta_x m_x$ part of $W$, the metric force
+  $J\eta_x D_\eta p$ on $m_x$); a node column couples $\rho,\Theta,p,m_x,m_z$.
+\item \emph{contravariant}: the vertical flux is split by the components of the vertical normal; the terms with $m_x$, $D_\eta(J\eta_x m_x)$ and
+  $J\eta_xD_\eta p$, $J\eta_x D_\eta\phi$ on $m_x$, belong to the horizontal part, those with $m_z$ to the vertical part. In the volume the column
+  then couples $\rho,\Theta,p,m_z$ only; $m_x$ enters it only through $m_n$ of the $\eta$-faces and walls.
+\end{itemize}
+On a flat grid both splits are the same. The face and wall terms are not split by components: the wall condition $m_n=0$ and the
+damping of $\jump{m_n}$ on $\eta$-faces must see the full normal momentum in the same (implicit) part.
+
+\paragraph{Column structure.} The vertical part couples only the nodes of one node column $(e_x,i)$ (the $\eta$ lines through the elements of a
+column and the $\eta$-faces between them), so $I-\Delta J_1$ ($\Delta$ a diagonal of weights) is block diagonal over the node columns. Standard
+formulation: unknowns $\rho,\Theta,p,m_z$ (and $m_x$: full split; or $m_n$ at the face nodes: contravariant split); extended formulation in
+addition $\hat M$ of the $\eta$-faces of the column.
+
+\paragraph{Groups.} For the small steps the unknowns are split into two groups:
+\[
+\text{standard: } X=a,\ Y=b;\qquad \text{extended: } X=a,\ Y=(b,\hat M),
+\]
+and both formulations read
+\begin{equation}
+X_t=K_XY+D_XX+f_X,\qquad Y_t=G\,X+D_YY+f_Y,\label{eq:groups}
+\end{equation}
+with $K_X=-K$, $D_X=D_a$, $G=L$, $D_Y=D_b$ (standard) and $K_X=K_Y$, $D_X=0$, $G$, $D_Y$ of \eqref{eq:ext} (extended). In the extended formulation
+the first block row has no self-coupling (the form of Verwer's semi-discrete Maxwell equations).
+
+\section{Verlet-type small steps}
+\paragraph{MIS stage.} Stage $i$ of a MIS step integrates the linear fast system with the stage coefficients and the constant forcing
+$f^{(i)}$ (slow tendencies and the MIS couplings) over $\tau\in[0,d_i\dt]$ with $n_i$ small steps $h=d_i\dt/n_i$. A small step maps $(X,Y)$ to
+$(X^+,Y^+)$; it is written below as a sequence of stages (sub-steps). Parameters: off-centring $\beta=(1+\varepsilon)/2$ of the vertical
+force, extrapolation $\gamma_d$ (divergence damping), $\tilde X=X+\gamma_d(X-X_{\rm prev})$.
+
+\paragraph{S1: Störmer--Verlet, explicit.}
+\begin{enumerate}
+\item $X^{1/2}=X+\tfrac h2\,(K_XY+D_XX+f_X)$
+\item $Y^+=Y+h\,(G\,\tilde X^{1/2}+D_YY+f_Y)$
+\item $X^+=X^{1/2}+\tfrac h2\,(K_XY^++D_XX^{1/2}+f_X)$
+\end{enumerate}
+Explicit in both directions; limited by the vertical node spacing. Symmetric for $D_X=D_Y=0$ (second order); the explicit self-couplings
+make it of first order.
+
+\paragraph{S2: component splitting, vertical part implicit} (Verwer's component splitting with the directional split).
+\begin{enumerate}
+\item \emph{Explicit half step in $X$:} $X^{1/2}=X+\tfrac h2\big(K_{X0}Y+D_{X0}X+f_X\big)+\tfrac h2\big(K_{X1}Y+D_{X1}X\big)$,
+  and the explicit part of the vertical force: $Y\leftarrow Y+(1-\beta)h\,(G_1X+D_{Y1}Y)$.
+\item \emph{Horizontal momentum step:} $Y^*=Y+h\,\big(G_0\tilde X^{1/2}+D_{Y0}Y+f_Y\big)$, with $D_{Y0}$ in one of the forms
+  \begin{itemize}
+  \item explicit (as written);
+  \item explicit with midpoint predictor: $\check Y=Y+\tfrac h2(G_0\tilde X^{1/2}+D_{Y0}Y)$, then $D_{Y0}\check Y$ in place of $D_{Y0}Y$ (two evaluations);
+  \item diagonal implicit: the diagonal $\Lambda_0$ of $D_{Y0}$ implicit, $Y^*=Y+h\,r/(1-h\Lambda_0)$, $r$ the tendency above (a division);
+  \item trapezoidal: $(I-\tfrac h2D_{Y0})(Y^*-Y)=h\,r$ (a solve local to the face node pairs).
+  \end{itemize}
+\item \emph{Explicit part of the second half step in $X$:} $X^{1/2}\leftarrow X^{1/2}+\tfrac h2\big(K_{X0}\hat Y+D_{X0}X^{1/2}+f_X\big)$ with the predicted momenta
+  $\hat Y=Y^*+\beta h\,(G_1X^{1/2}+D_{Y1}Y^*)$ (the vertical force of the next stage; on terrain the horizontal mass flux needs it).
+\item \emph{Column solve:} $X^+=X^{1/2}+\tfrac h2\big(K_{X1}Y^++D_{X1}X^+\big)$, $Y^+=Y^*+\beta h\,\big(G_1X^++D_{Y1}Y^+\big)$; one linear system per node column with the
+  weights $\tfrac h2$ on the $X$ rows and $\beta h$ on the $Y$ rows,
+  \[
+  \big(I-\Delta J_1\big)Z^+=Z^{*},\qquad \Delta=\mathrm{diag}\big(\tfrac h2\ (X),\ \beta h\ (Y)\big),\quad J_1=\begin{pmatrix}D_{X1}&K_{X1}\\G_1&D_{Y1}\end{pmatrix}.
+  \]
+\end{enumerate}
+The second half step in $X$ of this small step (stages 3 and 4) and the first half step of the next one (stage 1) both use the momenta $Y^+$
+(stage 3 through the prediction $\hat Y$); combined, the $X$ half steps become full steps (forward--backward form), and only the first and the
+last half step of a MIS stage remain. In the standard formulation $D_{X0}=D_{a0}\neq0$, and the combined
+form must evaluate $D_{a0}X$ anew after the column solve. In the extended formulation $D_X=0$: the $X$ stages need no $X$ values, and the
+horizontal self-coupling sits in $D_{Y0}$ alone.
+
+\paragraph{S3: forward--backward.}
+\begin{enumerate}
+\item $Y^*=Y+h\,(G_0\tilde X+D_{Y0}Y+f_Y)+(1-\beta)h\,(G_1X+D_{Y1}Y)$ (same forms of $D_{Y0}$ as in S2)
+\item $X^*=X+h\,(K_{X0}\hat Y+D_{X0}X+f_X)$
+\item column solve with the weights $h$ ($X$) and $\beta h$ ($Y$): $X^+=X^*+h(K_{X1}Y^++D_{X1}X^+)$, $Y^+=Y^*+\beta h(G_1X^++D_{Y1}Y^+)$.
+\end{enumerate}
+$X$ and $Y$ on the same level; one horizontal evaluation per group and one column solve per small step; of first order.
+
+\paragraph{Cost per small step} (horizontal evaluations of the groups, column solves): S1: 2 $X$, 1 $Y$, 0; S2: 2 $X$ (1 when combined), 1 $Y$ (2 with the
+midpoint predictor), 1; S3: 1 $X$, 1 $Y$, 1. The column systems are fixed during a MIS stage (frozen coefficients, fixed weights); they
+are factored once per stage.
+
+\paragraph{Properties.}
+\begin{itemize}
+\item For $\varepsilon=\gamma_d=0$ and $D_X=D_Y=0$, S1 and S2 are symmetric and of second order; the off-centring and the extrapolation add
+  first-order terms that damp. Explicit treatment of $D_{X0}$, $D_{Y0}$ makes the step of first order unless it is symmetric (midpoint predictor,
+  trapezoidal rule).
+\item The horizontal part is stable up to the Störmer--Verlet limit of the horizontal operator, reduced by the explicit self-coupling
+  $D_{X0}$, $D_{Y0}$; the vertical part is unconditionally stable for $\beta\ge\tfrac12$.
+\item A state with $K_XY+D_XX+f_X=0$, $GX+D_YY+f_Y=0$ is a fixed point of every stage: steady states are kept.
+\item In the extended formulation the relaxation $-\Lambda_M\hat M$ is part of $D_Y$: on $\eta$-faces it is in the column solve, on $\xi$-faces in the
+  horizontal momentum step, where its rate $c\bar\sigma$ is that of the LMARS face damping.
+\end{itemize}
+\end{document}
