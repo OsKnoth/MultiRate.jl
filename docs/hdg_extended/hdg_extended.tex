@@ -11,12 +11,13 @@
 \maketitle
 
 \begin{abstract}
-Starting from the DGSEM with the LMARS flux, the interface momentum (the LMARS mass flux) is introduced as a new unknown
-on the faces, as in hybridized DG. The system then consists of the element equations, in which the thermodynamic
-variables see the faces only through the interface momentum, and an algebraic constraint that defines the interface
-momentum. The constraint is relaxed: the time derivative of the interface momentum equals a relaxation parameter times
-the constraint. In the fast system the tendencies of the thermodynamic variables then depend only on the momentum, inside
-the element and on the faces.
+LMARS is written with the intermediate (interface) momentum: on each side of a face the interface pressure is given by
+the pressure inside the element and the interface momentum, and LMARS is the condition that the left and the right
+interface pressure are equal. Taking the interface momentum as a new unknown on the faces, as in hybridized DG, the
+DGSEM becomes a set of element equations, each depending only on the unknowns of its element and on the interface
+momentum, together with this algebraic constraint. The constraint is relaxed: the time derivative of the interface
+momentum equals a relaxation parameter times the constraint. In the fast system the tendencies of the thermodynamic
+variables then depend only on the momentum, inside the element and on the faces.
 \end{abstract}
 
 \section{Fast system}
@@ -28,72 +29,104 @@ $c^2=A\theta$, pressure $p=A\Theta$:
 Thermodynamic variables $a=(\rho,\Theta)$, momentum $b=m$. With the pressure as additional variable (\code{DGPressureModel}) the
 $p$ row is $A$ times the $\Theta$ row; it is not written separately.
 
+\section{LMARS with the intermediate momentum}
+At a face with unit normal $n$ from the left state $L$ to the right state $R$, the normal acoustics of \eqref{eq:fast} with frozen
+coefficients is
+\[
+p_t+c^2\,\partial_n m_n=0,\qquad (m_n)_t+\partial_n p=0
+\]
+($p_t=A\Theta_t=-A\theta\,\partial_nm_n$, $c$ the frozen face sound speed), with the characteristic speeds $\pm c$ and the Riemann invariants
+$p\pm c\,m_n$. In the Riemann problem the invariant $p+c\,m_n$ is carried from the left, $p-c\,m_n$ from the right into the
+intermediate state $(m^*,p^*)$:
+\[
+p^*+c\,m^*=p_L+c\,m_{n,L},\qquad p^*-c\,m^*=p_R-c\,m_{n,R}.
+\]
+For a given intermediate momentum $m^*$ each relation defines an interface pressure of its side, from the pressure inside
+the element and the intermediate momentum:
+\begin{equation}
+P_L^*=p_L-c\,(m^*-m_{n,L}),\qquad P_R^*=p_R+c\,(m^*-m_{n,R}).\label{eq:sides}
+\end{equation}
+LMARS is the condition that the two interface pressures agree,
+\begin{equation}
+P_L^*=P_R^*,\label{eq:equal}
+\end{equation}
+which gives, with $\jump x=x_R-x_L$, $\avg x=\tfrac12(x_L+x_R)$,
+\begin{equation}
+m^*=\avg{m_n}-\frac{\jump p}{2c},\qquad p^*=P_L^*=P_R^*=\avg p-\frac c2\jump{m_n}.\label{eq:lmars}
+\end{equation}
+With the outward normal $\nu$ of an element $K$ ($\nu=n$ for $L$, $\nu=-n$ for $R$), $m_\nu=\nu\cdot m$ and $m^*_\nu$ the intermediate momentum
+in the direction $\nu$ ($m^*_\nu=m^*$ for $L$, $-m^*$ for $R$), both relations \eqref{eq:sides} are one formula,
+\begin{equation}
+P_K^*=p_K-c\,(m^*_\nu-m_{\nu,K}).\label{eq:side}
+\end{equation}
+At a wall $m^*=0$, so $P_K^*=p_K+c\,m_{\nu,K}$ (the LMARS wall pressure; no condition).
+
 \section{DGSEM with LMARS}
 Tensor LGL nodes, collocated quadrature, element-local derivatives $\nabla_h$ (SBP), mass $J\,w$ per node. At a face node of
-element $K$ with outward contravariant normal $\tilde n$, $s=|\tilde n|$, unit normal $n=\tilde n/s$, $m_n=n\cdot m$ and
+element $K$ with outward contravariant normal $\tilde n$, $s=|\tilde n|$, $\nu=\tilde n/s$ and
 \[
-\sigma=\frac{s}{J\,w}\qquad(w\text{ the quadrature weight of the face node in the normal direction}).
+\sigma=\frac{s}{J\,w}\qquad(w\text{ the quadrature weight of the face node in the normal direction}),
 \]
-Interior face between the elements $L$ and $R$, $n$ pointing from $L$ to $R$, $\jump x=x_R-x_L$, $\avg x=\tfrac12(x_L+x_R)$, $c$ the frozen face
-sound speed. The LMARS interface values (exact Riemann solution of the frozen normal acoustics) are
-\begin{equation}
-m^*=\avg{m_n}-\frac{\jump p}{2c},\qquad p^*=\avg p-\frac c2\jump{m_n};\label{eq:lmars}
-\end{equation}
-at walls (mirror state) $m^*=0$, $p^*=p+c\,m_n$. In strong form, at a face node of $K$ with the outward normal of $K$
-($m^*$ taken with the sign of that normal),
+the strong form with the LMARS values reads
 \begin{align}
-\rho_t&=-\nabla_h\cdot m-\sigma\,(m^*-m_n),\nonumber\\
-\Theta_t&=-\nabla_h\cdot(\theta m)-\sigma\,(\theta_{\rm up}\,m^*-\theta\,m_n),\label{eq:dg}\\
-m_t&=-\nabla_hp-g\rho\,\mathbf e_z-\sigma\,n\,(p^*-p),\nonumber
+\rho_t&=-\nabla_h\cdot m-\sigma\,(m^*_\nu-m_\nu),\nonumber\\
+\Theta_t&=-\nabla_h\cdot(\theta m)-\sigma\,(\theta_{\rm up}\,m^*_\nu-\theta\,m_\nu),\label{eq:dg}\\
+m_t&=-\nabla_hp-g\rho\,\mathbf e_z-\sigma\,\nu\,(P_K^*-p),\nonumber
 \end{align}
-$\theta_{\rm up}$ the frozen upwind value; at interior nodes only the volume terms act. Because of the pressure jump in $m^*$ the
-thermodynamic tendencies depend on the thermodynamic variables of both elements of a face: the mass flux of DGSEM-LMARS
-couples $a$ with $a$.
+$\theta_{\rm up}$ the frozen upwind value; at interior nodes only the volume terms act. By \eqref{eq:side} the face term of the momentum is
+\[
+-\sigma\,\nu\,(P_K^*-p_K)=\sigma\,c\,\nu\,(m^*_\nu-m_{\nu,K}):
+\]
+it contains no pressure, only the intermediate momentum and the momentum of the element.
 
 \section{The interface momentum as additional variable}
-On every face node introduce one unknown $\hat M$, the normal interface momentum (single-valued, with the orientation of
-the face normal $n$). Replacing $m^*$ by $\hat M$ in the thermodynamic rows and adding the definition of $m^*$ as an algebraic
-equation gives, as in hybridized DG,
+On every face node introduce one unknown $\hat M$, the interface momentum (single-valued, in the direction of the face normal
+$n$; $\hat M_\nu=\pm\hat M$ seen from $K$), and use it in place of $m^*$. With $\hat P_K=p_K-c\,(\hat M_\nu-m_{\nu,K})$ the system becomes, as in
+hybridized DG, element equations and a constraint on the faces:
 \begin{align}
-\rho_t&=-\nabla_h\cdot m-\sigma\,(\hat M-m_n),\nonumber\\
-\Theta_t&=-\nabla_h\cdot(\theta m)-\sigma\,(\theta_{\rm up}\,\hat M-\theta\,m_n),\label{eq:hdg}\\
-m_t&=-\nabla_hp-g\rho\,\mathbf e_z-\sigma\,n\,(p^*-p),\nonumber\\
-0&=\avg{m_n}-\frac{\jump p}{2c}-\hat M\qquad(\text{interior faces}),\qquad \hat M=0\quad(\text{walls}).\label{eq:constraint}
+\rho_t&=-\nabla_h\cdot m-\sigma\,(\hat M_\nu-m_\nu),\nonumber\\
+\Theta_t&=-\nabla_h\cdot(\theta m)-\sigma\,(\theta_{\rm up}\,\hat M_\nu-\theta\,m_\nu),\label{eq:hdg}\\
+m_t&=-\nabla_hp-g\rho\,\mathbf e_z+\sigma\,c\,\nu\,(\hat M_\nu-m_\nu),\nonumber\\
+0&=\hat P_L-\hat P_R=p_L-p_R+c\,(m_{n,L}+m_{n,R})-2c\,\hat M\quad(\text{interior faces}),\qquad \hat M=0\quad(\text{walls}).\label{eq:constraint}
 \end{align}
-The constraint \eqref{eq:constraint} is the transmission condition of the hybridized form. It is local to the face node and
-can be solved for $\hat M$ explicitly; eliminating $\hat M$ gives back \eqref{eq:dg}. Conservation of mass and $\Theta$ holds for every
-value of $\hat M$, since $\hat M$ is single-valued.
+Each element equation depends only on the unknowns of its element and on the interface momentum of its faces; the
+elements are coupled only through $\hat M$. The constraint \eqref{eq:constraint} is the equality \eqref{eq:equal} of the left and right interface
+pressures, local to the face node and linear in $\hat M$; solved for $\hat M$ it gives $\hat M=m^*$, and \eqref{eq:dg} is recovered. Conservation of
+mass and $\Theta$ holds for every value of $\hat M$, since $\hat M$ is single-valued.
 
 \section{Relaxation of the constraint}
 The algebraic constraint is replaced by a relaxation equation: the time derivative of the interface momentum equals a
-relaxation parameter $\kappa=1/\varepsilon>0$ times the constraint,
+relaxation parameter $\kappa>0$ times the constraint,
 \begin{equation}
-\hat M_t=\kappa\Big(\avg{m_n}-\frac{\jump p}{2c}-\hat M\Big),\qquad\text{i.e.}\qquad \varepsilon\,\hat M_t=\avg{m_n}-\frac{\jump p}{2c}-\hat M .\label{eq:relax}
+\hat M_t=\kappa\,(\hat P_L-\hat P_R)=\kappa\,\big(p_L-p_R+c\,(m_{n,L}+m_{n,R})-2c\,\hat M\big).\label{eq:relax}
 \end{equation}
-The system \eqref{eq:hdg} with \eqref{eq:relax} is an ODE in the element unknowns and the interface momentum; for $\varepsilon\to0$
-($\kappa\to\infty$) it tends to the DAE \eqref{eq:hdg}--\eqref{eq:constraint}, i.e.\ to DGSEM with LMARS.
+Since $\hat P_L-\hat P_R=2c\,(m^*-\hat M)$, the interface momentum relaxes towards the LMARS value with the time $\varepsilon=1/(2c\kappa)$. The
+system \eqref{eq:hdg}, \eqref{eq:relax} is an ODE in the element unknowns and the interface momentum; for $\kappa\to\infty$ it tends to the DAE
+\eqref{eq:hdg}--\eqref{eq:constraint}, i.e.\ to DGSEM with LMARS.
 
 \section{Structure}
 With the element unknowns $a$, $b$, the face unknowns $\hat M$ and the forcing $f$ of the slow part, the fast system reads
 \begin{align*}
 a_t&=K\,b+R\,\hat M+f_a,\\
-b_t&=L\,a+D_b\,b+f_b,\\
-\varepsilon\,\hat M_t&=H_b\,b+H_a\,a-\hat M,
+b_t&=L\,a+D\,b+Q\,\hat M+f_b,\\
+\hat M_t&=\kappa\,(H_a\,a+H_b\,b-2c\,\hat M),
 \end{align*}
 with
 \begin{itemize}
-\item $K$: the volume divergence of $m$ (and $\theta m$) and the face terms $+\sigma m_n$, $+\sigma\theta m_n$ of the element's own momentum;
-\item $R$: the face terms $-\sigma\hat M$, $-\sigma\theta_{\rm up}\hat M$, local to the face node;
-\item $L$: pressure gradient, gravity and the central part $\avg p$ of $p^*$; $D_b$: the jump part $-\tfrac c2\jump{m_n}$ of $p^*$ (and $c\,m_n$ at walls);
-\item $H_b$: $\avg{m_n}$, $H_a$: $-\jump p/(2c)$, both local to the two nodes of the face node pair.
+\item $K$: the volume divergence of $m$ (and $\theta m$) and the face terms $+\sigma m_\nu$, $+\sigma\theta m_\nu$ of the element's own momentum;
+  $R$: the face terms $-\sigma\hat M_\nu$, $-\sigma\theta_{\rm up}\hat M_\nu$;
+\item $L$: pressure gradient and gravity, volume terms only; $D$: the face term $-\sigma c\,\nu\,m_\nu$ of the node's own momentum; $Q$: the face
+  term $+\sigma c\,\nu\,\hat M_\nu$;
+\item $H_a$: $p_L-p_R$, $H_b$: $c\,(m_{n,L}+m_{n,R})$, both local to the two nodes of the face node pair.
 \end{itemize}
-The thermodynamic tendencies depend only on the element momentum $b$ and the interface momentum $\hat M$, i.e.\ in the fast
-system only on momentum; they contain no thermodynamic variable. The pressure jump, which in DGSEM-LMARS couples $a$
-with $a$, now enters only the equation of the interface momentum. The momentum tendencies depend on $a$ (pressure, gravity)
-and on $b$ through $D_b$. Ordered as $(a,\ b,\ \hat M)$:
+$K$, $L$ and $D$ act within an element ($D$ within a face node), $R$ and $Q$ connect a face node with the two element nodes
+at it, and only the constraint connects the two sides of a face. The thermodynamic tendencies depend only on the
+element momentum $b$ and the interface momentum $\hat M$, i.e.\ in the fast system only on momentum; they contain no
+thermodynamic variable. The pressure jump, which in DGSEM-LMARS couples $a$ with $a$ across the face, enters only the
+equation of the interface momentum. Ordered as $(a,\ b,\ \hat M)$:
 \[
 \frac{\mathrm d}{\mathrm dt}\begin{pmatrix}a\\b\\\hat M\end{pmatrix}=
-\begin{pmatrix}0&K&R\\L&D_b&0\\\kappa H_a&\kappa H_b&-\kappa I\end{pmatrix}\begin{pmatrix}a\\b\\\hat M\end{pmatrix}+\begin{pmatrix}f_a\\f_b\\0\end{pmatrix}.
+\begin{pmatrix}0&K&R\\L&D&Q\\\kappa H_a&\kappa H_b&-2c\kappa I\end{pmatrix}\begin{pmatrix}a\\b\\\hat M\end{pmatrix}+\begin{pmatrix}f_a\\f_b\\0\end{pmatrix}.
 \]
 On the gravity-wave grids the faces split into horizontal ($\xi$) and vertical ($\eta$, walls) ones; $\hat M$ on $\xi$-faces belongs to
 the horizontal part, on $\eta$-faces and walls to the vertical part of a node column.
