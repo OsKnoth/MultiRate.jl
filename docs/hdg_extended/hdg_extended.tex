@@ -130,4 +130,63 @@ equation of the interface momentum. Ordered as $(a,\ b,\ \hat M)$:
 \]
 On the gravity-wave grids the faces split into horizontal ($\xi$) and vertical ($\eta$, walls) ones; $\hat M$ on $\xi$-faces belongs to
 the horizontal part, on $\eta$-faces and walls to the vertical part of a node column.
+
+\section{Fast step: Störmer--Verlet in the groups $a$ and $(b,\hat M)$}
+\paragraph{Groups.} Collect the momentum and the interface momentum in $Y=(b,\hat M)$. The fast system is
+\begin{equation}
+a_t=K_Y\,Y+f_a,\qquad Y_t=G\,a+D_Y\,Y+f_Y,\label{eq:groups}
+\end{equation}
+\[
+K_Y=\begin{pmatrix}K&R\end{pmatrix},\qquad G=\begin{pmatrix}L\\\kappa H_a\end{pmatrix},\qquad
+D_Y=\begin{pmatrix}D&Q\\\kappa H_b&-2c\kappa I\end{pmatrix},\qquad f_Y=\begin{pmatrix}f_b\\0\end{pmatrix}.
+\]
+This is the form of Verwer's semi-discrete Maxwell equations \cite{verwer}: the first block row has no self-coupling, the
+second has the self-coupling $D_Y$ (his conductivity). $D_Y$ is local: it couples the momenta of the two nodes of a face node pair
+with the interface momentum of that pair ($D$ acts on the node's own momentum, $Q$ and $H_b$ connect node and face); in 2D the
+corner nodes of an element link the pairs of a $\xi$- and an $\eta$-face. $e^{tD_Y}$ is therefore computed block by block, as the
+local self-coupling (the Coriolis term) in the Störmer--Verlet step of Xu, van der Vegt and Bokhove \cite{xvb}.
+
+\paragraph{Step.} With the small step $h$,
+\begin{align}
+a^{1/2}&=a^n+\tfrac h2\big(K_YY^n+f_a\big),\nonumber\\
+Y^{n+1}&=e^{hD_Y}Y^n+h\,\varphi_1(hD_Y)\big(G\,a^{1/2}+f_Y\big),\label{eq:sv}\\
+a^{n+1}&=a^{1/2}+\tfrac h2\big(K_YY^{n+1}+f_a\big),\nonumber
+\end{align}
+$\varphi_1(x)=(e^x-1)/x$. The middle line is the exact flow of $Y_t=G\,a^{1/2}+D_YY+f_Y$ with $a$ frozen at the midpoint (Bokhove); Verwer
+takes the trapezoidal rule instead, $(I-\tfrac h2D_Y)Y^{n+1}=(I+\tfrac h2D_Y)Y^n+h(Ga^{1/2}+f_Y)$. Both lines are local in $D_Y$ and need no global
+solve. Properties:
+\begin{itemize}
+\item The step is the symmetric composition of the exact flows of $a_t=K_YY+f_a$ (half steps) and $Y_t=Ga+D_YY+f_Y$ (full step):
+  second order. The half steps of consecutive small steps can be combined.
+\item Steady states are kept exactly: a state with $K_YY+f_a=0$ and $Ga+D_YY+f_Y=0$ is a fixed point of both flows. The forcing
+  $Ga+f_Y$ and the damping $D_Y$ are in the same flow.
+\item For $\kappa\to\infty$ the exact $Y$ flow stays well defined (the interface momentum follows $\hat M^*(a^{1/2},b)$), and the step tends to
+  Störmer--Verlet for DGSEM-LMARS in which the mass flux of the half steps uses the interface momentum of the $Y$ step.
+\end{itemize}
+
+\paragraph{1D results} (periodic acoustics, DGSEM $P=4$, 16 elements, $c=1$, $\Delta x_e=1$, $\varepsilon=1/(2c\kappa)$ in units of $\Delta x_e/c$;
+\code{docs/hdg\_extended/fast\_groups\_1d.jl}). The extended system \eqref{eq:hdg}, \eqref{eq:relax} has no growing modes ($\max\mathrm{Re}\,\lambda\le10^{-15}$ for
+$\varepsilon=10^{-3}$, $10^{-2}$, $0.1$). Stability limit $c\,h/\Delta x_e$ of the step and model error of the extended system against DGSEM-LMARS
+(smooth wave of wavelength 4 elements, relative error of $p$ after two periods):
+\begin{center}\small
+\begin{tabular}{lcccccc}\toprule
+$\varepsilon$ & $10^{-4}$ & $10^{-3}$ & $10^{-2}$ & 0.05 & 0.1 & 0.2\\\midrule
+\eqref{eq:sv}, $Y$ exact & 0.075 & 0.076 & 0.086 & 0.116 & 0.135 & 0.153\\
+\eqref{eq:sv}, $Y$ trapezoidal & 0.004 & 0.014 & 0.043 & 0.085 & 0.106 & --\\
+model error & -- & $6.4\cdot10^{-3}$ & $6.4\cdot10^{-2}$ & 0.32 & 0.62 & 1.2\\\bottomrule
+\end{tabular}
+\end{center}
+($P=3$: 0.121, 0.122, 0.132, 0.167, 0.196, 0.227 for the exact $Y$ step.) The symplectic Euler form ($Y$ step, then a full step in
+$a$) has the same limits. The step is of second order (error ratios 4.0/4.0 for $\varepsilon=10^{-3}$, 3.9/4.0 for $\varepsilon=0.05$, against the
+exact flow of the extended system). For $\varepsilon\to0$ the limit is that of explicit Störmer--Verlet for DGSEM-LMARS (0.075); the
+trapezoidal rule fails for small $\varepsilon$, since its amplification $(1-\tfrac h2\lambda)^{-1}(1+\tfrac h2\lambda)\to-1$ for the stiff relaxation
+$\lambda\approx-1/\varepsilon$. A larger $\varepsilon$ enlarges the step, but the extended system then differs from DGSEM-LMARS in proportion to $\varepsilon$: the
+interface momentum relaxes towards $\avg{m_n}-\jump p/(2c)$ and so lags behind the central mass flux $\avg{m_n}$ as well (a phase
+error of the waves).
+
+\begin{thebibliography}{9}
+\bibitem{verwer} J.G.~Verwer: Component splitting for semi-discrete Maxwell equations. BIT Numer.\ Math.\ 51 (2011), 427--445.
+\bibitem{xvb} Y.~Xu, J.J.W.~van der Vegt, O.~Bokhove: Discontinuous Hamiltonian finite element method for linear hyperbolic
+systems. J.\ Sci.\ Comput.\ 35 (2008), 241--265.
+\end{thebibliography}
 \end{document}
