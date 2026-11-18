@@ -1,6 +1,6 @@
 \documentclass[11pt,a4paper]{article}
 \usepackage[margin=2.4cm]{geometry}
-\usepackage{amsmath,amssymb,booktabs,hyperref}
+\usepackage{amsmath,amssymb,booktabs,hyperref,graphicx}
 \newcommand{\avg}[1]{\{\!\{#1\}\!\}}
 \newcommand{\jump}[1]{[\![#1]\!]}
 \newcommand{\code}[1]{\texttt{#1}}
@@ -246,6 +246,69 @@ hill & LMARS \code{:cs} & $5.3\cdot10^{-2}$ & -- & $9.6\cdot10^{-3}$ & --\\
 With $D_Y$ explicit the step must be halved; the error does not decrease with $n_{\rm sub}$ (117 and 176 give the same), it is the
 deviation of the relaxed system from DGSEM-LMARS. The diagonal-implicit step is stable at the LMARS step but of first order, and on
 the hill its error is large.
+
+\section{LMARS in $\rho u$, contravariant interface momentum, contravariant vertical split}
+\paragraph{LMARS in $\rho u$.} Option \code{lmars=:momentum} (default with \code{interface=true}): the face coefficients are those of LMARS in the
+momentum, $m_f=\avg{m_n}-\jump p/(2c)$, $p^*=\avg p-\tfrac c2\jump{m_n}$, $c$ the mean face sound speed, $\theta_{\rm up}$ from the upwind side; then
+$\hat P_K-p_K=c\,(\hat M/s-m_{\nu,K})$. The wall pressure $p+c\,m_n$ is the same in both forms. The two forms differ by 3\,\% in $N$ (frozen
+densities $\rho_{\rm up}/\rho$ in the velocity form); the reference is RK4 of the model with the same form.
+
+\paragraph{Contravariant interface momentum.} $\hat M$ is stored as the contravariant flux $\tilde n\cdot\hat m=s\,m_f$; on the $\eta$-faces it is the
+mass flux through the coordinate surface, including the part $\tilde n_x m_x$.
+
+\paragraph{Contravariant vertical split (the FV trick).} The vertical flux $\tilde n_\eta\cdot m=J\eta_x\,m_x+J\eta_z\,m_z$ is split by its components
+(option \code{vsplit}):
+\begin{itemize}
+\item \code{:full}: all $\eta$-terms vertical; on terrain the column reads $m_x$ (metric terms).
+\item \code{:contravariant}:\ every $\eta$-term with $m_x$ (the $J\eta_x m_x$ part of the vertical mass flux, the metric force $J\eta_x\partial_\eta p$ on $m_x$,
+  the $m_x$ part of the $\eta$-face and wall terms) horizontal; the column contains only $\rho,\Theta,p,m_z$, as in the FV model.
+\item \code{:contravariant\_volume}: only the $\eta$ volume terms split in this way; the $\eta$-face and wall terms stay vertical. There the momentum
+  enters only as $m_n=n\cdot m$ and the face force acts along $n$: the column sees $m_x$ only through the normal component at the face nodes.
+\end{itemize}
+Entries of $J_v$ on the hill grid: 171\,000, 86\,100 and 100\,500 for the three splits (in the order above). All three are stable up to
+$c\,h/\Delta x_e=0.10$. Fast loop alone (hill, 20\,s, relative error at $N=96$): $1.2\cdot10^{-4}$, $8.5\cdot10^{-5}$, $8.1\cdot10^{-5}$, all of second order;
+with $\hat M$ and the third split $2.2\cdot10^{-2}$, first order.
+
+\paragraph{Results} (MIS54, error of $\theta$ in K against RK4 with LMARS in $\rho u$, $\varepsilon=\gamma_d=0.1$):
+\begin{center}\footnotesize\setlength{\tabcolsep}{4pt}
+\begin{tabular}{lccc}\toprule
+ & flat, $\dt=100$\,s, $n_{\rm sub}=59$ & hill, $\dt=100$\,s, $n_{\rm sub}=59$ & hill, $\dt=50$\,s, $n_{\rm sub}=30$\\\midrule
+\code{:cs}, \code{:full} & $9.1\cdot10^{-5}$ & $5.3\cdot10^{-2}$ & $9.6\cdot10^{-3}$\\
+\code{:cs}, \code{:contravariant} & $9.1\cdot10^{-5}$ & 0.84 & 0.78\\
+\code{:cs}, \code{:contravariant\_volume} & $9.1\cdot10^{-5}$ & $5.3\cdot10^{-2}$ & $9.6\cdot10^{-3}$\\
+$\hat M$, \code{:full} & $4.2\cdot10^{-3}$ & 1.48 & 1.40\\
+$\hat M$, \code{:contravariant} & $4.2\cdot10^{-3}$ & 1.60 & 1.46\\
+$\hat M$, \code{:contravariant\_volume} & $4.2\cdot10^{-3}$ & 0.31 & 0.31\\\bottomrule
+\end{tabular}
+\end{center}
+With \code{:contravariant} the wall condition $m_n=0$ and the $\eta$-face damping see a lagged $m_x$: error in the lee near the ground and at the
+first $\eta$-face level (Figure~\ref{fig:diffc}). With the faces vertical (\code{:contravariant\_volume}) \code{:cs} is as accurate as with \code{:full}, with a
+smaller column. With $\hat M$ the error drops from 1.5 to 0.31\,K; it remains a first-order error of the diagonal-implicit horizontal step
+(0.23\,K with 117 small steps).
+
+\begin{figure}[p]\centering
+\includegraphics[width=\textwidth]{hill_solutions_contravariant_volume.png}
+\caption{Hill, $T=3000$\,s, $\dt=100$\,s, $n_{\rm sub}=59$, \code{vsplit=:contravariant\_volume}: $\theta'$ and $w$ of RK4, of \code{:cs} and of the
+interface momentum ($\kappa=\tfrac12$).}\label{fig:sol}
+\end{figure}
+\begin{figure}[p]\centering
+\includegraphics[width=\textwidth]{hill_differences_contravariant_volume.png}
+\caption{Differences to RK4 for \code{vsplit=:contravariant\_volume}: \code{:cs} (top), interface momentum (bottom).}\label{fig:diffv}
+\end{figure}
+\begin{figure}[p]\centering
+\includegraphics[width=\textwidth]{hill_differences_contravariant.png}
+\caption{Differences to RK4 for \code{vsplit=:contravariant} (face and wall terms with $m_x$ explicit).}\label{fig:diffc}
+\end{figure}
+\begin{figure}[p]\centering
+\includegraphics[width=\textwidth]{hill_differences_full.png}
+\caption{Differences to RK4 for \code{vsplit=:full}.}\label{fig:difff}
+\end{figure}
+\begin{figure}[p]\centering
+\includegraphics[width=\textwidth]{interface_flux_contravariant_volume.png}
+\caption{Contravariant vertical interface flux $\hat M=\tilde n\cdot\hat m$ at the first interior $\eta$-face after one fast loop of $\dt$
+(\code{:contravariant\_volume}): $\hat M$, its LMARS value $s\,m_f$ and $\tilde n\cdot m$ of the elements below and above.}\label{fig:flux}
+\end{figure}
+\clearpage
 
 \begin{thebibliography}{9}
 \bibitem{verwer} J.G.~Verwer: Component splitting for semi-discrete Maxwell equations. BIT Numer.\ Math.\ 51 (2011), 427--445.
