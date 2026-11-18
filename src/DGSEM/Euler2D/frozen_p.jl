@@ -24,7 +24,7 @@
 # horizontal mass flux of a⁺ is evaluated), :vertical = η part (no forcing); :thermo, :momentum, :all
 # as in the base model.
 
-using SparseArrays: sparse, SparseMatrixCSC, spzeros, findnz
+using SparseArrays: sparse, SparseMatrixCSC, spzeros, findnz, nzrange, rowvals, nonzeros
 using LinearAlgebra: lu, lu!, ldiv!, mul!, Diagonal, I
 
 """Stage data: the coefficients C of the stage (`frozen_stage_begin!`), the operator assembled as sparse

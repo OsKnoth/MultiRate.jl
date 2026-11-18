@@ -48,6 +48,8 @@ mutable struct HDGFast2D <: AbstractFastOperator
     vadv::Bool                      # vertical momentum transport by the fast velocity (DG_VADV_FAST)
     u0::Array{Float64,3}
     w0::Array{Float64,3}
+    bflows::Dict{Float64,Any}       # :verlet_b: c -> (e^{cD}, c φ₁(cD)), D = D_a + D_b; reset at every re-freeze
+    bblocks::Any                    # :verlet_b: block structure of D (fixed pattern, kept across re-freezes)
 end
 
 """
@@ -103,7 +105,7 @@ function HDGFast2D(m::Euler2DModel; tau_scale = 1.0)
                      zeros(np, Ne), zeros(np, M.Nex * (M.Nez + 1)), 0.0,
                      [zeros(nq) for _ in 1:7], zeros(np, np), zeros(np, np), zeros(np, np), Iint,
                      zeros(length(M.mult)),
-                     false, arr(), (zeros(np, np, np, Ne) for _ in 1:8)..., false, false, arr(), arr())
+                     false, arr(), (zeros(np, np, np, Ne) for _ in 1:8)..., false, false, arr(), arr(), Dict{Float64,Any}(), nothing)
 end
 
 """
@@ -199,6 +201,7 @@ function refreeze!(s::HDGFast2D, m::Euler2DModel, q, pfac)
     for (c, F) in s.lucache
         factor_hevi!(F, s, c)
     end
+    empty!(s.bflows)
     return s
 end
 

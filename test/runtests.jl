@@ -1402,6 +1402,44 @@ end
     @test qc[base.nq+1:end] ≈ [CM.pressure(gas, qc[E2.node_iq(np, e, 4, i, j)]) for e in 1:M.Ne for j in 1:np for i in 1:np]
 end
 
+@testset "Euler2D: HDG Störmer–Verlet with Bokhove's partition (:verlet_b)" begin
+    gas = CM.Gas()
+    ρr, Θr, θr = CM.stratified_reference(gas; θ0 = 300.0, N = 0.01)
+    L, H, U = 80e3, 10e3, 20.0
+    hill(x) = 400 / (1 + ((x - L / 2) / 5e3)^2)
+    dhill(x) = -400 * 2 * (x - L / 2) / 5e3^2 / (1 + ((x - L / 2) / 5e3)^2)^2
+    M = E2.Mesh2D(8, 4, 3, L, H; zs = hill)
+    base = E2.Euler2DModel(M, gas, ρr, Θr)
+    qb = CM.project2d(base, (x, z) -> (ρ = Θr(z) / (θr(z) + 0.01 * exp(-((x - L / 3) / 5e3)^2));
+                                        (ρ, ρ * U, ρ * U * dhill(x) * (H - z) / (H - hill(x)), Θr(z))))
+    s = TS.fast_operator(base, qb; fast = :verlet_b)
+    nq, np = base.nq, M.np
+    # D_b, D_a: the self-couplings of the momentum and the thermodynamic tendency (face-local)
+    mom(k) = mod1(cld(k, np^2), 4) in (2, 3)
+    rng = MersenneTwister(5)
+    b = [mom(k) ? randn(rng) : 0.0 for k in 1:nq]; a = [mom(k) ? 0.0 : randn(rng) for k in 1:nq]; z0 = zeros(nq)
+    r = E2.fast_rhs_momentum!(zeros(nq), s, b, z0)
+    @test norm(r .- E2.momentum_damping(s) * b) < 1e-12 * norm(r)
+    E2.interface_momentum!(s, a); r = E2.fast_rhs_thermo!(zeros(nq), s, a, z0)
+    @test norm(r .- E2.thermo_damping(s) * a) < 1e-12 * norm(r)
+    # second order (reference: :verlet with very small steps)
+    T = 5.0; fs(meth, n) = TS.fast_solve!(zeros(nq), s, qb, nothing, T / n, n; method = meth)
+    zr = fs(:verlet, 4000)
+    e = [norm(fs(:verlet_b, n) .- zr) for n in (10, 20, 40)]
+    @test e[1] / e[2] > 3.7 && e[2] / e[3] > 3.7
+    # stable at CFL 1.5 (P = 3), where explicit Verlet (limit 0.79) grows
+    c = CM.sound_speed_max(base, qb); h = min(L / M.Nex, minimum(M.Z[:, end, :] .- M.Z[:, 1, :]))
+    function growth(meth, dτ)
+        g0 = TS.fast_solve!(zeros(nq), s, z0, nothing, dτ, 1; method = meth)
+        z = randn(MersenneTwister(1), nq); z ./= norm(z); g = 0.0; out = zeros(nq)
+        for _ in 1:300
+            TS.fast_solve!(out, s, z, nothing, dτ, 1; method = meth); out .-= g0; g = norm(out); z .= out ./ g
+        end
+        g
+    end
+    @test growth(:verlet_b, 1.5h / (7c)) < 1.005 && growth(:verlet, 1.5h / (7c)) > 1.5
+end
+
 @testset "LinearAnalysis: MIS amplification (Knoth–Wensch, MISDG grid)" begin
     LA = MultiRate.LinearAnalysis
     tab(n) = TS.mis_tableau(n)

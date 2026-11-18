@@ -31,6 +31,8 @@ q0 (qout may alias q0). Methods:
   :hevi_verlet  Strang: horizontal Störmer–Verlet half step, vertical Crank–Nicolson,
            horizontal half step (needs `fast_rhs_hthermo!`, `fast_rhs_hmomentum!`)
   :verlet  Störmer–Verlet: (ρ, Θ) half step, momentum full step, (ρ, Θ) half step
+  :verlet_b Störmer–Verlet with the momentum self-coupling (LMARS face pressure) integrated exactly in
+           the half steps (Bokhove's partition; DG `HDGFast2D`)
   :ei      Verlet EI (Imex.pdf, version 1 EI): (ρ, Θ) half step explicit in the full divergence,
            U explicit, W with the trapezoidal rule in the vertical pressure gradient and gravity
            (off-centring `EI_GAMMA`), (ρ, Θ) half step; one column solve per step (needs
@@ -133,7 +135,7 @@ end
 const NO_COMPOSITION = [1.0]
 const COMPOSITIONS = Dict{Symbol,Tuple{Symbol,Vector{Float64}}}(
     Symbol(base, suf) => (base, collect(ws))
-    for base in (:verlet, :hevi, :hevi_verlet, :hevi_relax, :imex, :fb, :ei, :cs)
+    for base in (:verlet, :verlet_b, :hevi, :hevi_verlet, :hevi_relax, :imex, :fb, :ei, :cs)
     for (suf, ws) in (("_y4", YOSHIDA4), ("_s4", SUZUKI4), ("_y6", YOSHIDA6)))
 
 """max|w_k| of the composition: the base loop sees substeps up to this factor times dτ."""
@@ -153,6 +155,8 @@ function _fast_loop!(method, q, s, f, dt, nsteps, Y, k1, k2, tmp, rhs)
         hevi_loop!(q, s, f, dt, nsteps, Y, k1, k2, tmp, rhs; relax_horizontal = true)
     elseif method == :verlet
         verlet_loop!(q, s, f, dt, nsteps, k1, k2)
+    elseif method == :verlet_b
+        bokhove_verlet_loop!(q, s, f, dt, nsteps, k1, k2)
     elseif method == :ei
         ei_loop!(q, s, f, dt, nsteps, Y, k1, k2)
     elseif method == :fb
@@ -260,6 +264,10 @@ end
 
 """Placement of the constant fast forcing in `:hevi_verlet` (:vertical or :horizontal)."""
 const HEVI_VERLET_FORCING = Ref(:horizontal)
+
+"""Störmer–Verlet with the momentum self-coupling D_b integrated exactly in the half steps (Bokhove's
+partition, `fast = :verlet_b`); implemented by the model (DG: `HDGFast2D`)."""
+function bokhove_verlet_loop! end
 
 """Störmer–Verlet (Xu, van der Vegt, Bokhove 2008, eq. 4.6 with f = 0)."""
 function verlet_loop!(q, s, f, dt, nsteps, kT, km)
