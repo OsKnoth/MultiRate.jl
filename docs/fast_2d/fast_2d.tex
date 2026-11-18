@@ -40,7 +40,7 @@ couple $T$ with $m_x$, the vertical ones $T$ with $m_z$. A node column (the node
 through the $z$-terms only.
 
 \paragraph{MIS stage and small step.} Stage $i$ of a MIS step integrates the linear fast system with the forcing $f^{(i)}$ over $[0,d_i\dt]$ with
-$n_i$ small steps of length $h=d_i\dt/n_i$. A small step maps $(T,M)$ to $(T^+,M^+)$. Parameter: off-centring $\beta=(1+\varepsilon)/2$ of the
+$n_i$ small steps of length $h=d_i\dt/n_i$. A small step maps $(T^0,M^0)$ to $(T^1,M^1)$; $T^{1/2}$ is the value after the first half step. Parameter: off-centring $\beta=(1+\varepsilon)/2$ of the
 vertical force (no extrapolation, no divergence damping).
 
 \section{Standard formulation: DGSEM with LMARS in $\rho\mathbf u$}
@@ -81,52 +81,52 @@ $D_T$ and $D_M$ couple only the two nodes of a face node pair. Both groups have 
 
 \medskip\noindent\textbf{S1 (explicit Störmer--Verlet).}
 \begin{enumerate}
-\item $T^{1/2}=T+\tfrac h2\big(A_TM+D_TT+f_T\big)$
-\item $M^+=M+h\big(A_MT^{1/2}+D_MM+f_M\big)$
-\item $T^+=T^{1/2}+\tfrac h2\big(A_TM^++D_TT^{1/2}+f_T\big)$
+\item $T^{1/2}=T^0+\tfrac h2\big(A_TM^0+D_TT^0+f_T\big)$
+\item $M^1=M^0+h\big(A_MT^{1/2}+D_MM^0+f_M\big)$
+\item $T^1=T^{1/2}+\tfrac h2\big(A_TM^1+D_TT^{1/2}+f_T\big)$
 \end{enumerate}
 Explicit in $x$ and $z$; the step is limited by the vertical node spacing.
 
 \medskip\noindent\textbf{S2 (Störmer--Verlet, $z$ implicit; Verwer's component splitting).}
 \begin{enumerate}
-\item $T^{1/2}=T+\tfrac h2\big(A_TM+D_TT+f_T\big)$
-\item $M^+=M+h\big(A_M^xT^{1/2}+D_M^xM+f_M\big)+h\big[(1-\beta)\big(A_M^zT+D_M^zM\big)+\beta\big(A_M^zT^++D_M^zM^+\big)\big]$
-\item $T^+=T^{1/2}+\tfrac h2\big(A_T^xM^++D_T^xT^{1/2}+f_T\big)+\tfrac h2\big(A_T^zM^++D_T^zT^+\big)$
+\item $T^{1/2}=T^0+\tfrac h2\big(A_TM^0+D_TT^0+f_T\big)$
+\item $M^1=M^0+h\big(A_M^xT^{1/2}+D_M^xM^0+f_M\big)+h\big[(1-\beta)\big(A_M^zT^0+D_M^zM^0\big)+\beta\big(A_M^zT^1+D_M^zM^1\big)\big]$
+\item $T^1=T^{1/2}+\tfrac h2\big(A_T^xM^1+D_T^xT^{1/2}+f_T\big)+\tfrac h2\big(A_T^zM^1+D_T^zT^1\big)$
 \end{enumerate}
-Stage 1 is explicit in both directions ($A_T^zM$, $D_T^zT$ with the old values). Stages 2 and 3 are coupled through the $z$-terms
-($T^+$, $m_z^+$); the linear equation that remains is derived below.
+Stage 1 is explicit in both directions ($A_T^zM^0$, $D_T^zT^0$ with the old values). Stages 2 and 3 are coupled through the $z$-terms
+($T^1$, $m_z^1$); the linear equation that remains is derived below.
 
 \paragraph{From stages 2 and 3 to the column system (S2).} Without metric, $A_M^x$ and $D_M^x$ act only on $m_x$, and $A_M^z$, $D_M^z$ only on $m_z$. Stage 2
 therefore splits into its two components:
 \begin{align*}
-m_x^+&=m_x+h\big(A_M^xT^{1/2}+D_M^xm_x+f_{m_x}\big)\qquad\text{(explicit)},\\
-m_z^+&=m_z^*+\beta h\big(A_M^zT^++D_M^zm_z^+\big),\qquad m_z^*=m_z+h f_{m_z}+(1-\beta)h\big(A_M^zT+D_M^zm_z\big).
+m_x^1&=m_x^0+h\big(A_M^xT^{1/2}+D_M^xm_x^0+f_{m_x}\big)\qquad\text{(explicit)},\\
+m_z^1&=m_z^*+\beta h\big(A_M^zT^1+D_M^zm_z^1\big),\qquad m_z^*=m_z^0+h f_{m_z}+(1-\beta)h\big(A_M^zT^0+D_M^zm_z^0\big).
 \end{align*}
-With $m_x^+$ known, the horizontal part of stage 3 is explicit as well, and stage 3 reads
+With $m_x^1$ known, the horizontal part of stage 3 is explicit as well, and stage 3 reads
 \[
-T^+=T^*+\tfrac h2\big(A_T^zm_z^++D_T^zT^+\big),\qquad T^*=T^{1/2}+\tfrac h2\big(A_T^xm_x^++D_T^xT^{1/2}+f_T\big).
+T^1=T^*+\tfrac h2\big(A_T^zm_z^1+D_T^zT^1\big),\qquad T^*=T^{1/2}+\tfrac h2\big(A_T^xm_x^1+D_T^xT^{1/2}+f_T\big).
 \]
 The two implicit lines form one linear system,
 \[
-\begin{pmatrix}I-\tfrac h2D_T^z&-\tfrac h2A_T^z\\-\beta h\,A_M^z&I-\beta h\,D_M^z\end{pmatrix}\begin{pmatrix}T^+\\m_z^+\end{pmatrix}=\begin{pmatrix}T^*\\m_z^*\end{pmatrix}.
+\begin{pmatrix}I-\tfrac h2D_T^z&-\tfrac h2A_T^z\\-\beta h\,A_M^z&I-\beta h\,D_M^z\end{pmatrix}\begin{pmatrix}T^1\\m_z^1\end{pmatrix}=\begin{pmatrix}T^*\\m_z^*\end{pmatrix}.
 \]
-All its blocks are $z$-operators: it decouples into one system per node column. Eliminating $T^+=B^{-1}\big(T^*+\tfrac h2A_T^zm_z^+\big)$, $B=I-\tfrac h2D_T^z$
+All its blocks are $z$-operators: it decouples into one system per node column. Eliminating $T^1=B^{-1}\big(T^*+\tfrac h2A_T^zm_z^1\big)$, $B=I-\tfrac h2D_T^z$
 ($D_T^z$ couples only the two nodes of a $z$-face, so $B$ is local), gives the equation for the vertical momentum,
 \[
-\Big(I-\beta h\,D_M^z-\tfrac{\beta h^2}{2}\,A_M^zB^{-1}A_T^z\Big)\,m_z^+=m_z^*+\beta h\,A_M^zB^{-1}T^*,
+\Big(I-\beta h\,D_M^z-\tfrac{\beta h^2}{2}\,A_M^zB^{-1}A_T^z\Big)\,m_z^1=m_z^*+\beta h\,A_M^zB^{-1}T^*,
 \]
-and then $T^+=B^{-1}\big(T^*+\tfrac h2A_T^zm_z^+\big)$. $A_M^zB^{-1}A_T^z$ is the vertical pressure force of the vertical mass flux (a second
+and then $T^1=B^{-1}\big(T^*+\tfrac h2A_T^zm_z^1\big)$. $A_M^zB^{-1}A_T^z$ is the vertical pressure force of the vertical mass flux (a second
 difference along the column, gravity included); $D_M^z$ the momentum damping of the $z$-faces and walls. The system matrix is fixed during a
 MIS stage.
-The third stage of a small step and the first of the next use the same $M^+$; combined, only the first and the last half step of a MIS stage
-remain, but $D_T^xT$ has to be evaluated at the new $T^+$.
+The third stage of a small step and the first of the next use the same $M^1$; combined, only the first and the last half step of a MIS stage
+remain, but the horizontal self-coupling has to be evaluated with the new value, $D_T^xT^1$.
 
 \medskip\noindent\textbf{S3 (forward--backward, $z$ implicit).}
 \begin{enumerate}
-\item $M^+=M+h\big(A_M^xT+D_M^xM+f_M\big)+h\big[(1-\beta)\big(A_M^zT+D_M^zM\big)+\beta\big(A_M^zT^++D_M^zM^+\big)\big]$
-\item $T^+=T+h\big(A_T^xM^++D_T^xT+f_T\big)+h\big(A_T^zM^++D_T^zT^+\big)$
+\item $M^1=M^0+h\big(A_M^xT^0+D_M^xM^0+f_M\big)+h\big[(1-\beta)\big(A_M^zT^0+D_M^zM^0\big)+\beta\big(A_M^zT^1+D_M^zM^1\big)\big]$
+\item $T^1=T^0+h\big(A_T^xM^1+D_T^xT^0+f_T\big)+h\big(A_T^zM^1+D_T^zT^1\big)$
 \end{enumerate}
-The column system follows as for S2 with the weight $h$ in place of $\tfrac h2$ on $T$: $\big(I-\beta hD_M^z-\beta h^2A_M^zB^{-1}A_T^z\big)m_z^+=\dots$, $B=I-hD_T^z$;
+The column system follows as for S2 with the weight $h$ in place of $\tfrac h2$ on $T$: $\big(I-\beta hD_M^z-\beta h^2A_M^zB^{-1}A_T^z\big)m_z^1=\dots$, $B=I-hD_T^z$;
 $T$ and $M$ on the same level.
 
 \section{Extended formulation: interface momentum}
@@ -176,30 +176,30 @@ of Verwer's semi-discrete Maxwell equations, with the self-coupling in the secon
 
 \medskip\noindent\textbf{E1 (explicit Störmer--Verlet).}
 \begin{enumerate}
-\item $T^{1/2}=T+\tfrac h2\big(A_TM+f_T\big)$
-\item $M^+=M+h\big(A_MT^{1/2}+D_MM+f_M\big)$
-\item $T^+=T^{1/2}+\tfrac h2\big(A_TM^++f_T\big)$
+\item $T^{1/2}=T^0+\tfrac h2\big(A_TM^0+f_T\big)$
+\item $M^1=M^0+h\big(A_MT^{1/2}+D_MM^0+f_M\big)$
+\item $T^1=T^{1/2}+\tfrac h2\big(A_TM^1+f_T\big)$
 \end{enumerate}
 
 \medskip\noindent\textbf{E2 (Störmer--Verlet, $z$ implicit, $D_M^x$ explicit).}
 \begin{enumerate}
-\item $T^{1/2}=T+\tfrac h2\big(A_TM+f_T\big)$
-\item $M^+=M+h\big(A_M^xT^{1/2}+D_M^xM+f_M\big)+h\big[(1-\beta)\big(A_M^zT+D_M^zM\big)+\beta\big(A_M^zT^++D_M^zM^+\big)\big]$
-\item $T^+=T^{1/2}+\tfrac h2\big(A_T^xM^++f_T\big)+\tfrac h2\,A_T^zM^+$
+\item $T^{1/2}=T^0+\tfrac h2\big(A_TM^0+f_T\big)$
+\item $M^1=M^0+h\big(A_M^xT^{1/2}+D_M^xM^0+f_M\big)+h\big[(1-\beta)\big(A_M^zT^0+D_M^zM^0\big)+\beta\big(A_M^zT^1+D_M^zM^1\big)\big]$
+\item $T^1=T^{1/2}+\tfrac h2\big(A_T^xM^1+f_T\big)+\tfrac h2\,A_T^zM^1$
 \end{enumerate}
 Since $D_T=0$, the third stage of a small step and the first of the next combine without a new evaluation in $T$.
 
 \paragraph{From stages 2 and 3 to the column system (E2).} With $M^x=(m_x,\hat M^x)$ and $M^z=(m_z,\hat M^z)$, the $x$-part of stage 2 is explicit,
 \[
-M^{x+}=M^x+h\big(A_M^xT^{1/2}+D_M^xM^x+f_{M^x}\big),
+M^{x1}=M^{x0}+h\big(A_M^xT^{1/2}+D_M^xM^{x0}+f_{M^x}\big),
 \]
 and the $z$-part and stage 3 are
 \[
-M^{z+}=M^{z*}+\beta h\big(A_M^zT^++D_M^zM^{z+}\big),\qquad T^+=T^*+\tfrac h2A_T^zM^{z+},
+M^{z1}=M^{z*}+\beta h\big(A_M^zT^1+D_M^zM^{z1}\big),\qquad T^1=T^*+\tfrac h2A_T^zM^{z1},
 \]
-$M^{z*}=M^z+hf_{M^z}+(1-\beta)h(A_M^zT+D_M^zM^z)$, $T^*=T^{1/2}+\tfrac h2(A_T^xM^{x+}+f_T)$. Since $D_T=0$, $T^+$ is explicit in $M^{z+}$; inserting it,
+$M^{z*}=M^{z0}+hf_{M^z}+(1-\beta)h(A_M^zT^0+D_M^zM^{z0})$, $T^*=T^{1/2}+\tfrac h2(A_T^xM^{x1}+f_T)$. Since $D_T=0$, $T^1$ is explicit in $M^{z1}$; inserting it,
 \[
-\Big(I-\beta h\,D_M^z-\tfrac{\beta h^2}{2}\,A_M^zA_T^z\Big)\,M^{z+}=M^{z*}+\beta h\,A_M^zT^*,\qquad T^+=T^*+\tfrac h2A_T^zM^{z+}.
+\Big(I-\beta h\,D_M^z-\tfrac{\beta h^2}{2}\,A_M^zA_T^z\Big)\,M^{z1}=M^{z*}+\beta h\,A_M^zT^*,\qquad T^1=T^*+\tfrac h2A_T^zM^{z1}.
 \]
 The unknowns of the column system are the vertical momenta $m_z$ and the interface momenta $\hat M^z$ of the $z$-faces of the column. $A_M^zA_T^z$:
 the vertical mass flux ($m_z$, $\hat M^z$) acts on $T$, and $T$ back on $m_z$ (pressure gradient, gravity) and on $\hat M^z$ (pressure jump); $D_M^z$
@@ -207,16 +207,16 @@ couples $m_z$ and $\hat M^z$ at the $z$-faces and contains the relaxation $-2c\k
 
 \medskip\noindent\textbf{E3 (Störmer--Verlet, $z$ implicit, diagonal of $D_M^x$ implicit).} As E2, with the $x$-part of stage 2 replaced by
 \[
-M^{x+}=M^x+\frac{h\,r^x}{1-h\Lambda^x},\qquad r^x=A_M^xT^{1/2}+D_M^xM+f_M\quad(\text{on the }x\text{-part }(m_x,\hat M^x)),
+M^{x1}=M^{x0}+\frac{h\,r^x}{1-h\Lambda^x},\qquad r^x=A_M^xT^{1/2}+D_M^xM^{x0}+f_{M^x}\quad(\text{on the }x\text{-part }(m_x,\hat M^x)),
 \]
 a division per unknown.
 
 \medskip\noindent\textbf{E4 (forward--backward, $z$ implicit).}
 \begin{enumerate}
-\item $M^+=M+h\big(A_M^xT+D_M^xM+f_M\big)+h\big[(1-\beta)\big(A_M^zT+D_M^zM\big)+\beta\big(A_M^zT^++D_M^zM^+\big)\big]$
-\item $T^+=T+h\big(A_T^xM^++f_T\big)+h\,A_T^zM^+$
+\item $M^1=M^0+h\big(A_M^xT^0+D_M^xM^0+f_M\big)+h\big[(1-\beta)\big(A_M^zT^0+D_M^zM^0\big)+\beta\big(A_M^zT^1+D_M^zM^1\big)\big]$
+\item $T^1=T^0+h\big(A_T^xM^1+f_T\big)+h\,A_T^zM^1$
 \end{enumerate}
-Column system as for E2 with the weight $h$ on $T$: $\big(I-\beta hD_M^z-\beta h^2A_M^zA_T^z\big)M^{z+}=M^{z*}+\beta hA_M^zT^*$.
+Column system as for E2 with the weight $h$ on $T$: $\big(I-\beta hD_M^z-\beta h^2A_M^zA_T^z\big)M^{z1}=M^{z*}+\beta hA_M^zT^*$.
 
 \section{Remarks}
 \begin{itemize}
