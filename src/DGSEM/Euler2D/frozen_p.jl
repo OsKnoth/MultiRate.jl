@@ -25,7 +25,7 @@
 # as in the base model.
 
 using SparseArrays: sparse, SparseMatrixCSC, spzeros, findnz, nzrange, rowvals, nonzeros
-using LinearAlgebra: lu, lu!, ldiv!, mul!, Diagonal, I
+using LinearAlgebra: lu, lu!, ldiv!, mul!, Diagonal, I, diag
 
 """Stage data: the coefficients C of the stage (`frozen_stage_begin!`), the operator assembled as sparse
 matrices J_h (ξ) and J_v (η) (each fast evaluation with these C is then a matrix-vector product), and
@@ -48,15 +48,26 @@ mutable struct DGVertical
     diagpos::Vector{Int}                                # identity entries of Epat outside the blocks
     Epat::SparseMatrixCSC{Float64,Int}                  # pattern of e^{cD₀} and c φ₁(cD₀)
     flows::Dict{Float64,Tuple{SparseMatrixCSC{Float64,Int},SparseMatrixCSC{Float64,Int}}}   # c -> (e^{cD₀}, c φ₁(cD₀))
+    dh::Vector{Float64}                                 # diagonal of J_h (interface: implicit in the momentum step)
 end
 
 """
-    DGPressureModel(base::Euler2DModel; pvar = :p)
+    DGPressureModel(base::Euler2DModel; pvar = :p, interface = false, kappa = 0.5, eps_if = 0.0)
 
 DG model with the pressure p as an additional prognostic variable (state `[q; p]`, `pressure_state`),
 frozen split with horizontal (:hthermo, :hmomentum) and vertical (:vertical) parts and a column-implicit
 vertical step, so that the small steps :cs, :csfb, :ei, :wrf and :hevi of `TimeStepping.frozen_fast_solve!`
 apply. p is reset to p(Θ) after every MIS step.
+
+`interface = true` (docs/hdg_extended): the interface momentum M̂ (the LMARS mass flux m_f = ρ_up w*) is an
+additional unknown on every interior face node (state `[q; p; M̂]`). The thermodynamic rows use M̂ in place of
+m_f, the momentum rows the interface pressure of their side written with M̂, P̂_K - p_K = ρc (M̂/ρ_up - m_ν/ρ_K)
+(no pressure), and the constraint P̂_L = P̂_R is relaxed, M̂_t = κ σ_f (P̂_L - P̂_R) with σ_f = s/(J w) of the face
+(mean of the two sides) and κ = `kappa` (default 1/2); since P̂_L - P̂_R = (m_f(z) - M̂)/C₃, the relaxation time is
+ε = C₃/(κ σ_f) ≈ 1/(c σ_f). With `eps_if > 0` instead M̂_t = (m_f(z) - M̂)/ε, ε = `eps_if` [s]. The M̂ rows
+count as momentum rows (group Y = (m, M̂)): on ξ-faces horizontal, on η-faces vertical (column solve). M̂ is
+reset to m_f(q) after every MIS step. With M̂ = m_f the operator equals the LMARS operator. In the horizontal momentum
+step of :cs the diagonal of D_Y is implicit (`frozen_hmomentum!`).
 """
 struct DGPressureModel
     base::Euler2DModel
@@ -65,17 +76,29 @@ struct DGPressureModel
     C::Vector{Float64}
     S::Vector{Float64}
     vert::DGVertical
+    interface::Bool
+    kappa::Float64
+    eps_if::Float64
+    mhat::Vector{Int}                                   # face pair index fi -> state index of M̂ (0: wall)
 end
-function DGPressureModel(base::Euler2DModel; pvar::Symbol = :p)
+function DGPressureModel(base::Euler2DModel; pvar::Symbol = :p, interface::Bool = false, kappa::Real = 0.5, eps_if::Real = 0.0)
     pvar === :p || error("DGPressureModel: pvar = :p (π not yet)")
     M = base.mesh
-    nq = base.nq + M.np^2 * M.Ne
+    nqp = base.nq + M.np^2 * M.Ne
+    mhat = Int[]; nM = 0
+    if interface
+        _foreach_face_dir(M) do fi, dir, kind, args...
+            push!(mhat, kind === :wall ? 0 : nqp + (nM += 1)); nothing
+        end
+    end
+    nq = nqp + nM
     nc = frozen_ncoef(base) + M.np^2 * M.Ne
     return DGPressureModel(base, pvar, nq, zeros(nc), zeros(nq),
                            DGVertical(zeros(nc), spzeros(nq, nq), spzeros(nq, nq), false, Int[], Int[],
                                       Dict{Tuple{Float64,Float64},Any}(), Dict{Tuple{Float64,Float64},Any}(), zeros(nq), zeros(nq),
                                       zeros(nq), Vector{Int}[], Matrix{Int}[], Matrix{Int}[], Int[], spzeros(nq, nq),
-                                      Dict{Float64,Tuple{SparseMatrixCSC{Float64,Int},SparseMatrixCSC{Float64,Int}}}()))
+                                      Dict{Float64,Tuple{SparseMatrixCSC{Float64,Int},SparseMatrixCSC{Float64,Int}}}(), zeros(nq)),
+                           interface, Float64(kappa), Float64(eps_if), mhat)
 end
 
 @inline _pnode(np, e, i, j) = ((e - 1) * np + (j - 1)) * np + i
@@ -85,7 +108,7 @@ end
 """Extended state [q; p(Θ)] of a base state q."""
 function pressure_state(m::DGPressureModel, q)
     M = m.base.mesh; np = M.np
-    x = vcat(q[1:m.base.nq], zeros(np^2 * M.Ne))
+    x = vcat(q[1:m.base.nq], zeros(m.nq - m.base.nq))
     frozen_step_end!(m, x)
     return x
 end
@@ -204,6 +227,30 @@ function _dgp_terms!(emit::E, m::DGPressureModel, C, dirs) where {E}
             mnΘ(eL, iL, jL, mxL, mzL, c * C[o+2])
             mn(mxL, mxL, mzL, -c * n1 * C[o+1])
             mn(mzL, mxL, mzL, -c * n2 * C[o+1])
+        elseif m.interface
+            # interface momentum M̂ (docs/hdg_extended): thermodynamic rows with M̂, momentum rows with the interface
+            # pressure of their side, P̂ - p = M̂/(2C₃) - 2C₇ m_nL (L) resp. M̂/(2C₃) - 2C₈ m_nR (R), and the relaxed
+            # constraint M̂_t = κ σ_f (P̂_L - P̂_R) = (κ σ_f/C₃)(C₁ m_nL + C₂ m_nR - C₃ [p] - M̂)  (or 1/ε in place of κ σ_f/C₃)
+            ρR, mxR, mzR, pR = iq(eR, 1, iR, jR), iq(eR, 2, iR, jR), iq(eR, 3, iR, jR), ipr(eR, iR, jR)
+            σR = 1 / (M.J[iR, jR, eR] * we)
+            cL, cR = σL * s, σR * s
+            kM = m.mhat[fi]
+            θup = C[o+4] / C[o+1]
+            iZ = 1 / (2 * C[o+3])
+            emit(ρL, kM, -cL); mn(ρL, mxL, mzL, cL)
+            emitΘ(eL, iL, jL, kM, -cL * θup); mnΘ(eL, iL, jL, mxL, mzL, cL * C[o+9])
+            emit(ρR, kM, cR); mn(ρR, mxR, mzR, -cR)
+            emitΘ(eR, iR, jR, kM, cR * θup); mnΘ(eR, iR, jR, mxR, mzR, -cR * C[o+10])
+            for (row, nn) in ((mxL, n1), (mzL, n2))
+                emit(row, kM, cL * nn * iZ); mn(row, mxL, mzL, -cL * nn * 2 * C[o+7])
+            end
+            for (row, nn) in ((mxR, n1), (mzR, n2))
+                emit(row, kM, cR * nn * iZ); mn(row, mxR, mzR, -cR * nn * 2 * C[o+8])
+            end
+            iε = m.eps_if > 0 ? 1 / m.eps_if : m.kappa * 0.5 * (cL + cR) / C[o+3]   # κ σ_f/C₃
+
+            mn(kM, mxL, mzL, C[o+1] * iε); mn(kM, mxR, mzR, C[o+2] * iε)
+            emit(kM, pR, -C[o+3] * iε); emit(kM, pL, C[o+3] * iε); emit(kM, kM, -iε)
         else
             ρR, mxR, mzR, pR = iq(eR, 1, iR, jR), iq(eR, 2, iR, jR), iq(eR, 3, iR, jR), ipr(eR, iR, jR)
             σR = 1 / (M.J[iR, jR, eR] * we)
@@ -232,7 +279,8 @@ function _dgp_terms!(emit::E, m::DGPressureModel, C, dirs) where {E}
     return nothing
 end
 
-@inline _dgp_isthermo(m::DGPressureModel, k) = k > m.base.nq || mod1(cld(k, m.base.mesh.np^2), NV) in (1, 4)
+@inline _dgp_isthermo(m::DGPressureModel, k) = k > m.base.nq ? k <= m.base.nq + m.base.mesh.np^2 * m.base.mesh.Ne :
+                                                 mod1(cld(k, m.base.mesh.np^2), NV) in (1, 4)
 
 """Fast part F_f(C, z) + F on the rows of `part`: :all, :thermo (ρ, Θ, p), :momentum (m_x, m_z),
 :hthermo (horizontal thermodynamic rows and their forcing, sponge), :hmomentum (horizontal momentum
@@ -271,11 +319,29 @@ function rhs_nonlinear!(out, m::DGPressureModel, q::AbstractVector)
     return frozen_fast!(out, m, m.C, q, :all, m.S)
 end
 
-"""p ← p(Θ) after a MIS step."""
+"""p ← p(Θ) after a MIS step (and M̂ ← m_f(q) with `interface`)."""
 function frozen_step_end!(m::DGPressureModel, q)
     b = m.base; M = b.mesh; np = M.np
     @inbounds for e in 1:M.Ne, j in 1:np, i in 1:np
         q[ip_dg(m, e, i, j)] = pressure(b.gas, q[node_iq(np, e, 4, i, j)])
+    end
+    m.interface && interface_reset!(m, q)
+    return q
+end
+
+"""M̂ ← m_f(q) = C₁ m_nL + C₂ m_nR - C₃ (p_R - p_L) with the coefficients C(q) (consistent interface momentum)."""
+function interface_reset!(m::DGPressureModel, q)
+    b = m.base; M = b.mesh; np = M.np
+    frozen_data!(m.C, m.S, m, q)
+    C = m.C
+    _foreach_face_dir(M) do fi, dir, kind, iL, jL, eL, iR, jR, eR, ñx, ñz, we
+        kind === :wall && return nothing
+        s = hypot(ñx, ñz); n1, n2 = ñx / s, ñz / s
+        o = _fc(M, fi)
+        mnL = n1 * q[node_iq(np, eL, 2, iL, jL)] + n2 * q[node_iq(np, eL, 3, iL, jL)]
+        mnR = n1 * q[node_iq(np, eR, 2, iR, jR)] + n2 * q[node_iq(np, eR, 3, iR, jR)]
+        q[m.mhat[fi]] = C[o+1] * mnL + C[o+2] * mnR - C[o+3] * (q[ip_dg(m, eR, iR, jR)] - q[ip_dg(m, eL, iL, jL)])
+        nothing
     end
     return q
 end
@@ -312,6 +378,7 @@ function frozen_stage_begin!(m::DGPressureModel, C, z)
     v.valid = true
     empty!(v.factors)
     _dgp_dissipation!(m)                               # blocks of D₀ (once)
+    m.interface && (v.dh .= diag(v.Jh))
     empty!(v.flows)
     return nothing
 end
@@ -503,7 +570,7 @@ end
 #       dissipation b←b is then a second-order midpoint step instead of explicit Euler).
 # Forcing and sponge are evaluated at z.
 
-frozen_hthermo_reeval(::DGPressureModel) = true       # LMARS: the ξ-face mass flux depends on [p]
+frozen_hthermo_reeval(m::DGPressureModel) = !m.interface   # LMARS: the ξ-face mass flux depends on [p]; with M̂ not
 
 """Momentum rows of y ← z + c (src)_b (thermodynamic rows of z unchanged)."""
 function _dgp_predict!(y, m::DGPressureModel, z, c, src)
@@ -527,6 +594,16 @@ function frozen_hthermo!(out, m::DGPressureModel, C, z, F, w)
 end
 
 function frozen_hmomentum!(out, m::DGPressureModel, C, z, F, h)
+    if m.interface
+        # Verlet momentum step of the group Y = (m, M̂) with the diagonal Λ of D_Y implicit (a division, no solve):
+        # Y⁺ = (Y + h (r - Λ Y))/(1 - h Λ), i.e. the increment h r/(1 - h Λ), r the horizontal tendency of Y
+        frozen_fast!(out, m, C, z, :hmomentum, F)
+        dh = m.vert.dh
+        @inbounds for k in eachindex(out)
+            _dgp_isthermo(m, k) || (out[k] /= 1 - h * dh[k])
+        end
+        return out
+    end
     v = m.vert
     frozen_fast!(v.zv, m, C, z, :hmomentum, F)
     _dgp_predict!(v.zp, m, z, h / 2, v.zv)

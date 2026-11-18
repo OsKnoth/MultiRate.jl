@@ -1402,6 +1402,28 @@ end
     @test qc[base.nq+1:end] ≈ [CM.pressure(gas, qc[E2.node_iq(np, e, 4, i, j)]) for e in 1:M.Ne for j in 1:np for i in 1:np]
 end
 
+@testset "Euler2D: interface momentum as additional variable (DGPressureModel, interface = true)" begin
+    gas = CM.Gas()
+    ρr, Θr, θr = CM.stratified_reference(gas; θ0 = 300.0, N = 0.01)
+    L, H, U = 80e3, 10e3, 20.0
+    hill(x) = 400 / (1 + ((x - L / 2) / 5e3)^2)
+    M = E2.Mesh2D(8, 4, 3, L, H; zs = hill)
+    base = E2.Euler2DModel(M, gas, ρr, Θr)
+    qb = CM.project2d(base, (x, z) -> (ρ = Θr(z) / (θr(z) + 0.01 * exp(-((x - L / 3) / 5e3)^2)); (ρ, ρ * U, 0.0, Θr(z))))
+    m0 = E2.DGPressureModel(base); mi = E2.DGPressureModel(base; interface = true)
+    z0 = E2.pressure_state(m0, qb); z0 .+= 1e-3 .* sin.(1:m0.nq) .* abs.(z0)
+    zi = vcat(z0, zeros(mi.nq - m0.nq)); E2.interface_reset!(mi, zi)          # M̂ = m_f(z)
+    @test mi.nq - m0.nq == (2M.Nex * M.Nez - M.Nex) * M.np                 # one M̂ per interior face node
+    C0 = zeros(TS.frozen_ncoef(m0)); S0 = zeros(m0.nq); TS.frozen_data!(C0, S0, m0, z0)
+    Ci = zeros(TS.frozen_ncoef(mi)); Si = zeros(mi.nq); TS.frozen_data!(Ci, Si, mi, zi)
+    for part in (:all, :hthermo, :hmomentum, :vertical)
+        f0 = TS.frozen_fast!(zeros(m0.nq), m0, C0, z0, part, S0)
+        fi = TS.frozen_fast!(zeros(mi.nq), mi, Ci, zi, part, Si)
+        @test norm(fi[1:m0.nq] .- f0) < 1e-11 * norm(f0)                  # equals the LMARS operator for M̂ = m_f
+        @test maximum(abs, fi[m0.nq+1:end]) < 1e-10 * maximum(abs, f0)     # the constraint holds
+    end
+end
+
 @testset "Euler2D: HDG Störmer–Verlet with Bokhove's partition (:verlet_b)" begin
     gas = CM.Gas()
     ρr, Θr, θr = CM.stratified_reference(gas; θ0 = 300.0, N = 0.01)

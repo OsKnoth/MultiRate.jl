@@ -5,7 +5,11 @@
 # T = 3000 s against RK4 of the base DG model; explicit Verlet of the base model for comparison.
 #
 #     [TERRAIN=flat|hill] [METHODS=MIS54,WSRK3,EB4] [FASTS=verlet,cs,csfb,csb] [OFFCENTER=ε] [SMDIV=γ]
-#     [DTS=100,50] [NSUBFAC=1,2] julia --project=examples examples/frozen_dg_cs.jl
+#     [DTS=100,50] [NSUBFAC=1,2] [INTERFACE=1 EPSIF=0.05,0.1] julia --project=examples examples/frozen_dg_cs.jl
+#
+# INTERFACE=1: the interface momentum M̂ as additional unknown with the relaxed constraint (docs/hdg_extended),
+# M̂_t = κ σ_f (P̂_L - P̂_R) with κ = KAPPA (default 1/2), or relaxation time ε = EPSIF Δx_e/c; horizontal step simple Verlet (D explicit), vertical part incl. M̂ of the
+# η-faces in the column solve. The error is measured against RK4 of the LMARS model (includes the model error).
 #
 # Small steps: Verlet at the vertical limit (`fast_step(:verlet)`, the vertical node spacing), :cs/:csfb at the
 # horizontal limit 0.85·0.63 Δx_e/((2p+1) c) (Δx_e the element width), divided by NSUBFAC. :csb is CS with
@@ -22,6 +26,9 @@ const OFFC = parse(Float64, get(ENV, "OFFCENTER", "0.1"))
 const SMDIV = parse(Float64, get(ENV, "SMDIV", "0.1"))
 const DTS = parse.(Float64, split(get(ENV, "DTS", "100,50"), ","))
 const NSUBFAC = parse.(Float64, split(get(ENV, "NSUBFAC", "1"), ","))
+const INTERFACE = get(ENV, "INTERFACE", "0") == "1"
+const EPSIF = parse.(Float64, split(get(ENV, "EPSIF", "0"), ","))      # 0: κ = KAPPA
+const KAPPA = parse(Float64, get(ENV, "KAPPA", "0.5"))
 gas = Gas()
 ρr, Θr, θr = stratified_reference(gas; θ0 = 300.0, N = 0.01)
 hill = TERRAIN == "hill"
@@ -43,9 +50,14 @@ err(q) = all(isfinite, q) ? maximum(abs.(θf(q[1:base.nq]) .- yr)) : Inf
 @printf("DG %s, %s; Verlet step %.2f s (vertical limit), horizontal limit %.2f s; RK4 %d steps (%.0f s), max|θ - mean| %.2f K\n",
         TERRAIN, grid_info(base), dτv, dτh, nref, tr, maximum(abs, yr))
 @printf("ε = %.2f, γ_d = %.2f for :cs/:csfb\n", OFFC, SMDIV)
-for meth in METHODS, Δt in DTS, fast in FASTS, f in (fast === :verlet ? (1.0,) : NSUBFAC)
+for meth in METHODS, Δt in DTS, fast in FASTS, εr in (INTERFACE && fast !== :verlet ? EPSIF : (-1.0,)),
+    f in (fast === :verlet ? (1.0,) : NSUBFAC)
     n = round(Int, T / Δt)
     model, x0 = fast === :verlet ? (base, qb) : (m, q0)
+    if εr >= 0
+        model = E2.DGPressureModel(base; interface = true, kappa = KAPPA, eps_if = εr * (M.Lx / M.Nex) / c)
+        x0 = E2.pressure_state(model, qb)
+    end
     nsub = ceil(Int, f * Δt / (fast === :verlet ? dτv : dτh))
     ε, γ = fast === :verlet ? (0.0, 0.0) : (OFFC, SMDIV)
     q = similar(x0)
@@ -55,5 +67,6 @@ for meth in METHODS, Δt in DTS, fast in FASTS, f in (fast === :verlet ? (1.0,) 
         e isa DomainError || rethrow(); fill!(q, NaN)
     end
     e = err(q)
-    @printf("%-6s Δt = %5.1f s %-6s nsub %4d: %s (%.0f s)\n", meth, Δt, fast, nsub, isfinite(e) ? @sprintf("error θ %.2e K", e) : "failed", t)
+    @printf("%-6s Δt = %5.1f s %-6s%s nsub %4d: %s (%.0f s)\n", meth, Δt, fast, εr > 0 ? @sprintf(" ε=%.2f", εr) : εr == 0 ? @sprintf(" κ=%.2f", KAPPA) : "", nsub,
+            isfinite(e) ? @sprintf("error θ %.2e K", e) : "failed", t)
 end

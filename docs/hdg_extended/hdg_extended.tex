@@ -4,6 +4,7 @@
 \newcommand{\avg}[1]{\{\!\{#1\}\!\}}
 \newcommand{\jump}[1]{[\![#1]\!]}
 \newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\dt}{\Delta t}
 \title{DGSEM with LMARS and the interface momentum as additional variable}
 \author{MultiRate notes}
 \date{\today}
@@ -180,6 +181,71 @@ $(1-\tfrac h2\lambda)^{-1}(1+\tfrac h2\lambda)$ of the stiff relaxation $\lambda
 order of a few $\varepsilon$ up to the limit of the coupled system. A step larger than the explicit LMARS step needs $\varepsilon\gtrsim0.05\,\Delta x_e/c$,
 and then the extended system differs from DGSEM-LMARS in proportion to $\varepsilon$: the interface momentum relaxes towards
 $\avg{m_n}-\jump p/(2c)$ and so lags behind the central mass flux $\avg{m_n}$ as well (a phase error of the waves).
+
+\section{2D: interface momentum in DGPressureModel}
+\paragraph{Formulation.} \code{DGPressureModel} with the options \code{interface=true}, \code{kappa=0.5} adds one unknown $\hat M$
+per interior face node to the state $[q;p]$. The frozen LMARS of the code is the velocity form with frozen densities, $w^*=\avg{u_n}-\jump p/(2\bar\rho c)$,
+mass flux
+\[
+m_f=\rho_{\rm up}w^*=C_1m_{n,L}+C_2m_{n,R}-C_3\jump p,\qquad C_1=\frac{\rho_{\rm up}}{2\rho_L},\quad C_2=\frac{\rho_{\rm up}}{2\rho_R},\quad C_3=\frac{\rho_{\rm up}}{2\bar\rho c}.
+\]
+With
+$\hat M$ in place of $m_f$ the interface pressures of the two sides are $\hat P_K-p_K=\bar\rho c\,(\hat M/\rho_{\rm up}-m_{\nu,K}/\rho_K)$, and
+$\hat P_L-\hat P_R=(m_f-\hat M)/C_3$. The relaxation is
+\[
+\hat M_t=\kappa\,\sigma_f\,(\hat P_L-\hat P_R),\qquad \sigma_f=\tfrac12(\sigma_L+\sigma_R)\,s,\qquad \kappa=\tfrac12,
+\]
+$\sigma_f$ the factor of the face terms (the relaxation needs a factor $1/{\rm length}$); the relaxation time is $\varepsilon=C_3/(\kappa\sigma_f)\approx1/(c\,\sigma_f)$, the
+inverse of the LMARS damping rate $\delta=c\,\sigma_f$ of a face jump ($P=4$: $\approx0.05\,\Delta x_e/c$). With $\hat M=m_f$ the operator equals the LMARS
+operator (tested to $10^{-13}$). $\hat M$ starts from $m_f(q)$ and is reset to $m_f(q)$ after every MIS step, as $p$ to $p(\Theta)$.
+
+\paragraph{Step.} The rows of $\hat M$ belong to the group $Y=(m,\hat M)$; $\hat M$ of the $\xi$-faces is horizontal, of the $\eta$-faces vertical. CS (\code{fast = :cs})
+with the vertical part, both momenta and $\hat M$ of the $\eta$-faces, in the column solve. Horizontal momentum step: the diagonal $\Lambda$ of $D_Y$ (the
+node's own momentum $-2\sigma C_7 m_n$, the relaxation $-\kappa\sigma_f/C_3$) implicit, the rest explicit,
+\[
+Y^+=Y+\frac{h\,r}{1-h\Lambda},\qquad r\ \text{the horizontal tendency of }Y,
+\]
+a division, no solve; no predictor in the momentum step, no re-evaluation of the mass flux (it does not depend on $a$).
+
+\paragraph{Why $\kappa=\tfrac12$ restricts the explicit step.} With $\varepsilon\delta=1$ the face mode $\varepsilon\lambda^2+\lambda+\delta=0$ has the complex roots
+$\lambda=\delta(-1\pm\mathrm i\sqrt3)/2$, in LMARS the real root $-\delta$. Explicit Euler is stable for $h\le2/\delta$ on the real root, for $h\le1/\delta$ on the complex pair.
+1D ($P=4$, $\varepsilon=0.05$): limits and order of the $Y$ step,
+\begin{center}\small
+\begin{tabular}{lccc}\toprule
+$Y$ step & limit $c\,h/\Delta x_e$ & order & error, $T=1$\\\midrule
+$D_Y$ explicit & 0.040 & 1 & $2.0\cdot10^{-4}$ ($N=160$)\\
+diagonal of $D_Y$ implicit (division) & 0.087 & 1 & $4.6\cdot10^{-2}$ ($N=80$)\\
+diagonal of $D_Y$ trapezoidal & 0.057 & 1 & $2.3\cdot10^{-2}$ ($N=80$)\\
+$D_Y$ trapezoidal (local solve) & 0.085 & 2 & $1.4\cdot10^{-5}$ ($N=160$)\\\bottomrule
+\end{tabular}
+\end{center}
+explicit Verlet for DGSEM-LMARS: 0.075.
+
+\paragraph{2D results} (gravity wave, $30\times4$ elements, $P=4$, MIS54, $\varepsilon=\gamma_d=0.1$, error of $\theta$ in K against RK4 of the LMARS model,
+\code{examples/frozen\_dg\_cs.jl} with \code{INTERFACE=1}). Growth per small step of the fast loop (hill):
+\begin{center}\small
+\begin{tabular}{lccccc}\toprule
+$c\,h/\Delta x_e$ & 0.04 & 0.06 & 0.08 & 0.10 & 0.12\\\midrule
+LMARS \code{:cs} & 0.997 & 0.970 & 1.018 & 1.018 & 2.13\\
+$\hat M$, $D_Y$ explicit & 1.010 & 2.73 & 4.87 & 7.43 & --\\
+$\hat M$, diagonal implicit & 1.011 & 0.987 & 0.999 & 1.36 & 1.98\\\bottomrule
+\end{tabular}
+\end{center}
+MIS54:
+\begin{center}\footnotesize\setlength{\tabcolsep}{4pt}
+\begin{tabular}{llcccc}\toprule
+ & & $\dt=100$\,s, $n_{\rm sub}$ 59 & 117 & $\dt=50$\,s, $n_{\rm sub}$ 30 & 22\\\midrule
+flat & LMARS \code{:cs} & $9.1\cdot10^{-5}$ & -- & $3.2\cdot10^{-5}$ & --\\
+ & $\hat M$, $D_Y$ explicit & fails & $2.1\cdot10^{-3}$ & -- & --\\
+ & $\hat M$, diagonal implicit & $4.2\cdot10^{-3}$ & -- & $4.0\cdot10^{-3}$ & $4.5\cdot10^{-3}$\\
+hill & LMARS \code{:cs} & $5.3\cdot10^{-2}$ & -- & $9.6\cdot10^{-3}$ & --\\
+ & $\hat M$, $D_Y$ explicit & fails & 0.13 & -- & --\\
+ & $\hat M$, diagonal implicit & 1.48 & -- & 1.40 & 5.42\\\bottomrule
+\end{tabular}
+\end{center}
+With $D_Y$ explicit the step must be halved; the error does not decrease with $n_{\rm sub}$ (117 and 176 give the same), it is the
+deviation of the relaxed system from DGSEM-LMARS. The diagonal-implicit step is stable at the LMARS step but of first order, and on
+the hill its error is large.
 
 \begin{thebibliography}{9}
 \bibitem{verwer} J.G.~Verwer: Component splitting for semi-discrete Maxwell equations. BIT Numer.\ Math.\ 51 (2011), 427--445.
