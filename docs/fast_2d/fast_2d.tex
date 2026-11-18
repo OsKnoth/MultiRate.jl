@@ -39,6 +39,14 @@ $c$ is the frozen face sound speed, $\theta_{\rm up}$ the upwind value.
 couple $T$ with $m_x$, the vertical ones $T$ with $m_z$. A node column (the nodes of one $x$-position in a column of elements) couples
 through the $z$-terms only.
 
+\paragraph{Operators as matrices.} $T$ and $M$ denote vectors of all node values, ordered element by element (in the extended formulation
+followed by the interface values, face by face). An operator such as $A_T^z$ is the matrix that maps the momentum vector to the
+$z$-part of the tendency of $T$; its row index runs over the nodes and variables of $T$, its column index over those of $M$. A block of
+such a matrix is labelled by the pair (receiving unknown, acting unknown): an \emph{element block} couples the nodes of one element (volume
+terms, and the face terms that use only the element's own values), a \emph{neighbour block} couples a face node of one element with the
+face node of the neighbour across the face (face terms with $\avg\cdot$ and jumps), a \emph{face block} couples an interface value with
+the two face nodes at it. $D_T$, $D_M$ are the parts of the tendency of a group that act on the same group.
+
 \paragraph{MIS stage and small step.} Stage $i$ of a MIS step integrates the linear fast system with the forcing $f^{(i)}$ over $[0,d_i\dt]$ with
 $n_i$ small steps of length $h=d_i\dt/n_i$. A small step maps $(T^0,M^0)$ to $(T^1,M^1)$; $T^{1/2}$ is the value after the first half step. Parameter: off-centring $\beta=(1+\varepsilon)/2$ of the
 vertical force (no extrapolation, no divergence damping).
@@ -89,11 +97,12 @@ Explicit in $x$ and $z$; the step is limited by the vertical node spacing.
 
 \medskip\noindent\textbf{S2 (Störmer--Verlet, $z$ implicit; Verwer's component splitting).}
 \begin{enumerate}
-\item $T^{1/2}=T^0+\tfrac h2\big(A_TM^0+D_TT^0+f_T\big)$
+\item $T^{1/2}=T^0+\tfrac h2\big(A_T^xM^0+D_T^xT^0+f_T\big)+\tfrac h2\big(A_T^zM^0+D_T^zT^0\big)$
 \item $M^1=M^0+h\big(A_M^xT^{1/2}+D_M^xM^0+f_M\big)+h\big[(1-\beta)\big(A_M^zT^0+D_M^zM^0\big)+\beta\big(A_M^zT^1+D_M^zM^1\big)\big]$
 \item $T^1=T^{1/2}+\tfrac h2\big(A_T^xM^1+D_T^xT^{1/2}+f_T\big)+\tfrac h2\big(A_T^zM^1+D_T^zT^1\big)$
 \end{enumerate}
-Stage 1 is explicit in both directions ($A_T^zM^0$, $D_T^zT^0$ with the old values). Stages 2 and 3 are coupled through the $z$-terms
+Stage 1 is explicit in both directions: its horizontal part ($A_T^xM^0$, $D_T^xT^0$) and its vertical part ($A_T^zM^0$, $D_T^zT^0$) use the
+old values; together with the implicit vertical part of stage 3 the vertical part of $T$ is integrated by the trapezoidal rule. Stages 2 and 3 are coupled through the $z$-terms
 ($T^1$, $m_z^1$); the linear equation that remains is derived below.
 
 \paragraph{From stages 2 and 3 to the column system (S2).} Without metric, $A_M^x$ and $D_M^x$ act only on $m_x$, and $A_M^z$, $D_M^z$ only on $m_z$. Stage 2
@@ -117,7 +126,9 @@ All its blocks are $z$-operators: it decouples into one system per node column. 
 \]
 and then $T^1=B^{-1}\big(T^*+\tfrac h2A_T^zm_z^1\big)$. $A_M^zB^{-1}A_T^z$ is the vertical pressure force of the vertical mass flux (a second
 difference along the column, gravity included); $D_M^z$ the momentum damping of the $z$-faces and walls. The system matrix is fixed during a
-MIS stage.
+MIS stage. In the standard formulation $A_T^z$, $A_M^z$ and $D_M^z$ contain neighbour blocks (the central face values and the jumps couple the
+two elements at a $z$-face), so the column matrix is block tridiagonal over the elements of the column, with blocks of the size of the
+element unknowns; there is no local elimination.
 The third stage of a small step and the first of the next use the same $M^1$; combined, only the first and the last half step of a MIS stage
 remain, but the horizontal self-coupling has to be evaluated with the new value, $D_T^xT^1$.
 
@@ -183,7 +194,7 @@ of Verwer's semi-discrete Maxwell equations, with the self-coupling in the secon
 
 \medskip\noindent\textbf{E2 (Störmer--Verlet, $z$ implicit, $D_M^x$ explicit).}
 \begin{enumerate}
-\item $T^{1/2}=T^0+\tfrac h2\big(A_TM^0+f_T\big)$
+\item $T^{1/2}=T^0+\tfrac h2\big(A_T^xM^{x0}+f_T\big)+\tfrac h2\,A_T^zM^{z0}$
 \item $M^1=M^0+h\big(A_M^xT^{1/2}+D_M^xM^0+f_M\big)+h\big[(1-\beta)\big(A_M^zT^0+D_M^zM^0\big)+\beta\big(A_M^zT^1+D_M^zM^1\big)\big]$
 \item $T^1=T^{1/2}+\tfrac h2\big(A_T^xM^1+f_T\big)+\tfrac h2\,A_T^zM^1$
 \end{enumerate}
@@ -193,17 +204,65 @@ Since $D_T=0$, the third stage of a small step and the first of the next combine
 \[
 M^{x1}=M^{x0}+h\big(A_M^xT^{1/2}+D_M^xM^{x0}+f_{M^x}\big),
 \]
-and the $z$-part and stage 3 are
+and with it the explicit part of stage 3, $T^*=T^{1/2}+\tfrac h2(A_T^xM^{x1}+f_T)$. What remains is the vertical part of stages 2 and 3,
+\begin{align*}
+M^{z1}&=M^{z*}+\beta h\big(A_M^zT^1+D_M^zM^{z1}\big),\qquad T^1=T^*+\tfrac h2A_T^zM^{z1},\\
+M^{z*}&=M^{z0}+hf_{M^z}+(1-\beta)h\big(A_M^zT^0+D_M^zM^{z0}\big).
+\end{align*}
+
+\paragraph{The blocks of the vertical operators.} Take one node column with the elements $K=1,\dots,N$ from bottom to top and the interior
+$z$-faces $f=1,\dots,N-1$ between $K=f$ and $K=f+1$ (one node pair per face in the column). The unknowns are $T=(T_K)$ ($\rho,\Theta,p$ at the $P+1$
+nodes of the element in the column), $m=(m_K)$ ($m_z$ at these nodes) and $\hat M=(\hat M_f)$ (one value per face). The vertical operators have
+the blocks
 \[
-M^{z1}=M^{z*}+\beta h\big(A_M^zT^1+D_M^zM^{z1}\big),\qquad T^1=T^*+\tfrac h2A_T^zM^{z1},
+A_T^z=\begin{pmatrix}A_{Tm}&A_{T\hat M}\end{pmatrix},\qquad A_M^z=\begin{pmatrix}A_{mT}\\A_{\hat MT}\end{pmatrix},\qquad
+D_M^z=\begin{pmatrix}D_{mm}&D_{m\hat M}\\D_{\hat Mm}&D_{\hat M\hat M}\end{pmatrix},
 \]
-$M^{z*}=M^{z0}+hf_{M^z}+(1-\beta)h(A_M^zT^0+D_M^zM^{z0})$, $T^*=T^{1/2}+\tfrac h2(A_T^xM^{x1}+f_T)$. Since $D_T=0$, $T^1$ is explicit in $M^{z1}$; inserting it,
+\begin{itemize}
+\item $A_{Tm}$: element blocks only: $-D_zm_z$, $-D_z(\theta m_z)$ in the volume and $+\sigma m_\nu$, $+\sigma\theta m_\nu$ at the face nodes of the element itself;
+\item $A_{T\hat M}$: element from face: $-\sigma\hat M_\nu$, $-\sigma\theta_{\rm up}\hat M_\nu$ at the face node of $K$ on face $f$; element $K$ sees $\hat M_{K-1}$ (bottom) and $\hat M_K$ (top);
+\item $A_{mT}$: element blocks only: $-D_zp-g\rho$ (no face term);
+\item $A_{\hat MT}$: face from elements: $\kappa\sigma(p_L-p_R)$ with the top node of $K=f$ and the bottom node of $K=f+1$;
+\item $D_{mm}$: diagonal: $-\sigma c$ at the face nodes (and walls); $D_{m\hat M}$: element from face, $+\sigma c\,\nu\,\hat M_\nu$;
+\item $D_{\hat Mm}$: face from elements, $\kappa\sigma c(m_{n,L}+m_{n,R})$; $D_{\hat M\hat M}=-2c\kappa\sigma\,I$ (diagonal).
+\end{itemize}
+The element unknowns of different elements are coupled only through $\hat M$: no neighbour blocks.
+
+\paragraph{The column system and its reduction to the interface momenta.} Written out, the vertical part of stages 2 and 3 is
 \[
-\Big(I-\beta h\,D_M^z-\tfrac{\beta h^2}{2}\,A_M^zA_T^z\Big)\,M^{z1}=M^{z*}+\beta h\,A_M^zT^*,\qquad T^1=T^*+\tfrac h2A_T^zM^{z1}.
+\begin{pmatrix}
+I&-\tfrac h2A_{Tm}&-\tfrac h2A_{T\hat M}\\
+-\beta hA_{mT}&I-\beta hD_{mm}&-\beta hD_{m\hat M}\\
+-\beta hA_{\hat MT}&-\beta hD_{\hat Mm}&I-\beta hD_{\hat M\hat M}
+\end{pmatrix}
+\begin{pmatrix}T^1\\m^1\\\hat M^1\end{pmatrix}=
+\begin{pmatrix}T^*\\m^*\\\hat M^*\end{pmatrix}.
 \]
-The unknowns of the column system are the vertical momenta $m_z$ and the interface momenta $\hat M^z$ of the $z$-faces of the column. $A_M^zA_T^z$:
-the vertical mass flux ($m_z$, $\hat M^z$) acts on $T$, and $T$ back on $m_z$ (pressure gradient, gravity) and on $\hat M^z$ (pressure jump); $D_M^z$
-couples $m_z$ and $\hat M^z$ at the $z$-faces and contains the relaxation $-2c\kappa\sigma^z$ on $\hat M^z$.
+It is reduced in three steps.
+\begin{enumerate}
+\item \emph{Thermodynamic variables} (first row, explicit since $D_T=0$):
+  \[T^1=T^*+\tfrac h2\big(A_{Tm}m^1+A_{T\hat M}\hat M^1\big).\]
+\item \emph{Element momenta} (second row with $T^1$ inserted): with
+  \begin{align*}
+  S_m&=I-\beta hD_{mm}-\tfrac{\beta h^2}{2}A_{mT}A_{Tm},\qquad C_m=\beta h\big(D_{m\hat M}+\tfrac h2A_{mT}A_{T\hat M}\big),\\
+  r_m&=m^*+\beta hA_{mT}T^*,\qquad S_m\,m^1=r_m+C_m\hat M^1 .
+  \end{align*}
+  $A_{mT}$, $A_{Tm}$ and $D_{mm}$ have element blocks only, so $S_m$ is block diagonal: one dense $(P+1)\times(P+1)$ system per element, and
+  $m_K^1=S_{m,K}^{-1}(r_{m,K}+C_{m,K}\hat M^1)$ depends only on $\hat M$ of the two faces of $K$.
+\item \emph{Interface momenta} (third row with $T^1$ and $m^1$ inserted): with
+  \[
+  G=\tfrac h2A_{\hat MT}A_{Tm}+D_{\hat Mm}\qquad(\text{face from the momenta of its two elements}),
+  \]
+  \begin{align*}
+  S_{\hat M}\,\hat M^1&=\hat M^*+\beta hA_{\hat MT}T^*+\beta h\,G\,S_m^{-1}r_m,\\
+  S_{\hat M}&=I-\beta hD_{\hat M\hat M}-\tfrac{\beta h^2}{2}A_{\hat MT}A_{T\hat M}-\beta h\,G\,S_m^{-1}C_m .
+  \end{align*}
+  Face $f$ couples through the elements $f$ and $f+1$ with the faces $f-1$, $f$, $f+1$: the matrix is tridiagonal, of size $N-1$ per node
+  column.
+\end{enumerate}
+After the tridiagonal solve, $m^1$ follows element by element from step 2 and $T^1$ from step 1. This is the static condensation of
+hybridized DG: the element unknowns are eliminated locally and only the interface unknowns are coupled. In the standard formulation the same
+column system has neighbour blocks and remains block tridiagonal over the elements.
 
 \medskip\noindent\textbf{E3 (Störmer--Verlet, $z$ implicit, diagonal of $D_M^x$ implicit).} As E2, with the $x$-part of stage 2 replaced by
 \[
