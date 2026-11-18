@@ -1,228 +1,100 @@
 \documentclass[11pt,a4paper]{article}
 \usepackage[margin=2.4cm]{geometry}
-\usepackage{amsmath,amssymb,amsthm,booktabs,hyperref}
+\usepackage{amsmath,amssymb,booktabs,hyperref}
 \newcommand{\avg}[1]{\{\!\{#1\}\!\}}
 \newcommand{\jump}[1]{[\![#1]\!]}
 \newcommand{\code}[1]{\texttt{#1}}
-\newtheorem{proposition}{Proposition}
-\title{The HDG extended system:\\DGSEM augmented by face momentum variables, and its structure}
+\title{DGSEM with LMARS and the interface momentum as additional variable}
 \author{MultiRate notes}
 \date{\today}
 \begin{document}
 \maketitle
 
 \begin{abstract}
-The DGSEM discretization of the fast (acoustic--gravity) part of the Euler equations is written with single-valued
-face values of the normal momentum and of the pressure. In hybridized DG (HDG) these face values are additional
-unknowns, determined by transmission conditions; with the LMARS conditions and elimination one recovers the DGSEM with
-the LMARS flux. Here the face values are kept as unknowns and the transmission conditions are relaxed with a time
-$\varepsilon$. We write down this extended system, its energy, and its block structure. The way the relaxation is
-introduced matters: relaxing the whole face momentum (as in the present code) gives a system that is not energy stable
-and has growing modes for every $\varepsilon>0$; relaxing only the deviation of the face values from the central averages
-gives an exact energy identity. In that form the extended operator is a skew-adjoint part, which couples the element
-unknowns with each other and, face by face, with the trace deviations, plus a diagonal, face-local damping of the trace
-deviations. All dissipation of the scheme sits in this diagonal. The structure is the basis for any time integrator of
-the fast part; no time integrator is proposed here.
+Starting from the DGSEM with the LMARS flux, the interface momentum (the LMARS mass flux) is introduced as a new unknown
+on the faces, as in hybridized DG. The system then consists of the element equations, in which the thermodynamic
+variables see the faces only through the interface momentum, and an algebraic constraint that defines the interface
+momentum. The constraint is relaxed: the time derivative of the interface momentum equals a relaxation parameter times
+the constraint. In the fast system the tendencies of the thermodynamic variables then depend only on the momentum, inside
+the element and on the faces.
 \end{abstract}
 
-\section{The fast system}
-Fast part of the Euler equations in the variables $(\rho,\ m=\rho\mathbf u,\ \Theta=\rho\theta)$ with coefficients frozen at a
-state (Section ``The frozen form'' of \code{docs/frozen\_dg}): $\theta$, $A=P'(\Theta)=\gamma p/\Theta$, $c^2=A\theta$, the pressure
-$p=A\Theta$ (or a prognostic $p$ with $p_t=A\Theta_t$, \code{DGPressureModel}):
+\section{Fast system}
+Variables $(\rho,\ m=\rho\mathbf u,\ \Theta=\rho\theta)$, coefficients frozen at a state (\code{docs/frozen\_dg}): $\theta$, $A=P'(\Theta)=\gamma p/\Theta$,
+$c^2=A\theta$, pressure $p=A\Theta$:
 \begin{equation}
-\rho_t+\nabla\cdot m=0,\qquad \Theta_t+\nabla\cdot(\theta m)=0,\qquad m_t+\nabla p+g\rho\,\mathbf e_z=0.\label{eq:fast}
+\rho_t+\nabla\cdot m=0,\qquad \Theta_t+\nabla\cdot(\theta\,m)=0,\qquad m_t+\nabla p+g\rho\,\mathbf e_z=0 .\label{eq:fast}
 \end{equation}
-Thermodynamic unknowns $a=(\rho,\Theta)$ (and $p$), momentum $b=m$. For constant coefficients and $g=0$ the acoustic subsystem
-$(\Theta,m)$ conserves
-\[
-E=\tfrac12\int\Big(|m|^2+\frac{p^2}{c^2}\Big)\,\mathrm dx=\tfrac12\int\Big(|m|^2+\frac A\theta\,\Theta^2\Big)\,\mathrm dx,
-\]
-$\rho$ is carried along by the mass equation. Gravity couples $\rho$ (and $\Theta$) with $m_z$ in the volume only; with the
-stratification term of the energy (for the 1D model: $E=\tfrac12\int\varphi[m^2+p^2/c^2+g\chi^2/(\bar\theta\bar\theta_z)]$, $\chi=\Theta-\bar\theta\rho$,
-\code{HDGRelaxTheta}) it is a skew coupling as well and has no face terms. Everything below concerns the faces, so we
-write the energy of the acoustic part; the volume coupling (central part, gravity) is collected in one operator $C$.
-For variable frozen coefficients the volume part is skew up to terms of the size of the coefficient variation, as usual.
+Thermodynamic variables $a=(\rho,\Theta)$, momentum $b=m$. With the pressure as additional variable (\code{DGPressureModel}) the
+$p$ row is $A$ times the $\Theta$ row; it is not written separately.
 
-\section{DGSEM with face values}
-Notation of \code{docs/frozen\_dg}: tensor LGL nodes, collocated quadrature, mass $Jw$ per node, SBP derivative. At a face node
-of element $K$ with outward contravariant normal $\tilde n$, $s=|\tilde n|$, unit normal $n=\tilde n/s$, and
+\section{DGSEM with LMARS}
+Tensor LGL nodes, collocated quadrature, element-local derivatives $\nabla_h$ (SBP), mass $J\,w$ per node. At a face node of
+element $K$ with outward contravariant normal $\tilde n$, $s=|\tilde n|$, unit normal $n=\tilde n/s$, $m_n=n\cdot m$ and
 \[
-\sigma=\frac{s}{J\,w}\qquad(\text{$w$ the weight of the face node in the direction normal to the face}),
+\sigma=\frac{s}{J\,w}\qquad(w\text{ the quadrature weight of the face node in the normal direction}).
 \]
-the strong form with single-valued face values $\hat M$ (normal momentum) and $\hat P$ (pressure) reads
+Interior face between the elements $L$ and $R$, $n$ pointing from $L$ to $R$, $\jump x=x_R-x_L$, $\avg x=\tfrac12(x_L+x_R)$, $c$ the frozen face
+sound speed. The LMARS interface values (exact Riemann solution of the frozen normal acoustics) are
+\begin{equation}
+m^*=\avg{m_n}-\frac{\jump p}{2c},\qquad p^*=\avg p-\frac c2\jump{m_n};\label{eq:lmars}
+\end{equation}
+at walls (mirror state) $m^*=0$, $p^*=p+c\,m_n$. In strong form, at a face node of $K$ with the outward normal of $K$
+($m^*$ taken with the sign of that normal),
 \begin{align}
-\rho_t&=-(\nabla_h\cdot m)-\sigma\,(\hat M-m_n),\nonumber\\
-\Theta_t&=-(\nabla_h\cdot\theta m)-\sigma\,\theta\,(\hat M-m_n),\label{eq:dg}\\
-m_t&=-\nabla_hp-g\rho\,\mathbf e_z-\sigma\,n\,(\hat P-p),\nonumber
+\rho_t&=-\nabla_h\cdot m-\sigma\,(m^*-m_n),\nonumber\\
+\Theta_t&=-\nabla_h\cdot(\theta m)-\sigma\,(\theta_{\rm up}\,m^*-\theta\,m_n),\label{eq:dg}\\
+m_t&=-\nabla_hp-g\rho\,\mathbf e_z-\sigma\,n\,(p^*-p),\nonumber
 \end{align}
-$\nabla_h$ the element-local (collocation) operators, all quantities at the face node of $K$ ($\theta$ of that node). For every
-choice of $\hat M$, $\hat P$ the scheme conserves mass and $\Theta$ ($\hat M$ is single-valued). Interior face between $L$ and $R$,
-$n$ from $L$ to $R$, $\jump x=x_R-x_L$, $\avg x=\tfrac12(x_L+x_R)$, $m_n=n\cdot m$ on both sides. Walls: mirror state
-$m_{n,R}=-m_{n,L}$, $p_R=p_L$.
+$\theta_{\rm up}$ the frozen upwind value; at interior nodes only the volume terms act. Because of the pressure jump in $m^*$ the
+thermodynamic tendencies depend on the thermodynamic variables of both elements of a face: the mass flux of DGSEM-LMARS
+couples $a$ with $a$.
 
-\paragraph{Energy identity.} Multiply the $\Theta$ rows by $(A/\theta)\Theta\,Jw$ (so that the face term becomes $-\sigma Jw\,p(\hat M-m_n)$),
-the momentum rows by $m\,Jw$, and sum (constant coefficients, $g=0$). The volume terms sum to the face terms $-\sum s\,w\,(p\,m_n)$
-(SBP), and with the two sides of every face
+\section{The interface momentum as additional variable}
+On every face node introduce one unknown $\hat M$, the normal interface momentum (single-valued, with the orientation of
+the face normal $n$). Replacing $m^*$ by $\hat M$ in the thermodynamic rows and adding the definition of $m^*$ as an algebraic
+equation gives, as in hybridized DG,
+\begin{align}
+\rho_t&=-\nabla_h\cdot m-\sigma\,(\hat M-m_n),\nonumber\\
+\Theta_t&=-\nabla_h\cdot(\theta m)-\sigma\,(\theta_{\rm up}\,\hat M-\theta\,m_n),\label{eq:hdg}\\
+m_t&=-\nabla_hp-g\rho\,\mathbf e_z-\sigma\,n\,(p^*-p),\nonumber\\
+0&=\avg{m_n}-\frac{\jump p}{2c}-\hat M\qquad(\text{interior faces}),\qquad \hat M=0\quad(\text{walls}).\label{eq:constraint}
+\end{align}
+The constraint \eqref{eq:constraint} is the transmission condition of the hybridized form. It is local to the face node and
+can be solved for $\hat M$ explicitly; eliminating $\hat M$ gives back \eqref{eq:dg}. Conservation of mass and $\Theta$ holds for every
+value of $\hat M$, since $\hat M$ is single-valued.
+
+\section{Relaxation of the constraint}
+The algebraic constraint is replaced by a relaxation equation: the time derivative of the interface momentum equals a
+relaxation parameter $\kappa=1/\varepsilon>0$ times the constraint,
 \begin{equation}
-\frac{\mathrm dE}{\mathrm dt}=\sum_{\rm faces}s\,w\,\Big[(\hat M-\avg{m_n})\jump p+(\hat P-\avg p)\jump{m_n}\Big]\label{eq:energy}
+\hat M_t=\kappa\Big(\avg{m_n}-\frac{\jump p}{2c}-\hat M\Big),\qquad\text{i.e.}\qquad \varepsilon\,\hat M_t=\avg{m_n}-\frac{\jump p}{2c}-\hat M .\label{eq:relax}
 \end{equation}
-(using $\jump{p\,m_n}=\avg{m_n}\jump p+\avg p\jump{m_n}$). The central choice $\hat M=\avg{m_n}$, $\hat P=\avg p$ conserves $E$; it is the
-Hamiltonian DG of Xu, van der Vegt and Bokhove \cite{xvb} with $\theta=\tfrac12$.
+The system \eqref{eq:hdg} with \eqref{eq:relax} is an ODE in the element unknowns and the interface momentum; for $\varepsilon\to0$
+($\kappa\to\infty$) it tends to the DAE \eqref{eq:hdg}--\eqref{eq:constraint}, i.e.\ to DGSEM with LMARS.
 
-\paragraph{HDG transmission conditions.} In HDG, $\hat M$ and $\hat P$ are unknowns on the faces, determined by one condition each.
-The LMARS conditions \cite{lmars} (exact Riemann solution of the frozen normal acoustics, \code{docs/frozen\_dg}, eq.~(riemann)) are
-\begin{equation}
-\hat M=\hat M^*:=\avg{m_n}-\frac{\jump p}{2c},\qquad \hat P=\hat P^*:=\avg p-\frac c2\jump{m_n},\label{eq:lmars}
-\end{equation}
-$c$ the frozen face sound speed; at walls $\hat M^*=0$, $\hat P^*=p_L+c\,m_{n,L}$. They are local to the face node and explicit, so
-the face unknowns can be eliminated pointwise (static condensation is trivial); the result is the DGSEM with the LMARS
-flux, and by \eqref{eq:energy}
-\[
-\frac{\mathrm dE}{\mathrm dt}=-\sum_{\rm faces}s\,w\,\Big(\frac{\jump p^2}{2c}+\frac c2\jump{m_n}^2\Big)\le0 .
-\]
-After elimination the dissipation appears as self-couplings of the element unknowns: $D_a$ ($a\leftarrow a$, from $\jump p$ in $\hat M^*$)
-in the thermodynamic rows, and $D_b$ ($b\leftarrow b$, from $\jump{m_n}$ in $\hat P^*$) in the momentum rows.
-
-\section{The extended system}
-Keep the face values as unknowns and relax the transmission conditions with a time $\varepsilon>0$. There are two ways.
-
-\paragraph{Form I: relax the face values.} $\varepsilon\hat M_t=\hat M^*-\hat M$ (and possibly the same for $\hat P$). This is the face
-momentum of the present code (\code{HDGFast2D}, \code{eps\_if} $>0$; $\hat P=\hat P^*$ eliminated). Write $\hat M=\avg{m_n}+\hat S$; then
-\[
-\varepsilon\hat S_t=-\frac{\jump p}{2c}-\hat S-\varepsilon\,\avg{m_n}_t .
-\]
-The last term delays the \emph{central} part of the face momentum by $\varepsilon$. In \eqref{eq:energy} it produces the indefinite term
-$-2c\varepsilon\,\hat S\,\avg{m_n}_t$ (see Proposition~\ref{prop:energy}), and a delayed coupling of the skew acoustic system has growing
-modes: for $x''=-\omega^2x(t-\varepsilon)$ the growth rate is $\approx\tfrac12\varepsilon\omega^2$. This is what the semi-discrete system shows
-(Table~\ref{tab:eig}): growing modes for every $\varepsilon>0$, strong ones for $\varepsilon\gtrsim0.1\,\Delta x_e/c$. The lowered explicit step limit
-found for \code{eps\_if} $>0$ (\code{docs/frozen\_dg}, Section~sec:hdgb) is a consequence.
-
-\paragraph{Form II: relax the deviations.} Unknowns $\hat S=\hat M-\avg{m_n}$ and $\hat T=\hat P-\avg p$ on every face node,
-\begin{equation}
-\varepsilon_S\,\hat S_t=-\frac{\jump p}{2c}-\hat S,\qquad \varepsilon_T\,\hat T_t=-\frac c2\jump{m_n}-\hat T,\label{eq:relax}
-\end{equation}
-and in \eqref{eq:dg} $\hat M=\avg{m_n}+\hat S$, $\hat P=\avg p+\hat T$. The central averages are not delayed; only the dissipative parts are.
-$\varepsilon_S,\varepsilon_T\ge0$ can be chosen independently; $\varepsilon=0$ is the eliminated LMARS scheme for that face value
-(e.g.\ $\varepsilon_T=0$: $\hat P=\hat P^*$ and $D_b$ in the momentum rows, as in the present code).
-
-\begin{proposition}\label{prop:energy}
-For constant coefficients and $g=0$, form II with $\varepsilon_S,\varepsilon_T>0$ satisfies
-\[
-E_\varepsilon=E+\sum_{\rm faces}s\,w\,\Big(\varepsilon_S\,c\,\hat S^2+\varepsilon_T\,\frac{\hat T^2}c\Big),\qquad
-\frac{\mathrm dE_\varepsilon}{\mathrm dt}=-\sum_{\rm faces}s\,w\,\Big(2c\,\hat S^2+\frac2c\,\hat T^2\Big)\le0 .
-\]
-\end{proposition}
-\begin{proof}
-By \eqref{eq:energy}, $\mathrm dE/\mathrm dt=\sum s\,w(\hat S\jump p+\hat T\jump{m_n})$. By \eqref{eq:relax},
-$\tfrac{\mathrm d}{\mathrm dt}(\varepsilon_Sc\hat S^2)=2c\hat S(-\jump p/(2c)-\hat S)=-\hat S\jump p-2c\hat S^2$ and
-$\tfrac{\mathrm d}{\mathrm dt}(\varepsilon_T\hat T^2/c)=(2/c)\hat T(-c\jump{m_n}/2-\hat T)=-\hat T\jump{m_n}-(2/c)\hat T^2$. The coupling terms cancel.
-At a wall only the inner side contributes: $\hat M=0$ (so $\hat S=0$) and the energy rate is $-s\,w\,m_{n,L}\hat T$, while
-$\varepsilon_T\hat T_t=c\,m_{n,L}-\hat T$ (mirror state, $\jump{m_n}=-2m_{n,L}$); with the face energy $\varepsilon_T\hat T^2/(2c)$ (half the interior weight) the
-coupling cancels again and the wall dissipation is $s\,w\,\hat T^2/c$, which for $\varepsilon_T\to0$ is the LMARS wall dissipation $s\,w\,c\,m_{n,L}^2$.
-\end{proof}
-For $\varepsilon\to0$, $\hat S\to-\jump p/(2c)$, $\hat T\to-c\jump{m_n}/2$, and the dissipation $2c\hat S^2+2\hat T^2/c$ becomes the LMARS dissipation
-$\jump p^2/(2c)+c\jump{m_n}^2/2$. For form I the same computation leaves the term $-2c\varepsilon\hat S\avg{m_n}_t$.
-
-\begin{table}[h]\centering\small
-\begin{tabular}{lccc}\toprule
-$\varepsilon\ [\Delta x_e/c]$ & form I & form II & form II$'$ ($\hat S$ and $\hat T$)\\\midrule
-0.001 & $+8.9\cdot10^{-8}$ & $\le10^{-14}$ & $\le10^{-14}$\\
-0.01 & $+5.0\cdot10^{-6}$ & $\le10^{-14}$ & $\le10^{-14}$\\
-0.05 & $+5.8\cdot10^{-5}$ & $\le10^{-15}$ & $\le10^{-15}$\\
-0.2 & $+3.45$ & $\le10^{-15}$ & $\le10^{-15}$\\\bottomrule
-\end{tabular}
-\caption{Largest real part of the eigenvalues of the extended semi-discrete operator, 1D periodic acoustics, DGSEM $P=4$,
-16 elements, $c=1$, $\Delta x_e=1$ (\code{docs/hdg\_extended/hdg\_extended\_1d.jl}; values $\le10^{-14}$ are round-off of the
-zero eigenvalues of the constant modes). Form I: $\hat M$ relaxed, $\hat P=\hat P^*$; form II: $\hat S$ relaxed, $\hat P=\hat P^*$; form II$'$:
-$\hat S$ and $\hat T$ relaxed ($\varepsilon_S=\varepsilon_T$). For $P=2$ form I grows only for larger $\varepsilon$ ($+0.16$ at 0.2).}
-\label{tab:eig}
-\end{table}
-
-\section{Block structure}
-Order the unknowns $U=(a,b,\hat S,\hat T)$ ($a$: all thermodynamic node values, $b$: all momenta, $\hat S,\hat T$: one value per face
-node). With the energy weights
-\[
-W_a=\mathrm{diag}\Big(Jw\,\frac A\theta\Big)\ (\Theta\text{ rows}),\quad W_b=\mathrm{diag}(Jw),\quad
-W_S=\mathrm{diag}(2c\,\varepsilon_S\,s\,w),\quad W_T=\mathrm{diag}\Big(\frac{2\varepsilon_T}c\,s\,w\Big),
-\]
-form II is
-\begin{equation}
-\begin{pmatrix}W_a&&&\\&W_b&&\\&&W_S&\\&&&W_T\end{pmatrix}U_t=
-\begin{pmatrix}0&C&B_S&0\\-C^{\rm T}&0&0&B_T\\-B_S^{\rm T}&0&-\Lambda_S&0\\0&-B_T^{\rm T}&0&-\Lambda_T\end{pmatrix}U+f,\label{eq:block}
-\end{equation}
-$\Lambda_S=\mathrm{diag}(2c\,s\,w)$, $\Lambda_T=\mathrm{diag}(2s\,w/c)$ (at walls $W_T$ and $\Lambda_T$ with half the weight, Proposition~\ref{prop:energy}),
-$f$ the slow forcing. The skew structure is that of the acoustic part, $a=\Theta$ (or $p$); the $\rho$ rows are not in the acoustic
-energy and follow with the same face values ($\rho_t$ gets the central divergence and $\mp\sigma\hat S$). The blocks:
+\section{Structure}
+With the element unknowns $a$, $b$, the face unknowns $\hat M$ and the forcing $f$ of the slow part, the fast system reads
+\begin{align*}
+a_t&=K\,b+R\,\hat M+f_a,\\
+b_t&=L\,a+D_b\,b+f_b,\\
+\varepsilon\,\hat M_t&=H_b\,b+H_a\,a-\hat M,
+\end{align*}
+with
 \begin{itemize}
-\item $C$: the central DGSEM coupling of $a$ and $b$ (volume divergence and gradient, face values $\avg{m_n}$, $\avg p$, gravity), skew in the
-  energy: $\begin{pmatrix}0&C\\-C^{\rm T}&0\end{pmatrix}$ is the Hamiltonian DG of \cite{xvb}.
-\item $B_S$: face node $f$ of face $(L,R)$ to the thermodynamic values of its two nodes: $(B_S^{\rm T}a)_f=s\,w\,\jump p$, i.e.\ $-s\,w\,A_L$ on $\Theta_L$
-  and $+s\,w\,A_R$ on $\Theta_R$ (with $p$ prognostic: on $p_L$, $p_R$); in the weights its columns put $\mp\sigma\,\theta\,\hat S$ into the $\Theta$ rows (and $\mp\sigma c^2\hat S$ into the $p$ rows)
-  of the two nodes.
-\item $B_T$: face node to the normal momenta of its two nodes, $(B_T^{\rm T}b)_f=s\,w\,\jump{m_n}$; its columns put $\mp\sigma n\,\hat T$ into the
-  momentum rows.
-\item $\Lambda_S,\Lambda_T$: positive diagonal.
+\item $K$: the volume divergence of $m$ (and $\theta m$) and the face terms $+\sigma m_n$, $+\sigma\theta m_n$ of the element's own momentum;
+\item $R$: the face terms $-\sigma\hat M$, $-\sigma\theta_{\rm up}\hat M$, local to the face node;
+\item $L$: pressure gradient, gravity and the central part $\avg p$ of $p^*$; $D_b$: the jump part $-\tfrac c2\jump{m_n}$ of $p^*$ (and $c\,m_n$ at walls);
+\item $H_b$: $\avg{m_n}$, $H_a$: $-\jump p/(2c)$, both local to the two nodes of the face node pair.
 \end{itemize}
-Check of the $\hat S$ row: $2c\varepsilon_Ss\,w\,\hat S_t=-s\,w\jump p-2c\,s\,w\,\hat S$, i.e.\ \eqref{eq:relax}. The operator is therefore
+The thermodynamic tendencies depend only on the element momentum $b$ and the interface momentum $\hat M$, i.e.\ in the fast
+system only on momentum; they contain no thermodynamic variable. The pressure jump, which in DGSEM-LMARS couples $a$
+with $a$, now enters only the equation of the interface momentum. The momentum tendencies depend on $a$ (pressure, gravity)
+and on $b$ through $D_b$. Ordered as $(a,\ b,\ \hat M)$:
 \[
-\mathcal L=\mathcal J-\mathcal D,\qquad \mathcal J=-\mathcal J^{\rm T}\ \text{(in the weights $W$)},\qquad \mathcal D=\mathrm{diag}(0,0,\Lambda_S,\Lambda_T)\ge0 .
+\frac{\mathrm d}{\mathrm dt}\begin{pmatrix}a\\b\\\hat M\end{pmatrix}=
+\begin{pmatrix}0&K&R\\L&D_b&0\\\kappa H_a&\kappa H_b&-\kappa I\end{pmatrix}\begin{pmatrix}a\\b\\\hat M\end{pmatrix}+\begin{pmatrix}f_a\\f_b\\0\end{pmatrix}.
 \]
-Properties:
-\begin{enumerate}
-\item \emph{All dissipation is diagonal and sits on the traces.} The element unknowns have no self-coupling; the dissipation of the
-  scheme ($D_a$, $D_b$ after elimination) is the damping $-\Lambda/\varepsilon$ of the trace deviations, a diagonal, local, exactly integrable term.
-\item \emph{The skew part has three kinds of couplings:} $a\leftrightarrow b$ (central DG, global, $C$), $a\leftrightarrow\hat S$ and $b\leftrightarrow\hat T$ (local to the two
-  nodes of one face node pair). $\hat S$ couples only to $a$, $\hat T$ only to $b$. The trace unknowns do not couple with each other; corner
-  nodes of an element see the traces of two faces, but the traces stay separate unknowns.
-\item \emph{Partition.} With $\mathcal X=(a,\hat T)$ and $\mathcal Y=(b,\hat S)$ the skew part has only $\mathcal X\leftrightarrow\mathcal Y$ couplings:
-  \begin{align*}
-  \begin{pmatrix}W_a&\\&W_T\end{pmatrix}\mathcal X_t&=\begin{pmatrix}C&B_S\\-B_T^{\rm T}&0\end{pmatrix}\mathcal Y-\begin{pmatrix}0\\\Lambda_T\hat T\end{pmatrix},\\
-  \begin{pmatrix}W_b&\\&W_S\end{pmatrix}\mathcal Y_t&=\begin{pmatrix}-C^{\rm T}&B_T\\-B_S^{\rm T}&0\end{pmatrix}\mathcal X-\begin{pmatrix}0\\\Lambda_S\hat S\end{pmatrix},
-  \end{align*}
-  a partitioned system of the form $\mathcal X'=K\mathcal Y-\Lambda_X\mathcal X$, $\mathcal Y'=-K^*\mathcal X-\Lambda_Y\mathcal Y$ with \emph{diagonal} damping in both block rows.
-  Each block row has its own diagonal $D$ (Verwer's conductivity, in both rows), and the off-diagonal blocks are adjoint.
-  This is the extended counterpart of $a'=-Kb+D_aa$, $b'=Lb+D_bb$ with $D_a$, $D_b$ non-diagonal (face-coupling) self-couplings.
-\item \emph{Face modes.} For one face node and the jump $\jump p$ alone (the face term only): $\jump p_t=2c\,\delta\,\hat S$, $\varepsilon\hat S_t=-\jump p/(2c)-\hat S$,
-  with $\delta=\sigma c$ ($\sigma=s/(Jw)$, both sides alike), i.e.\ $\varepsilon\lambda^2+\lambda+\delta=0$. For $4\varepsilon\delta<1$ two real roots, $\lambda\approx-\delta$ (the
-  LMARS damping rate of the eliminated scheme) and $\lambda\approx-1/\varepsilon$; for $4\varepsilon\delta>1$ a damped oscillation with frequency
-  $\sqrt{\delta/\varepsilon-1/(4\varepsilon^2)}$ and rate $1/(2\varepsilon)$. $\delta=\sigma c\approx p(p+1)\,c/\Delta x_e$ (end weight $2/(p(p+1))$) is the stiffest rate of the face coupling. $\varepsilon$ is
-  a parameter of the extended model, not of the PDE: it shifts the stiffness of the face coupling between the skew part
-  (frequency $\sqrt{\delta/\varepsilon}$) and the diagonal damping ($1/\varepsilon$).
-\item \emph{Limit $\varepsilon\to0$.} An index-1 DAE: $\hat S=-\Lambda_S^{-1}B_S^{\rm T}a$, $\hat T=-\Lambda_T^{-1}B_T^{\rm T}b$, and
-  $W_aa_t=Cb-B_S\Lambda_S^{-1}B_S^{\rm T}a$, $W_bb_t=-C^{\rm T}a-B_T\Lambda_T^{-1}B_T^{\rm T}b$: the LMARS DGSEM with
-  $D_a=-W_a^{-1}B_S\Lambda_S^{-1}B_S^{\rm T}$, $D_b=-W_b^{-1}B_T\Lambda_T^{-1}B_T^{\rm T}$, symmetric negative semidefinite in the weights and of rank one per
-  face node pair. For $\varepsilon>0$ the extended system differs from the LMARS DGSEM by $O(\varepsilon)$ in the face jumps (a relaxation
-  model), which are small for resolved solutions.
-\item \emph{Horizontal/vertical.} Every trace belongs to one face, hence to one direction: $\hat S,\hat T$ on $\xi$-faces belong to the horizontal
-  part, on $\eta$-faces and walls to the vertical part (a node column). In a HEVI split the vertical traces enter the column system;
-  their elimination is again pointwise.
-\end{enumerate}
-
-\section{Relation to the code}
-\begin{itemize}
-\item \code{HDGFast2D} (\code{src/DGSEM/Euler2D/fast\_operator.jl}, \code{fast\_split.jl}) keeps $\hat M$ as face unknown (\code{Mhx}, \code{Mhz}, contravariant
-  $\tilde n\cdot\hat m$) with $\hat M=\hat M^*$ (\code{:verlet}) or relaxed in form I (\code{:fb}, \code{eps\_if}), and eliminates $\hat P=\hat P^*$ (\code{momentum\_face!}).
-  It is form I with $\varepsilon_T=0$: not energy stable for \code{eps\_if} $>0$.
-\item \code{HDGRelaxTheta} and \code{Legacy/HDGRelaxEuler} (1D) relax all traces $\hat q$ towards $\avg q$-type values,
-  $\varepsilon\hat q_t=Hq-\hat q$, which is form I as well (with the LMARS penalty $T=|A|$, the trace conditions give $\hat q=\avg q$ plus jumps).
-\item Form II needs the deviations $\hat S$, $\hat T$ as unknowns (or $\hat M$, $\hat P$ with $\avg{m_n}$, $\avg p$ subtracted at every evaluation); the element
-  equations are unchanged except that the face values are $\avg{m_n}+\hat S$ and $\avg p+\hat T$.
-\end{itemize}
-
-\section{Open points}
-\begin{itemize}
-\item Variable frozen coefficients ($c$, $\theta$, $A$ differ at the two nodes of a face, terrain normals): the face terms stay skew if the
-  weights use the face values consistently (the code uses the node values of $L$ for $c$); to be written out.
-\item Gravity and the stratification energy in the weights $W_a$ (the $\rho$ rows); the coupling $B_S$ also acts on $\rho$.
-\item Choice of $\varepsilon_S$, $\varepsilon_T$ relative to $\delta=\sigma c$, and time integrators that use the structure: skew $\mathcal X\leftrightarrow\mathcal Y$ coupling plus diagonal
-  damping in both rows.
-\end{itemize}
-
-\begin{thebibliography}{9}
-\bibitem{xvb} Y.~Xu, J.J.W.~van der Vegt, O.~Bokhove: Discontinuous Hamiltonian finite element method for linear hyperbolic
-systems. J.\ Sci.\ Comput.\ 35 (2008), 241--265.
-\bibitem{verwer} J.G.~Verwer: Component splitting for semi-discrete Maxwell equations. BIT Numer.\ Math.\ 51 (2011), 427--445.
-\bibitem{lmars} X.~Chen, N.~Andronova, B.~Van Leer, J.E.~Penner, J.P.~Boyd, C.~Jablonowski, S.-J.~Lin: A control-volume model
-of the compressible Euler equations with a vertical Lagrangian coordinate. Mon.\ Wea.\ Rev.\ 141 (2013), 2526--2544.
-\end{thebibliography}
+On the gravity-wave grids the faces split into horizontal ($\xi$) and vertical ($\eta$, walls) ones; $\hat M$ on $\xi$-faces belongs to
+the horizontal part, on $\eta$-faces and walls to the vertical part of a node column.
 \end{document}
