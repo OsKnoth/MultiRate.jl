@@ -42,6 +42,9 @@ frozen_hmomentum!(out, model, C, z, F, h) = frozen_fast!(out, model, C, z, :hmom
 pressure jump in the LMARS mass flux); the combined :cs loop then evaluates :hthermo anew after the column
 solve instead of reusing E (which would be explicit Euler at a½, first order). Default false (FV)."""
 frozen_hthermo_reeval(model) = false
+"""k ← (I - h D_M)⁻¹ k on the momentum rows: the momentum self-coupling D_M implicit in the momentum stage of the
+Verlet step `fast = :verlet_i` (extended formulation: the relaxation of the interface momentum); default: k unchanged."""
+frozen_momentum_implicit!(k, model, C, h) = k
 """
     frozen_hflow!(z, model, C, F, flow, c, zsrc, w)
 
@@ -140,6 +143,10 @@ function frozen_fast_solve!(Z, model, C, F, dt, nsteps, k; method::Symbol = :ver
             frozen_fast!(k, model, C, Z, :thermo, F); @. Z += (h / 2) * k
             momentum!(:momentum); @. Z += h * k
             frozen_fast!(k, model, C, Z, :thermo, F); @. Z += (h / 2) * k
+        elseif base == :verlet_i                                      # Verlet, momentum self-coupling implicit (Euler)
+            frozen_fast!(k, model, C, Z, :thermo, F); @. Z += (h / 2) * k
+            momentum!(:momentum); frozen_momentum_implicit!(k, model, C, h); @. Z += h * k
+            frozen_fast!(k, model, C, Z, :thermo, F); @. Z += (h / 2) * k
         elseif base == :fb
             momentum!(:momentum); @. Z += h * k
             frozen_fast!(k, model, C, Z, :thermo, F); @. Z += h * k
@@ -204,7 +211,7 @@ function frozen_fast_solve!(Z, model, C, F, dt, nsteps, k; method::Symbol = :ver
             frozen_fast!(k, model, C, y, :all, F); @. acc += k
             @. Z = y0 + (h / 6) * acc
         else
-            error("frozen fast integrator $method: :verlet, :fb, :hevi, :ei, :cs, :wrf, :rk4 (or a composition of :verlet, :hevi, :ei, :cs)")
+            error("frozen fast integrator $method: :verlet, :verlet_i, :fb, :hevi, :ei, :cs, :csb, :wrf, :rk4 (or a composition of :verlet, :hevi, :ei, :cs)")
         end
     end
     return Z

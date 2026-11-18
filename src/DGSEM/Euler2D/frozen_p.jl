@@ -52,7 +52,7 @@ mutable struct DGVertical
 end
 
 """
-    DGPressureModel(base::Euler2DModel; pvar = :p, interface = false, kappa = 0.5, eps_if = 0.0,
+    DGPressureModel(base::Euler2DModel; pvar = :p, interface = false, kappa = 0.5, kappa_slow = 0.0, eps_if = 0.0,
                     lmars = interface ? :momentum : :velocity, vsplit = :full)
 
 DG model with the pressure p as an additional prognostic variable (state `[q; p]`, `pressure_state`),
@@ -93,10 +93,12 @@ struct DGPressureModel
     lmars::Symbol
     vsplit::Symbol
     kappa::Float64
+    kappa_slow::Float64                                 # part of the relaxation in the slow tendency (explicit in MIS)
     eps_if::Float64
     mhat::Vector{Int}                                   # face pair index fi -> state index of M̂ (0: wall)
 end
-function DGPressureModel(base::Euler2DModel; pvar::Symbol = :p, interface::Bool = false, kappa::Real = 0.5, eps_if::Real = 0.0,
+function DGPressureModel(base::Euler2DModel; pvar::Symbol = :p, interface::Bool = false, kappa::Real = 0.5, kappa_slow::Real = 0.0,
+                         eps_if::Real = 0.0,
                          lmars::Symbol = interface ? :momentum : :velocity, vsplit::Symbol = :full)
     vsplit in (:full, :contravariant, :contravariant_volume) ||
         error("DGPressureModel: vsplit = :full, :contravariant or :contravariant_volume")
@@ -117,7 +119,7 @@ function DGPressureModel(base::Euler2DModel; pvar::Symbol = :p, interface::Bool 
                                       Dict{Tuple{Float64,Float64},Any}(), Dict{Tuple{Float64,Float64},Any}(), zeros(nq), zeros(nq),
                                       zeros(nq), Vector{Int}[], Matrix{Int}[], Matrix{Int}[], Int[], spzeros(nq, nq),
                                       Dict{Float64,Tuple{SparseMatrixCSC{Float64,Int},SparseMatrixCSC{Float64,Int}}}(), zeros(nq)),
-                           interface, lmars, vsplit, Float64(kappa), Float64(eps_if), mhat)
+                           interface, lmars, vsplit, Float64(kappa), Float64(kappa_slow), Float64(eps_if), mhat)
 end
 
 @inline _pnode(np, e, i, j) = ((e - 1) * np + (j - 1)) * np + i
@@ -151,7 +153,34 @@ function frozen_data!(C, S, m::DGPressureModel, q)
         C[nb + _pnode(np, e, i, j)] = b.gas.γ * pressure(b.gas, Θ) / Θ
     end
     m.lmars === :momentum && _lmars_momentum!(C, m, q)
+    m.interface && _interface_slow!(S, m, C, q)
     return C, S
+end
+
+"""Slow tendency of the interface momentum: that of its LMARS value s m* (the target of the relaxation),
+S_M̂ = s (C₁ n·S_m,L + C₂ n·S_m,R - C₃ (S_p,R - S_p,L)). Without it M̂ lags behind the slowly (advectively) changing
+mass flux by the relaxation time, and the extended system is not Galilean invariant."""
+function _interface_slow!(S, m::DGPressureModel, C, q)
+    b = m.base; M = b.mesh; np = M.np
+    _foreach_face_dir(M) do fi, dir, kind, iL, jL, eL, iR, jR, eR, ñx, ñz, we
+        kind === :wall && return nothing
+        s = hypot(ñx, ñz); n1, n2 = ñx / s, ñz / s
+        o = _fc(M, fi)
+        fL = n1 * S[node_iq(np, eL, 2, iL, jL)] + n2 * S[node_iq(np, eL, 3, iL, jL)]
+        fR = n1 * S[node_iq(np, eR, 2, iR, jR)] + n2 * S[node_iq(np, eR, 3, iR, jR)]
+        kM = m.mhat[fi]
+        S[kM] = s * (C[o+1] * fL + C[o+2] * fR - C[o+3] * (S[ip_dg(m, eR, iR, jR)] - S[ip_dg(m, eL, iL, jL)]))
+        if m.kappa_slow > 0
+            # part κ_s of the relaxation in the slow tendency: 2c κ_s σ̄ (s m*(q) - M̂) = κ_s σ̄ s (P̂_L - P̂_R)(q)
+            mnL = n1 * q[node_iq(np, eL, 2, iL, jL)] + n2 * q[node_iq(np, eL, 3, iL, jL)]
+            mnR = n1 * q[node_iq(np, eR, 2, iR, jR)] + n2 * q[node_iq(np, eR, 3, iR, jR)]
+            mf = C[o+1] * mnL + C[o+2] * mnR - C[o+3] * (q[ip_dg(m, eR, iR, jR)] - q[ip_dg(m, eL, iL, jL)])
+            σs = 0.5 * s * (1 / (M.J[iL, jL, eL] * we) + 1 / (M.J[iR, jR, eR] * we))
+            S[kM] += m.kappa_slow * σs / C[o+3] * (s * mf - q[kM])
+        end
+        nothing
+    end
+    return S
 end
 
 """Face coefficients of LMARS in ρu: m_f = {m_n} - [p]/(2c), f_Θ = θ_up m_f, p* = {p} - c [m_n]/2 (interior faces;
@@ -680,6 +709,23 @@ function frozen_hmomentum!(out, m::DGPressureModel, C, z, F, h)
     frozen_fast!(v.zv, m, C, z, :hmomentum, F)
     _dgp_predict!(v.zp, m, z, h / 2, v.zv)
     return frozen_fast!(out, m, C, v.zp, :hmomentum, F)
+end
+
+"""Momentum self-coupling implicit (`fast = :verlet_i`): k ← (I - h D_M)⁻¹ k with D_M the entries of J_h + J_v with
+row and column in the momentum group (m_x, m_z and, extended, M̂): the face terms of the node's own momentum, the
+node-face couplings and the relaxation of M̂; local (face node pairs, linked at the element corners)."""
+function frozen_momentum_implicit!(k, m::DGPressureModel, C, h)
+    v = m.vert
+    v.valid && C === v.C || error("frozen_momentum_implicit!: frozen_stage_begin! with these coefficients first")
+    F = get!(v.factors, (-1.0, Float64(h))) do
+        Jf = v.Jh + v.Jv
+        Is, Js, Vs = findnz(Jf)
+        keep = [!_dgp_isthermo(m, Is[t]) && !_dgp_isthermo(m, Js[t]) for t in eachindex(Is)]
+        DM = sparse(Is[keep], Js[keep], Vs[keep], m.nq, m.nq)
+        lu(I - h * DM)
+    end
+    ldiv!(v.zv, F, k); k .= v.zv
+    return k
 end
 
 """y = (I - D J_v)⁻¹ R."""

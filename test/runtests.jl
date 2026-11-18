@@ -1416,6 +1416,8 @@ end
     @test mi.nq - m0.nq == (2M.Nex * M.Nez - M.Nex) * M.np                 # one M̂ per interior face node
     C0 = zeros(TS.frozen_ncoef(m0)); S0 = zeros(m0.nq); TS.frozen_data!(C0, S0, m0, z0)
     Ci = zeros(TS.frozen_ncoef(mi)); Si = zeros(mi.nq); TS.frozen_data!(Ci, Si, mi, zi)
+    @test maximum(abs, Si[m0.nq+1:end]) > 0                                # slow tendency of M̂ (of its LMARS value)
+    Si[m0.nq+1:end] .= 0                                                   # the constraint check below without it
     for part in (:all, :hthermo, :hmomentum, :vertical)
         f0 = TS.frozen_fast!(zeros(m0.nq), m0, C0, z0, part, S0)
         fi = TS.frozen_fast!(zeros(mi.nq), mi, Ci, zi, part, Si)
