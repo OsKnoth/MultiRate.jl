@@ -1410,7 +1410,7 @@ end
     M = E2.Mesh2D(8, 4, 3, L, H; zs = hill)
     base = E2.Euler2DModel(M, gas, ρr, Θr)
     qb = CM.project2d(base, (x, z) -> (ρ = Θr(z) / (θr(z) + 0.01 * exp(-((x - L / 3) / 5e3)^2)); (ρ, ρ * U, 0.0, Θr(z))))
-    m0 = E2.DGPressureModel(base); mi = E2.DGPressureModel(base; interface = true)
+    m0 = E2.DGPressureModel(base; lmars = :momentum); mi = E2.DGPressureModel(base; interface = true)
     z0 = E2.pressure_state(m0, qb); z0 .+= 1e-3 .* sin.(1:m0.nq) .* abs.(z0)
     zi = vcat(z0, zeros(mi.nq - m0.nq)); E2.interface_reset!(mi, zi)          # M̂ = m_f(z)
     @test mi.nq - m0.nq == (2M.Nex * M.Nez - M.Nex) * M.np                 # one M̂ per interior face node
@@ -1420,7 +1420,9 @@ end
         f0 = TS.frozen_fast!(zeros(m0.nq), m0, C0, z0, part, S0)
         fi = TS.frozen_fast!(zeros(mi.nq), mi, Ci, zi, part, Si)
         @test norm(fi[1:m0.nq] .- f0) < 1e-11 * norm(f0)                  # equals the LMARS operator for M̂ = m_f
-        @test maximum(abs, fi[m0.nq+1:end]) < 1e-10 * maximum(abs, f0)     # the constraint holds
+        zz = copy(zi); zz[m0.nq+1:end] .= 0                               # scale of the M̂ rows: rate times s m_f
+        sc = maximum(abs, TS.frozen_fast!(zeros(mi.nq), mi, Ci, zz, part, Si)[m0.nq+1:end])
+        @test maximum(abs, fi[m0.nq+1:end]) <= 1e-10 * max(sc, eps())     # the constraint holds
     end
 end
 

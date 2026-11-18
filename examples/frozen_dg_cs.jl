@@ -10,6 +10,9 @@
 # INTERFACE=1: the interface momentum M̂ as additional unknown with the relaxed constraint (docs/hdg_extended),
 # M̂_t = κ σ_f (P̂_L - P̂_R) with κ = KAPPA (default 1/2), or relaxation time ε = EPSIF Δx_e/c; horizontal step simple Verlet (D explicit), vertical part incl. M̂ of the
 # η-faces in the column solve. The error is measured against RK4 of the LMARS model (includes the model error).
+# LMARS=velocity|momentum: the form of LMARS (default: momentum with INTERFACE=1, else velocity = base model);
+# the reference is RK4 of the model with the same form. VSPLIT=full|contravariant: the vertical (implicit) part, all
+# η-terms (full) or only those without m_x (contravariant: the column contains ρ, Θ, p, m_z, as the FV trick).
 #
 # Small steps: Verlet at the vertical limit (`fast_step(:verlet)`, the vertical node spacing), :cs/:csfb at the
 # horizontal limit 0.85·0.63 Δx_e/((2p+1) c) (Δx_e the element width), divided by NSUBFAC. :csb is CS with
@@ -35,7 +38,9 @@ hill = TERRAIN == "hill"
 zsf(x) = hill ? 400.0 / (1 + ((x - L / 2) / 10e3)^2) : 0.0
 dzs(x) = hill ? -400.0 * 2 * (x - L / 2) / 10e3^2 / (1 + ((x - L / 2) / 10e3)^2)^2 : 0.0
 base = build_model(:dg; L, H, P = 4, NEX = 30, NEZ = 4, ρr, Θr, gas, zs = zsf)
-m = E2.DGPressureModel(base)
+const LMARS = Symbol(get(ENV, "LMARS", get(ENV, "INTERFACE", "0") == "1" ? "momentum" : "velocity"))
+const VSPLIT = Symbol(get(ENV, "VSPLIT", "full"))     # full | contravariant (η-terms with m_x horizontal, FV trick)
+m = E2.DGPressureModel(base; lmars = LMARS, vsplit = VSPLIT)
 qb = project2d(base, (x, z) -> (ρ = Θr(z) / (θr(z) + 0.01 * sin(π * z / H) / (1 + ((x - L / 3) / a)^2));
                                  (ρ, ρ * U, ρ * U * dzs(x) * (H - z) / (H - zsf(x)), Θr(z))))
 q0 = E2.pressure_state(m, qb)
@@ -43,19 +48,20 @@ M = base.mesh; c = sound_speed_max(base, qb)
 dτv = fast_step(base, qb, :verlet)
 dτh = 0.85 * 0.63 * (M.Lx / M.Nex) / ((2M.p + 1) * c)
 nref = ceil(Int, T / (0.5dτv))
-tr = @elapsed qref = TS.run_rk4(base, qb, T / nref, nref)
+# reference: RK4 of the model with the same LMARS (velocity form: the base model)
+tr = @elapsed qref = LMARS === :velocity ? TS.run_rk4(base, qb, T / nref, nref) : TS.run_rk4(m, q0, T / nref, nref)[1:base.nq]
 θf(q) = (y = vec(E2.field(base, q, 4) ./ E2.field(base, q, 1)); y .- sum(y) / length(y))
 yr = θf(qref)
 err(q) = all(isfinite, q) ? maximum(abs.(θf(q[1:base.nq]) .- yr)) : Inf
 @printf("DG %s, %s; Verlet step %.2f s (vertical limit), horizontal limit %.2f s; RK4 %d steps (%.0f s), max|θ - mean| %.2f K\n",
         TERRAIN, grid_info(base), dτv, dτh, nref, tr, maximum(abs, yr))
-@printf("ε = %.2f, γ_d = %.2f for :cs/:csfb\n", OFFC, SMDIV)
+@printf("ε = %.2f, γ_d = %.2f for :cs/:csfb, LMARS in the %s form, vertical split %s\n", OFFC, SMDIV, LMARS, VSPLIT)
 for meth in METHODS, Δt in DTS, fast in FASTS, εr in (INTERFACE && fast !== :verlet ? EPSIF : (-1.0,)),
     f in (fast === :verlet ? (1.0,) : NSUBFAC)
     n = round(Int, T / Δt)
     model, x0 = fast === :verlet ? (base, qb) : (m, q0)
     if εr >= 0
-        model = E2.DGPressureModel(base; interface = true, kappa = KAPPA, eps_if = εr * (M.Lx / M.Nex) / c)
+        model = E2.DGPressureModel(base; interface = true, lmars = LMARS, vsplit = VSPLIT, kappa = KAPPA, eps_if = εr * (M.Lx / M.Nex) / c)
         x0 = E2.pressure_state(model, qb)
     end
     nsub = ceil(Int, f * Δt / (fast === :verlet ? dτv : dτh))

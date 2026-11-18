@@ -52,15 +52,28 @@ mutable struct DGVertical
 end
 
 """
-    DGPressureModel(base::Euler2DModel; pvar = :p, interface = false, kappa = 0.5, eps_if = 0.0)
+    DGPressureModel(base::Euler2DModel; pvar = :p, interface = false, kappa = 0.5, eps_if = 0.0,
+                    lmars = interface ? :momentum : :velocity, vsplit = :full)
 
 DG model with the pressure p as an additional prognostic variable (state `[q; p]`, `pressure_state`),
 frozen split with horizontal (:hthermo, :hmomentum) and vertical (:vertical) parts and a column-implicit
 vertical step, so that the small steps :cs, :csfb, :ei, :wrf and :hevi of `TimeStepping.frozen_fast_solve!`
 apply. p is reset to p(Θ) after every MIS step.
 
-`interface = true` (docs/hdg_extended): the interface momentum M̂ (the LMARS mass flux m_f = ρ_up w*) is an
-additional unknown on every interior face node (state `[q; p; M̂]`). The thermodynamic rows use M̂ in place of
+`lmars`: the LMARS of the fast face terms, `:velocity` (the base model: w* = {u_n} - [p]/(2ρ̄c), m_f = ρ_up w*,
+p* = {p} - ρ̄c [u_n]/2 with frozen densities) or `:momentum` (in ρu: m_f = {m_n} - [p]/(2c), p* = {p} - c [m_n]/2,
+c the mean face sound speed; θ_up from the upwind side of the base). The slow part is that of the base model.
+
+`vsplit`: what of the η-terms is vertical (implicit). `:full`: all η volume pairs, η-faces and walls, acting on
+both momenta (on terrain the column reads m_x). `:contravariant` (the FV trick, src/FV/vertical.jl): the η-terms are
+split by the components of the vertical normal ñ_η = (Jη_x, Jη_z) of the contravariant vertical flux ñ_η·m; every
+term with m_x (the Jη_x m_x part of the η-mass flux, the metric force Jη_x ∂_η p and the η-face terms on m_x) goes
+to the horizontal, explicit part, so that the column contains only ρ, Θ, p, m_z (and M̂ of the η-faces).
+`:contravariant_volume`: only the η volume pairs are split this way; the η-faces and walls stay vertical (the column
+reads m_x at the face nodes). Identical to `:full` on a flat grid.
+
+`interface = true` (docs/hdg_extended): the interface momentum (the LMARS mass flux, stored contravariant,
+M̂ = ñ·m̂ = s m_f) is an additional unknown on every interior face node (state `[q; p; M̂]`). The thermodynamic rows use M̂ in place of
 m_f, the momentum rows the interface pressure of their side written with M̂, P̂_K - p_K = ρc (M̂/ρ_up - m_ν/ρ_K)
 (no pressure), and the constraint P̂_L = P̂_R is relaxed, M̂_t = κ σ_f (P̂_L - P̂_R) with σ_f = s/(J w) of the face
 (mean of the two sides) and κ = `kappa` (default 1/2); since P̂_L - P̂_R = (m_f(z) - M̂)/C₃, the relaxation time is
@@ -77,11 +90,17 @@ struct DGPressureModel
     S::Vector{Float64}
     vert::DGVertical
     interface::Bool
+    lmars::Symbol
+    vsplit::Symbol
     kappa::Float64
     eps_if::Float64
     mhat::Vector{Int}                                   # face pair index fi -> state index of M̂ (0: wall)
 end
-function DGPressureModel(base::Euler2DModel; pvar::Symbol = :p, interface::Bool = false, kappa::Real = 0.5, eps_if::Real = 0.0)
+function DGPressureModel(base::Euler2DModel; pvar::Symbol = :p, interface::Bool = false, kappa::Real = 0.5, eps_if::Real = 0.0,
+                         lmars::Symbol = interface ? :momentum : :velocity, vsplit::Symbol = :full)
+    vsplit in (:full, :contravariant, :contravariant_volume) ||
+        error("DGPressureModel: vsplit = :full, :contravariant or :contravariant_volume")
+    lmars in (:velocity, :momentum) || error("DGPressureModel: lmars = :velocity or :momentum")
     pvar === :p || error("DGPressureModel: pvar = :p (π not yet)")
     M = base.mesh
     nqp = base.nq + M.np^2 * M.Ne
@@ -98,7 +117,7 @@ function DGPressureModel(base::Euler2DModel; pvar::Symbol = :p, interface::Bool 
                                       Dict{Tuple{Float64,Float64},Any}(), Dict{Tuple{Float64,Float64},Any}(), zeros(nq), zeros(nq),
                                       zeros(nq), Vector{Int}[], Matrix{Int}[], Matrix{Int}[], Int[], spzeros(nq, nq),
                                       Dict{Float64,Tuple{SparseMatrixCSC{Float64,Int},SparseMatrixCSC{Float64,Int}}}(), zeros(nq)),
-                           interface, Float64(kappa), Float64(eps_if), mhat)
+                           interface, lmars, vsplit, Float64(kappa), Float64(eps_if), mhat)
 end
 
 @inline _pnode(np, e, i, j) = ((e - 1) * np + (j - 1)) * np + i
@@ -131,7 +150,26 @@ function frozen_data!(C, S, m::DGPressureModel, q)
         Θ = q[node_iq(np, e, 4, i, j)]
         C[nb + _pnode(np, e, i, j)] = b.gas.γ * pressure(b.gas, Θ) / Θ
     end
+    m.lmars === :momentum && _lmars_momentum!(C, m, q)
     return C, S
+end
+
+"""Face coefficients of LMARS in ρu: m_f = {m_n} - [p]/(2c), f_Θ = θ_up m_f, p* = {p} - c [m_n]/2 (interior faces;
+the wall p + c m_n is the same in both forms), c = mean of the sound speeds of the two sides, θ_up from the base."""
+function _lmars_momentum!(C, m::DGPressureModel, q)
+    b = m.base; M = b.mesh; np = M.np; γ = b.gas.γ
+    _foreach_face_dir(M) do fi, dir, kind, iL, jL, eL, iR, jR, eR, ñx, ñz, we
+        kind === :wall && return nothing
+        o = _fc(M, fi)
+        sp(e, i, j) = sqrt(γ * pressure(b.gas, q[node_iq(np, e, 4, i, j)]) / q[node_iq(np, e, 1, i, j)])
+        cm = b.clmars > 0 ? b.clmars : 0.5 * (sp(eL, iL, jL) + sp(eR, iR, jR))
+        θup = C[o+4] / C[o+1]
+        C[o+1] = 0.5; C[o+2] = 0.5; C[o+3] = 1 / (2cm)
+        C[o+4] = θup * C[o+1]; C[o+5] = θup * C[o+2]; C[o+6] = θup * C[o+3]
+        C[o+7] = 0.5cm; C[o+8] = 0.5cm
+        nothing
+    end
+    return C
 end
 
 # --------------------------------------------------------------- the linear frozen operator
@@ -182,7 +220,7 @@ end
 All terms of the linear fast operator in the directions `dirs` (1 = ξ, 2 = η; volume pairs and
 faces) as emit(row, column, coefficient): out[row] += coefficient z[column].
 """
-function _dgp_terms!(emit::E, m::DGPressureModel, C, dirs) where {E}
+function _dgp_terms!(emit::E, m::DGPressureModel, C, dirs; vol::Bool = true, fac::Bool = true) where {E}
     b = m.base; M = b.mesh
     np, Ne, D, g = M.np, M.Ne, M.D, b.gas.g
     nb = frozen_ncoef(b); nqb = b.nq
@@ -194,6 +232,7 @@ function _dgp_terms!(emit::E, m::DGPressureModel, C, dirs) where {E}
     @inbounds for e in 1:Ne, j in 1:np, i in 1:np
         Jinv = 1 / M.J[i, j, e]
         ρa, mxa, mza, pa = iq(e, 1, i, j), iq(e, 2, i, j), iq(e, 3, i, j), ipr(e, i, j)
+        vol || break
         for dir in dirs, k in 1:np
             ib, jb = dir == 1 ? (k, j) : (i, k)
             ax = dir == 1 ? 0.5 * (M.Jξx[i, j, e] + M.Jξx[k, j, e]) : 0.5 * (M.Jηx[i, j, e] + M.Jηx[i, k, e])
@@ -214,7 +253,7 @@ function _dgp_terms!(emit::E, m::DGPressureModel, C, dirs) where {E}
         end
     end
     _foreach_face_dir(M) do fi, dir, kind, iL, jL, eL, iR, jR, eR, ñx, ñz, we
-        dir in dirs || return nothing
+        (fac && dir in dirs) || return nothing
         s = hypot(ñx, ñz); n1, n2 = ñx / s, ñz / s
         o = _fc(M, fi)
         ρL, mxL, mzL, pL = iq(eL, 1, iL, jL), iq(eL, 2, iL, jL), iq(eL, 3, iL, jL), ipr(eL, iL, jL)
@@ -234,23 +273,25 @@ function _dgp_terms!(emit::E, m::DGPressureModel, C, dirs) where {E}
             ρR, mxR, mzR, pR = iq(eR, 1, iR, jR), iq(eR, 2, iR, jR), iq(eR, 3, iR, jR), ipr(eR, iR, jR)
             σR = 1 / (M.J[iR, jR, eR] * we)
             cL, cR = σL * s, σR * s
+            # M̂ is stored contravariant, M̂ = ñ·m̂ = s m̂_n: the face terms use M̂/s
             kM = m.mhat[fi]
             θup = C[o+4] / C[o+1]
             iZ = 1 / (2 * C[o+3])
-            emit(ρL, kM, -cL); mn(ρL, mxL, mzL, cL)
-            emitΘ(eL, iL, jL, kM, -cL * θup); mnΘ(eL, iL, jL, mxL, mzL, cL * C[o+9])
-            emit(ρR, kM, cR); mn(ρR, mxR, mzR, -cR)
-            emitΘ(eR, iR, jR, kM, cR * θup); mnΘ(eR, iR, jR, mxR, mzR, -cR * C[o+10])
+            is = 1 / s
+            emit(ρL, kM, -cL * is); mn(ρL, mxL, mzL, cL)
+            emitΘ(eL, iL, jL, kM, -cL * θup * is); mnΘ(eL, iL, jL, mxL, mzL, cL * C[o+9])
+            emit(ρR, kM, cR * is); mn(ρR, mxR, mzR, -cR)
+            emitΘ(eR, iR, jR, kM, cR * θup * is); mnΘ(eR, iR, jR, mxR, mzR, -cR * C[o+10])
             for (row, nn) in ((mxL, n1), (mzL, n2))
-                emit(row, kM, cL * nn * iZ); mn(row, mxL, mzL, -cL * nn * 2 * C[o+7])
+                emit(row, kM, cL * nn * iZ * is); mn(row, mxL, mzL, -cL * nn * 2 * C[o+7])
             end
             for (row, nn) in ((mxR, n1), (mzR, n2))
-                emit(row, kM, cR * nn * iZ); mn(row, mxR, mzR, -cR * nn * 2 * C[o+8])
+                emit(row, kM, cR * nn * iZ * is); mn(row, mxR, mzR, -cR * nn * 2 * C[o+8])
             end
             iε = m.eps_if > 0 ? 1 / m.eps_if : m.kappa * 0.5 * (cL + cR) / C[o+3]   # κ σ_f/C₃
-
-            mn(kM, mxL, mzL, C[o+1] * iε); mn(kM, mxR, mzR, C[o+2] * iε)
-            emit(kM, pR, -C[o+3] * iε); emit(kM, pL, C[o+3] * iε); emit(kM, kM, -iε)
+            # M̂_t = iε (s m_f - M̂), s m_f = C₁ ñ·m_L + C₂ ñ·m_R - s C₃ [p]
+            mn(kM, mxL, mzL, s * C[o+1] * iε); mn(kM, mxR, mzR, s * C[o+2] * iε)
+            emit(kM, pR, -s * C[o+3] * iε); emit(kM, pL, s * C[o+3] * iε); emit(kM, kM, -iε)
         else
             ρR, mxR, mzR, pR = iq(eR, 1, iR, jR), iq(eR, 2, iR, jR), iq(eR, 3, iR, jR), ipr(eR, iR, jR)
             σR = 1 / (M.J[iR, jR, eR] * we)
@@ -279,6 +320,35 @@ function _dgp_terms!(emit::E, m::DGPressureModel, C, dirs) where {E}
     return nothing
 end
 
+"""Emitter that passes on only the terms with (`mx = true`) or without (`mx = false`) the horizontal momentum m_x
+in row or column (the split `vsplit = :contravariant`)."""
+struct _DGFilt{E}
+    e::E
+    nqb::Int
+    np2::Int
+    mx::Bool
+end
+@inline _dgp_ismx(f::_DGFilt, k) = k <= f.nqb && mod1(cld(k, f.np2), NV) == 2
+@inline (f::_DGFilt)(r, c, v) = ((_dgp_ismx(f, r) || _dgp_ismx(f, c)) == f.mx && f.e(r, c, v); nothing)
+
+"""Terms of the horizontal (`:h`), vertical (`:v`) or whole (`:all`) fast operator, as emit(row, col, coef)."""
+function _dgp_part_terms!(emit, m::DGPressureModel, C, which::Symbol)
+    which === :all && return _dgp_terms!(emit, m, C, (1, 2))
+    if m.vsplit === :full
+        return _dgp_terms!(emit, m, C, which === :h ? (1,) : (2,))
+    end
+    nqb, np2 = m.base.nq, m.base.mesh.np^2
+    allfaces = m.vsplit === :contravariant_volume     # only the η volume pairs split, η-faces and walls vertical
+    if which === :h
+        _dgp_terms!(emit, m, C, (1,))
+        _dgp_terms!(_DGFilt(emit, nqb, np2, true), m, C, (2,); fac = !allfaces)
+    else
+        _dgp_terms!(_DGFilt(emit, nqb, np2, false), m, C, (2,); fac = !allfaces)
+        allfaces && _dgp_terms!(emit, m, C, (2,); vol = false)
+    end
+    return nothing
+end
+
 @inline _dgp_isthermo(m::DGPressureModel, k) = k > m.base.nq ? k <= m.base.nq + m.base.mesh.np^2 * m.base.mesh.Ne :
                                                  mod1(cld(k, m.base.mesh.np^2), NV) in (1, 4)
 
@@ -286,8 +356,9 @@ end
 :hthermo (horizontal thermodynamic rows and their forcing, sponge), :hmomentum (horizontal momentum
 rows and their forcing), :vertical (η part, all rows, no forcing)."""
 function frozen_fast!(out, m::DGPressureModel, C, z, part::Symbol, F)
-    dirs = part in (:all, :thermo, :momentum) ? (1, 2) : part in (:hthermo, :hmomentum) ? (1,) :
-           part === :vertical ? (2,) : error("frozen_fast!: unknown part $part")
+    which = part in (:all, :thermo, :momentum) ? :all : part in (:hthermo, :hmomentum) ? :h :
+            part === :vertical ? :v : error("frozen_fast!: unknown part $part")
+    dirs = which === :all ? (1, 2) : which === :h ? (1,) : (2,)
     v = m.vert
     if v.valid && C === v.C                        # stage matrices
         if dirs == (1, 2)
@@ -297,7 +368,7 @@ function frozen_fast!(out, m::DGPressureModel, C, z, part::Symbol, F)
         end
     else
         fill!(out, 0.0)
-        _dgp_terms!(_DGApply(out, z), m, C, dirs)
+        _dgp_part_terms!(_DGApply(out, z), m, C, which)
     end
     part === :vertical && return out
     keepth = part in (:all, :thermo, :hthermo)
@@ -329,7 +400,8 @@ function frozen_step_end!(m::DGPressureModel, q)
     return q
 end
 
-"""M̂ ← m_f(q) = C₁ m_nL + C₂ m_nR - C₃ (p_R - p_L) with the coefficients C(q) (consistent interface momentum)."""
+"""M̂ ← s m_f(q) = s (C₁ m_nL + C₂ m_nR - C₃ (p_R - p_L)) with the coefficients C(q) (consistent contravariant
+interface momentum)."""
 function interface_reset!(m::DGPressureModel, q)
     b = m.base; M = b.mesh; np = M.np
     frozen_data!(m.C, m.S, m, q)
@@ -340,7 +412,7 @@ function interface_reset!(m::DGPressureModel, q)
         o = _fc(M, fi)
         mnL = n1 * q[node_iq(np, eL, 2, iL, jL)] + n2 * q[node_iq(np, eL, 3, iL, jL)]
         mnR = n1 * q[node_iq(np, eR, 2, iR, jR)] + n2 * q[node_iq(np, eR, 3, iR, jR)]
-        q[m.mhat[fi]] = C[o+1] * mnL + C[o+2] * mnR - C[o+3] * (q[ip_dg(m, eR, iR, jR)] - q[ip_dg(m, eL, iL, jL)])
+        q[m.mhat[fi]] = s * (C[o+1] * mnL + C[o+2] * mnR - C[o+3] * (q[ip_dg(m, eR, iR, jR)] - q[ip_dg(m, eL, iL, jL)]))
         nothing
     end
     return q
@@ -349,10 +421,10 @@ end
 # --------------------------------------------------------------- vertically implicit part
 """Sparse matrix of the operator terms in the directions dirs for the coefficients C. The first call
 builds the pattern and the map emission -> nzval position; later calls only refill the values of A."""
-function _dgp_matrix!(A, map, m::DGPressureModel, C, dirs)
+function _dgp_matrix!(A, map, m::DGPressureModel, C, which::Symbol)
     if isempty(map)
         col = _DGCollect(Int[], Int[], Float64[])
-        _dgp_terms!(col, m, C, dirs)
+        _dgp_part_terms!(col, m, C, which)
         A = sparse(col.I, col.J, col.V, m.nq, m.nq)
         resize!(map, length(col.I))
         @inbounds for t in eachindex(col.I)
@@ -364,7 +436,7 @@ function _dgp_matrix!(A, map, m::DGPressureModel, C, dirs)
     end
     fill!(A.nzval, 0.0)
     f = _DGFill(A.nzval, map, 0)
-    _dgp_terms!(f, m, C, dirs)
+    _dgp_part_terms!(f, m, C, which)
     f.n == length(map) || error("DG operator pattern changed")
     return A
 end
@@ -373,8 +445,8 @@ end
 function frozen_stage_begin!(m::DGPressureModel, C, z)
     v = m.vert
     v.C = C
-    v.Jh = _dgp_matrix!(v.Jh, v.hmap, m, C, (1,))
-    v.Jv = _dgp_matrix!(v.Jv, v.vmap, m, C, (2,))
+    v.Jh = _dgp_matrix!(v.Jh, v.hmap, m, C, :h)
+    v.Jv = _dgp_matrix!(v.Jv, v.vmap, m, C, :v)
     v.valid = true
     empty!(v.factors)
     _dgp_dissipation!(m)                               # blocks of D₀ (once)
