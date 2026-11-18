@@ -3,8 +3,8 @@
 #   a' = K Y,   Y' = G a + D_Y Y,
 #   K Y:  a_k' = -(Dv b)_k - lw (M̂_ν - b_ν)                     (face nodes; ν outward)
 #   b_k' = -(Dv a)_k + lw c ν (M̂_ν - b_ν),   M̂' = κ (a_L - a_R + c (b_L + b_R) - 2c M̂),   ε = 1/(2cκ).
-# Steps: Störmer–Verlet in the groups, a half step, Y full step, a half step; the Y step either exact for the
-# flow Y' = G a½ + D_Y Y (Bokhove), or trapezoidal in D_Y (Verwer), or symplectic Euler (Y exact, then a).
+# Steps: Störmer–Verlet in the groups (Bokhove, without the Coriolis term): a half step, Y full step, a half step;
+# in the Y step D_Y explicit (plain Verlet) or trapezoidal (Verwer); or symplectic Euler (Y step, then a).
 # Prints the stability limit h c/Δx_e (spectral radius of the step map ≤ 1 + 1e-6).
 #     P=4 julia docs/hdg_extended/fast_groups_1d.jl
 using LinearAlgebra, Printf
@@ -58,12 +58,13 @@ end
 function stepmap(h, κ, kind)
     K, G, DY = operators(κ)
     nY = size(DY, 1); IY = Matrix(1.0I, nY, nY); Ia = Matrix(1.0I, n, n)
-    X = exp([h*DY h*IY; zeros(nY, 2nY)]); E, Φ = X[1:nY, 1:nY], X[1:nY, nY+1:end]     # e^{hD}, hφ₁(hD)
-    if kind == :trap
+    if kind == :trap                                    # (I - h/2 D) Y⁺ = (I + h/2 D) Y + h (G a½)
         E = (IY - h / 2 * DY) \ (IY + h / 2 * DY); Φ = (IY - h / 2 * DY) \ (h * IY)
+    else                                                # explicit: Y⁺ = Y + h (G a½ + D Y)
+        E = IY + h * DY; Φ = h * IY
     end
     A = [Ia h/2*K; zeros(nY, n) IY]                     # a half step
-    B = [Ia zeros(n, nY); Φ*G E]                        # Y step with a frozen
+    B = [Ia zeros(n, nY); Φ*G E]                        # Y step with a frozen at a½
     kind == :seuler && return [Ia h*K; zeros(nY, n) IY] * B
     return A * B * A
 end
@@ -83,8 +84,8 @@ end
 @printf("P = %d, limit h c/Δx_e:\n", P)
 for ε in (1e-4, 1e-3, 1e-2, 0.05, 0.1)
     κ = 1 / (2c * ε)
-    @printf("ε = %.4f: Verlet, Y exact %.3f   Verlet, Y trapezoidal %.3f   symplectic Euler, Y exact %.3f\n",
-            ε, limit(κ, :exact), limit(κ, :trap), limit(κ, :seuler))
+    @printf("ε = %.4f: Verlet, D_Y explicit %.3f   Verlet, D_Y trapezoidal %.3f   symplectic Euler, D_Y explicit %.3f\n",
+            ε, limit(κ, :expl), limit(κ, :trap), limit(κ, :seuler))
 end
 # model error of the extended system against DGSEM-LMARS (ε = 0, M̂ eliminated): smooth wave, wavelength 4 elements,
 # relative difference of a at T = 4 (two periods)
@@ -106,16 +107,16 @@ for ε in (1e-3, 1e-2, 0.05, 0.1, 0.2, 0.5)
     Ha, Hb, HM = G[n+1:end, :], DY[n+1:end, 1:n], DY[n+1:end, n+1:end]
     M0 = -(HM \ (Ha * a0 + Hb * b0))
     z = exp(T * [zeros(n, n) K; G DY]) * [a0; b0; M0]
-    @printf("ε = %.3f: model error |a - a_LMARS|/|a_LMARS| = %.2e, stability limit (Verlet, Y exact) %.3f\n",
-            ε, norm(z[1:n] .- z0[1:n]) / norm(z0[1:n]), limit(1 / (2c * ε), :exact))
+    @printf("ε = %.3f: model error |a - a_LMARS|/|a_LMARS| = %.2e, limits explicit %.3f, trapezoidal %.3f\n",
+            ε, norm(z[1:n] .- z0[1:n]) / norm(z0[1:n]), limit(1 / (2c * ε), :expl), limit(1 / (2c * ε), :trap))
 end
-# order of the grouped Verlet (Y exact) against the exact flow of the extended system, T = 1
-for ε in (1e-3, 0.05)
+# order of the grouped Verlet (D_Y trapezoidal) against the exact flow of the extended system, T = 1
+for ε in (0.05, 0.2)
     κ = 1 / (2c * ε)
     K, G, DY = operators(κ)
     Ha, Hb, HM = G[n+1:end, :], DY[n+1:end, 1:n], DY[n+1:end, n+1:end]
-    z0 = [a0; b0; -(HM \ (Ha * a0 + Hb * b0))]
-    zr = exp(1.0 * [zeros(n, n) K; G DY]) * z0
-    e = [norm(stepmap(1.0 / N, κ, :exact)^N * z0 .- zr) / norm(zr) for N in (20, 40, 80)]
-    @printf("ε = %.3f: grouped Verlet, N = 20/40/80: %.2e %.2e %.2e (ratios %.1f %.1f)\n", ε, e..., e[1] / e[2], e[2] / e[3])
+    zi = [a0; b0; -(HM \ (Ha * a0 + Hb * b0))]
+    zr = exp(1.0 * [zeros(n, n) K; G DY]) * zi             # exact flow (reference)
+    e = [norm(stepmap(1.0 / N, κ, :trap)^N * zi .- zr) / norm(zr) for N in (20, 40, 80)]
+    @printf("ε = %.3f: grouped Verlet (trapezoidal), N = 20/40/80: %.2e %.2e %.2e (ratios %.1f %.1f)\n", ε, e..., e[1] / e[2], e[2] / e[3])
 end
