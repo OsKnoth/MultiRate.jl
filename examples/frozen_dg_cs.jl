@@ -9,9 +9,11 @@
 #     julia --project=examples examples/frozen_dg_cs.jl
 #
 # LMARS=velocity|momentum: the form of LMARS (default velocity = base model); the reference is RK4 of the model with
-# the same form. VSPLIT=full|contravariant: the vertical (implicit) part, all η-terms (full) or only those without m_x
-# (contravariant: the column contains ρ, Θ, p, m_z, as the FV trick). VSOLVER=hdg (with LMARS=momentum): the column
-# system by static condensation (interface momentum only in the solve), otherwise sparse LU.
+# the same form. VSPLIT=full|contravariant|contravariant_volume|contravariant_momentum (comma separated list): the vertical
+# (implicit) part, all η-terms (full), only those without m_x (contravariant: the column contains ρ, Θ, p, m_z, as the FV
+# trick), or with the contravariant momenta (Ũ, W̃) = (Jξ·m, Jη·m) in place of (m_x, m_z) in the fast solver
+# (contravariant_momentum: the column contains ρ, Θ, p, W̃). VSOLVER=hdg (with LMARS=momentum): the column system by static
+# condensation (interface momentum only in the solve), otherwise sparse LU. HPREDICT=0: D_M^x explicit (S2 of docs/fast_2d).
 #
 # Small steps: Verlet at the vertical limit (`fast_step(:verlet)`, the vertical node spacing), :cs/:csfb at the
 # horizontal limit 0.85·0.63 Δx_e/((2p+1) c) (Δx_e the element width), divided by NSUBFAC. :csb is CS with
@@ -35,9 +37,10 @@ zsf(x) = hill ? 400.0 / (1 + ((x - L / 2) / 10e3)^2) : 0.0
 dzs(x) = hill ? -400.0 * 2 * (x - L / 2) / 10e3^2 / (1 + ((x - L / 2) / 10e3)^2)^2 : 0.0
 base = build_model(:dg; L, H, P = 4, NEX = 30, NEZ = 4, ρr, Θr, gas, zs = zsf)
 const LMARS = Symbol(get(ENV, "LMARS", "velocity"))
-const VSPLIT = Symbol(get(ENV, "VSPLIT", "full"))     # full | contravariant (η-terms with m_x horizontal, FV trick)
+const VSPLITS = Symbol.(split(get(ENV, "VSPLIT", "full"), ","))
 const VSOLVER = Symbol(get(ENV, "VSOLVER", "lu"))
-m = E2.DGPressureModel(base; lmars = LMARS, vsplit = VSPLIT, vsolver = VSOLVER)
+const HPREDICT = get(ENV, "HPREDICT", "1") == "1"
+m = E2.DGPressureModel(base; lmars = LMARS)                    # reference model (RK4)
 qb = project2d(base, (x, z) -> (ρ = Θr(z) / (θr(z) + 0.01 * sin(π * z / H) / (1 + ((x - L / 3) / a)^2));
                                  (ρ, ρ * U, ρ * U * dzs(x) * (H - z) / (H - zsf(x)), Θr(z))))
 q0 = E2.pressure_state(m, qb)
@@ -52,10 +55,11 @@ yr = θf(qref)
 err(q) = all(isfinite, q) ? maximum(abs.(θf(q[1:base.nq]) .- yr)) : Inf
 @printf("DG %s, %s; Verlet step %.2f s (vertical limit), horizontal limit %.2f s; RK4 %d steps (%.0f s), max|θ - mean| %.2f K\n",
         TERRAIN, grid_info(base), dτv, dτh, nref, tr, maximum(abs, yr))
-@printf("ε = %.2f, γ_d = %.2f for :cs/:csfb, LMARS in the %s form, vertical split %s, column solve %s\n", OFFC, SMDIV, LMARS, VSPLIT, VSOLVER)
-for meth in METHODS, Δt in DTS, fast in FASTS, f in (fast === :verlet ? (1.0,) : NSUBFAC)
+@printf("ε = %.2f, γ_d = %.2f for :cs/:csfb, LMARS in the %s form, column solve %s, midpoint predictor %s\n", OFFC, SMDIV, LMARS, VSOLVER, HPREDICT)
+for meth in METHODS, Δt in DTS, fast in FASTS, vs in (fast === :verlet ? (:full,) : VSPLITS), f in (fast === :verlet ? (1.0,) : NSUBFAC)
     n = round(Int, T / Δt)
-    model, x0 = fast === :verlet ? (base, qb) : (m, q0)
+    model, x0 = fast === :verlet ? (base, qb) :
+                (E2.DGPressureModel(base; lmars = LMARS, vsplit = vs, vsolver = VSOLVER, hpredict = HPREDICT), q0)
     nsub = ceil(Int, f * Δt / (fast === :verlet ? dτv : dτh))
     ε, γ = fast === :verlet ? (0.0, 0.0) : (OFFC, SMDIV)
     q = similar(x0)
@@ -65,6 +69,6 @@ for meth in METHODS, Δt in DTS, fast in FASTS, f in (fast === :verlet ? (1.0,) 
         e isa DomainError || rethrow(); fill!(q, NaN)
     end
     e = err(q)
-    @printf("%-6s Δt = %5.1f s %-6s nsub %4d: %s (%.0f s)\n", meth, Δt, fast, nsub,
+    @printf("%-6s Δt = %5.1f s %-6s %-22s nsub %4d: %s (%.0f s)\n", meth, Δt, fast, fast === :verlet ? "" : vs, nsub,
             isfinite(e) ? @sprintf("error θ %.2e K", e) : "failed", t)
 end

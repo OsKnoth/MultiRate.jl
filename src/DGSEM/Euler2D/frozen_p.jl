@@ -49,6 +49,10 @@ mutable struct DGVertical
     diagpos::Vector{Int}                                # identity entries of Epat outside the blocks
     Epat::SparseMatrixCSC{Float64,Int}                  # pattern of e^{cD₀} and c φ₁(cD₀)
     flows::Dict{Float64,Tuple{SparseMatrixCSC{Float64,Int},SparseMatrixCSC{Float64,Int}}}   # c -> (e^{cD₀}, c φ₁(cD₀))
+    Jh0::SparseMatrixCSC{Float64,Int}                   # vsplit = :contravariant_momentum: the ξ/η operators as assembled
+    Jv0::SparseMatrixCSC{Float64,Int}
+    P::SparseMatrixCSC{Float64,Int}                     # nodal transform (m_x, m_z) -> (Ũ, W̃) = (Jξ·m, Jη·m), identity elsewhere
+    Pinv::SparseMatrixCSC{Float64,Int}
 end
 
 """
@@ -69,7 +73,11 @@ split by the components of the vertical normal ñ_η = (Jη_x, Jη_z) of the con
 term with m_x (the Jη_x m_x part of the η-mass flux, the metric force Jη_x ∂_η p and the η-face terms on m_x) goes
 to the horizontal, explicit part, so that the column contains only ρ, Θ, p, m_z.
 `:contravariant_volume`: only the η volume pairs are split this way; the η-faces and walls stay vertical (the column
-reads m_x at the face nodes). Identical to `:full` on a flat grid.
+reads m_x at the face nodes). `:contravariant_momentum`: in the fast solver the momenta are replaced node by node by the
+contravariant ones, (Ũ, W̃) = (Jξ·m, Jη·m) = T m; the vertical part is the η part of the transformed operator restricted
+to the thermodynamic rows and columns and W̃ (all terms with Ũ are horizontal), J_v = P⁻¹ Π(P J_v P⁻¹) P,
+J_h = J_h + J_v,old - J_v (P = T on the momenta); the column contains ρ, Θ, p and W̃. All are identical to `:full` on a
+flat grid.
 
 `vsolver`: the column solve of I - D J_v. `:lu` one sparse LU (UMFPACK); `:hdg` (needs `lmars = :momentum`) static
 condensation as in hybridised DG: the interface momentum M̂ = s m_f of the η-faces is introduced only in the solve,
@@ -105,8 +113,8 @@ function DGPressureModel(base::Euler2DModel; pvar::Symbol = :p, lmars::Symbol = 
                          micro::Symbol = :fast, τfac::Real = 0.5, cs::Real = 350.0, τ = nothing)
     vsolver in (:lu, :hdg) || error("DGPressureModel: vsolver = :lu or :hdg")
     vsolver === :hdg && lmars !== :momentum && error("DGPressureModel: vsolver = :hdg needs lmars = :momentum")
-    vsplit in (:full, :contravariant, :contravariant_volume) ||
-        error("DGPressureModel: vsplit = :full, :contravariant or :contravariant_volume")
+    vsplit in (:full, :contravariant, :contravariant_volume, :contravariant_momentum) ||
+        error("DGPressureModel: vsplit = :full, :contravariant, :contravariant_volume or :contravariant_momentum")
     lmars in (:velocity, :momentum) || error("DGPressureModel: lmars = :velocity or :momentum")
     pvar === :p || error("DGPressureModel: pvar = :p (π not yet)")
     micro in (:fast, :slow, :none) || error("DGPressureModel: micro = :fast, :slow or :none")
@@ -137,8 +145,40 @@ function _dgp_build(base, pvar, lmars, vsplit, vsolver, hpredict, hybrid, aux, c
                            DGVertical(zeros(nc), spzeros(nq, nq), spzeros(nq, nq), false, Int[], Int[],
                                       Dict{Tuple{Float64,Float64},Any}(), Dict{Tuple{Float64,Float64},Any}(), zeros(nq), zeros(nq),
                                       zeros(nq), Vector{Int}[], Matrix{Int}[], Matrix{Int}[], Int[], spzeros(nq, nq),
-                                      Dict{Float64,Tuple{SparseMatrixCSC{Float64,Int},SparseMatrixCSC{Float64,Int}}}()),
+                                      Dict{Float64,Tuple{SparseMatrixCSC{Float64,Int},SparseMatrixCSC{Float64,Int}}}(),
+                                      spzeros(nq, nq), spzeros(nq, nq), _dgp_contra(base, nq, vsplit)...),
                            hybrid, lmars, vsplit, mhat, vsolver, hpredict, aux, cols, ph..., nqp)
+end
+
+"""(P, P⁻¹) of vsplit = :contravariant_momentum: per node (m_x, m_z) -> (Ũ, W̃) = (Jξ·m, Jη·m) on the momentum rows
+(Ũ at the m_x index, W̃ at the m_z index), identity on all other unknowns (empty matrices for the other splits)."""
+function _dgp_contra(base, nq, vsplit)
+    vsplit === :contravariant_momentum || return spzeros(nq, nq), spzeros(nq, nq)
+    M = base.mesh; np = M.np
+    I_ = collect(1:nq); J_ = collect(1:nq); P_ = ones(nq); Q_ = ones(nq)
+    Ii, Jj, Pv, Qv = Int[], Int[], Float64[], Float64[]
+    keep = trues(nq)
+    for e in 1:M.Ne, j in 1:np, i in 1:np
+        kx, kz = node_iq(np, e, 2, i, j), node_iq(np, e, 3, i, j)
+        keep[kx] = keep[kz] = false
+        T = [M.Jξx[i, j, e] M.Jξz[i, j, e]; M.Jηx[i, j, e] M.Jηz[i, j, e]]; Ti = inv(T)
+        for (a, ka) in ((1, kx), (2, kz)), (b, kb) in ((1, kx), (2, kz))
+            push!(Ii, ka); push!(Jj, kb); push!(Pv, T[a, b]); push!(Qv, Ti[a, b])
+        end
+    end
+    P = sparse(vcat(I_[keep], Ii), vcat(J_[keep], Jj), vcat(P_[keep], Pv), nq, nq)
+    Pinv = sparse(vcat(I_[keep], Ii), vcat(J_[keep], Jj), vcat(Q_[keep], Qv), nq, nq)
+    return P, Pinv
+end
+
+"""Vertical operator of vsplit = :contravariant_momentum: P⁻¹ Π(P J P⁻¹) P, Π dropping every entry with row or column Ũ."""
+function _dgp_contra_vertical(m::DGPressureModel, v::DGVertical, J)
+    nqb, np2 = m.base.nq, m.base.mesh.np^2
+    isU(k) = k <= nqb && mod1(cld(k, np2), NV) == 2
+    Is, Js, Vs = findnz(v.P * J * v.Pinv)
+    keep = [!(isU(Is[t]) || isU(Js[t])) for t in eachindex(Is)]
+    Jt = sparse(Is[keep], Js[keep], Vs[keep], size(J)...)
+    return v.Pinv * Jt * v.P
 end
 
 """Node columns (ex, i) for the condensed column solve: the element unknowns (ρ, m_x, m_z, Θ, p at the np nodes of the
@@ -504,7 +544,7 @@ end
 """Terms of the horizontal (`:h`), vertical (`:v`) or whole (`:all`) fast operator, as emit(row, col, coef)."""
 function _dgp_part_terms!(emit, m::DGPressureModel, C, which::Symbol)
     which === :all && return _dgp_terms!(emit, m, C, (1, 2))
-    if m.vsplit === :full
+    if m.vsplit === :full || m.vsplit === :contravariant_momentum      # (the latter is split in frozen_stage_begin!)
         return _dgp_terms!(emit, m, C, which === :h ? (1,) : (2,))
     end
     nqb, np2 = m.base.nq, m.base.mesh.np^2
@@ -597,11 +637,23 @@ end
 function frozen_stage_begin!(m::DGPressureModel, C, z)
     v = m.vert
     v.C = C
-    v.Jh = _dgp_matrix!(v.Jh, v.hmap, m, C, :h)
-    v.Jv = _dgp_matrix!(v.Jv, v.vmap, m, C, :v)
+    if m.vsplit === :contravariant_momentum
+        v.Jh0 = _dgp_matrix!(v.Jh0, v.hmap, m, C, :h)
+        v.Jv0 = _dgp_matrix!(v.Jv0, v.vmap, m, C, :v)
+        v.Jv = _dgp_contra_vertical(m, v, v.Jv0)
+        v.Jh = v.Jh0 + v.Jv0 - v.Jv
+    else
+        v.Jh = _dgp_matrix!(v.Jh, v.hmap, m, C, :h)
+        v.Jv = _dgp_matrix!(v.Jv, v.vmap, m, C, :v)
+    end
     if m.vsolver === :hdg                              # η part written with M̂, same C
         a = m.aux.vert
-        a.Jv = _dgp_matrix!(a.Jv, a.vmap, m.aux, C, :v)
+        if m.vsplit === :contravariant_momentum
+            a.Jv0 = _dgp_matrix!(a.Jv0, a.vmap, m.aux, C, :v)
+            a.Jv = _dgp_contra_vertical(m, a, a.Jv0)
+        else
+            a.Jv = _dgp_matrix!(a.Jv, a.vmap, m.aux, C, :v)
+        end
     end
     v.valid = true
     empty!(v.factors)
@@ -770,7 +822,7 @@ function _dgp_factor(m::DGPressureModel, ct, cw)
     get!(v.factors, key) do
         d = [_dgp_isthermo(m, r) ? ct : cw for r in 1:m.nq]
         A = I - Diagonal(d) * v.Jv
-        v.lus[key] = haskey(v.lus, key) ? lu!(v.lus[key], A) : lu(A)    # same pattern: symbolic reuse
+        v.lus[key] = haskey(v.lus, key) ? (try lu!(v.lus[key], A) catch; lu(A) end) : lu(A)   # same pattern: symbolic reuse
     end
 end
 
