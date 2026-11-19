@@ -85,7 +85,7 @@ regular grid.
 
 | Discretization | Terrain | Fast solvers (`fast=`) |
 |---|---|---|
-| DGSEM, split form (`src/DGSEM/Euler2D`) | terrain-following (Gal–Chen) | `hevi`, `hevi_relax`, `verlet`, `fb`, `imex` |
+| DGSEM, split form (`src/DGSEM/Euler2D`) | terrain-following (Gal–Chen) | `hevi`, `hevi_verlet`, `verlet`, `fb`, `imex`; `DGPressureModel`: frozen split with `cs`, `csfb`, `csb` (column solve by LU or static condensation, `vsolver = :hdg`) |
 | FV, Arakawa C-grid (`src/FV`) | terrain-following | `hevi`, `wrf`, `verlet`, `fb` |
 | FV, Arakawa C-grid with cut cells (`src/FV/cutcell_*`) | Cartesian cells cut by `zs(x)` | `hevi_amf` (default), `rosenbrock_amf`, `hevi`, `verlet`, `fb` |
 
@@ -310,10 +310,6 @@ diagnostic offset of θ′ against θ̄(z) at the cell centres, not part of the 
   whether the vertical direction is implicit everywhere or only in the mask.
 - **Wider choices of `L_I`:** adaptive masks, for example advection implicit where the local
   advective CFL is large, and the same splittings for DGSEM.
-- **Retained HDG traces:** the 1D `HDGRelaxTheta` prototype keeps face traces with a relaxation
-  equation `ε dq̂/dt = Hq − q̂`. The 2D DGSEM fast operator currently eliminates the traces; `fb`
-  can relax a stored face momentum (`EPS_IF`). Long hill runs are meant to keep the relaxed traces
-  together with an HEVI vertical solve.
 
 ## References
 

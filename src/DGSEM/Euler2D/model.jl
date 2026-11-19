@@ -32,7 +32,7 @@ non-conservative two-point term ρ_avg (φ_k - φ_i), φ = g z (SBP-compatible w
 differencing; a pointwise source -g ρ_i makes the linearization about stratified states
 unstable with a growth rate O(h)). No background state is subtracted: the reference is used for
 output (primed fields) only; the well-balanced gravity means keep the isothermal (:waruszewski)
-or constant-θ (:artiano) atmosphere at rest. Fluxes: see `SplitExplicitEuler.Euler1D`; volume_flux=:kg with
+or constant-θ (:artiano) atmosphere at rest. Fluxes: see fluxes.jl; volume_flux=:kg with
 gravity=:souza is the Kennedy–Gruber split form with the arithmetic-mean gravity term (CGDycore).
 c_lmars > 0: constant sound speed in the LMARS interface flux (0: mean of the local values).
 """

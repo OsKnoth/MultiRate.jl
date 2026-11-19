@@ -39,14 +39,13 @@ the contravariant LMARS momentum) and a momentum part (face terms through the LM
 `fast_rhs_thermo!`, `fast_rhs_momentum!`, `interface_momentum!`. Fast integrators:
   :verlet  Störmer–Verlet (Xu, van der Vegt, Bokhove 2008, eq. 4.6 with f = 0): ρ, Θ half step,
            m full step, ρ, Θ half step; with tau_scale = 0 (central interface) exactly symplectic
-  :fb      forward-backward: m explicit, M̂ implicit (relaxation time eps_if), then ρ, Θ
+  :fb      forward-backward: m, then ρ, Θ (with M̂ = M̂(q))
   :imex    explicit IMEX tableau (2-stage RK2: only the LMARS dissipation stabilizes it)
   :hevi    horizontal explicit matrix-free, vertical implicit: with the face momentum as unknown
            the vertical system reduces per node column to element-local dense blocks in
            (ρ, Θ, U = Ja^η·m) and a tridiagonal system for the face momentum (cf. CGDycore.jl,
            DGSEM/JacHDGJNeu.jl); factors are recomputed at every re-freeze. The buoyancy is split
            exactly, g J e_z = Ja^ξ D_ξ(gZ) + Ja^η D_η(gZ), into the horizontal and vertical part.
-  :hevi_relax same vertical solve, with an implicitly relaxed horizontal interface momentum.
 """
 module Euler2D
 
@@ -56,13 +55,10 @@ import ..Common: project2d, total2d, output_fields, field_section, sound_speed_m
 using ..Common: open_vtkhdf, write_vtkhdf!, plot_fields
 using ..TimeStepping: AbstractFastOperator, rhs_nonlinear, IMEX_GM
 import ..TimeStepping: rhs_nonlinear!, fast_operator, fast_apply!, fast_rhs_thermo!, fast_rhs_momentum!,
-                       interface_update!, fast_rhs_horizontal!, fast_rhs_horizontal_relaxed!, vertical_apply!, vertical_factor, vertical_solve!,
+                       interface_update!, fast_rhs_horizontal!, vertical_apply!, vertical_factor, vertical_solve!,
                        fast_rhs_hthermo!, fast_rhs_hmomentum!, frozen_ncoef, frozen_data!, frozen_fast!,
                        frozen_stage_begin!, frozen_step_end!, frozen_vertical_rhs!, frozen_vertical_implicit!,
-                       frozen_vertical_solve!, frozen_vertical_step!, frozen_hthermo!, frozen_hmomentum!, frozen_hthermo_reeval, frozen_hflow!, bokhove_verlet_loop!, frozen_momentum_implicit!
-using ..HDGRelaxTheta: gll, lagrange_basis, gauss_legendre
-import ..HDGRelaxTheta: initial_state, tendency
-using ..SplitExplicitEuler: mass_theta_flux, gravity_mean
+                       frozen_vertical_solve!, frozen_vertical_step!, frozen_hthermo!, frozen_hmomentum!, frozen_hthermo_reeval, frozen_hflow!
 
 export Mesh2D, Euler2DModel, HDGFast2D, with_sponge, output_fields, field_section, open_vtkhdf, write_vtkhdf!, plot_fields,
        rhs_nonlinear, rhs_nonlinear!, fast_operator, fast_matrix, sound_speed_max, dss,
@@ -72,6 +68,8 @@ export Mesh2D, Euler2DModel, HDGFast2D, with_sponge, output_fields, field_sectio
 
 const NV = 4
 
+include("quadrature.jl")
+include("fluxes.jl")
 include("metric.jl")
 include("grid.jl")
 include("model.jl")

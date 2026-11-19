@@ -30,7 +30,6 @@ mutable struct HDGFast2D <: AbstractFastOperator
     # interface variable: contravariant momentum ñ·m̂ at the face nodes (Verlet / forward-backward)
     Mhx::Matrix{Float64}            # ξ-faces: (np, Nex Nez), face to the right of element e
     Mhz::Matrix{Float64}            # η-faces: (np, Nex (Nez+1)), index (kz-1) Nex + ex
-    eps_if::Float64                 # relaxation time of the interface variable (:fb)
     # work arrays
     work::Vector{Vector{Float64}}
     Fξ::Matrix{Float64}
@@ -44,12 +43,10 @@ mutable struct HDGFast2D <: AbstractFastOperator
     ρ0::Array{Float64,3}
     Mv1::Array{Float64,4}; Mv4::Array{Float64,4}; Gv1::Array{Float64,4}; Gv2::Array{Float64,4}
     Mh1::Array{Float64,4}; Mh4::Array{Float64,4}; Gh1::Array{Float64,4}; Gh2::Array{Float64,4}
-    splitok::Bool                   # fast solver uses fast_kernel!/column solver only (:hevi, :hevi_verlet, :hevi_relax)
+    splitok::Bool                   # fast solver uses fast_kernel!/column solver only (:hevi, :hevi_verlet)
     vadv::Bool                      # vertical momentum transport by the fast velocity (DG_VADV_FAST)
     u0::Array{Float64,3}
     w0::Array{Float64,3}
-    bflows::Dict{Float64,Any}       # :verlet_b: c -> (e^{cD}, c φ₁(cD)), D = D_a + D_b; reset at every re-freeze
-    bblocks::Any                    # :verlet_b: block structure of D (fixed pattern, kept across re-freezes)
 end
 
 """
@@ -59,7 +56,7 @@ accordingly). Off by default; switch it on only when needed: without it the term
 explicit slow part N - L, where it couples the slow step to the vertical acoustics with the
 vertical Courant number U Δt/Δz. Agnesi a100 (U Δt/Δz ≈ 13) blows up without it, a10 (≈ 1.3)
 does not need it. Works with the pointwise and the split-form operator (`DG_SPLIT_FAST`); applies
-to the fast solvers :hevi, :hevi_verlet and :hevi_relax.
+to the fast solvers :hevi and :hevi_verlet.
 """
 const DG_VADV_FAST = Ref(false)
 
@@ -102,30 +99,27 @@ function HDGFast2D(m::Euler2DModel; tau_scale = 1.0)
     return HDGFast2D(M, m.gas, nq, 0, 0.0, Float64(tau_scale), Mdiag, 1 ./ Mdiag, zeros(nq),
                      arr(), arr(), arr(), arr(), arr(), arr(), arr(), arr(), arr(), 0.0,
                      gZξ, gZη, false, Dict{Float64,Any}(),
-                     zeros(np, Ne), zeros(np, M.Nex * (M.Nez + 1)), 0.0,
+                     zeros(np, Ne), zeros(np, M.Nex * (M.Nez + 1)),
                      [zeros(nq) for _ in 1:7], zeros(np, np), zeros(np, np), zeros(np, np), Iint,
                      zeros(length(M.mult)),
-                     false, arr(), (zeros(np, np, np, Ne) for _ in 1:8)..., false, false, arr(), arr(), Dict{Float64,Any}(), nothing)
+                     false, arr(), (zeros(np, np, np, Ne) for _ in 1:8)..., false, false, arr(), arr())
 end
 
 """
     fast_operator(model, q; pfac=γ, eps=0.0, tau_scale=1.0, fast=:imex, reuse=true)
 
-Fast operator with coefficients frozen at the full 2D state q (matrix-free). `eps_if` is the
-relaxation time for the face momentum used by `:fb`. With reuse = true the operator stored in
+Fast operator with coefficients frozen at the full 2D state q (matrix-free). With reuse = true the operator stored in
 the model is re-frozen in place (no reallocation); fast = :hevi also (re)builds the vertical
 implicit operator.
 """
-function fast_operator(m::Euler2DModel, q; pfac = m.gas.γ, eps = 0.0, eps_if = 0.0, tau_scale = 1.0, fast::Symbol = :imex,
+function fast_operator(m::Euler2DModel, q; pfac = m.gas.γ, eps = 0.0, tau_scale = 1.0, fast::Symbol = :imex,
                        reuse::Bool = true)
     eps == 0 || error("the 2D fast operator eliminates the traces (eps = 0)")
-    eps_if >= 0 || throw(ArgumentError("eps_if must be nonnegative"))
     s = reuse && m.fastref[] isa HDGFast2D ? m.fastref[]::HDGFast2D : HDGFast2D(m; tau_scale = tau_scale)
     s.tau = Float64(tau_scale)
-    s.eps_if = Float64(eps_if)
-    s.hevi |= fast in (:hevi, :hevi_relax, :hevi_verlet)
+    s.hevi |= fast in (:hevi, :hevi_verlet)
     # fb, verlet and imex integrate their own pointwise kernels; N - L must use the same L
-    s.splitok = fast in (:hevi, :hevi_verlet, :hevi_relax)
+    s.splitok = fast in (:hevi, :hevi_verlet)
     refreeze!(s, m, q, pfac)
     reuse && (m.fastref[] = s)
     return s
@@ -201,7 +195,6 @@ function refreeze!(s::HDGFast2D, m::Euler2DModel, q, pfac)
     for (c, F) in s.lucache
         factor_hevi!(F, s, c)
     end
-    empty!(s.bflows)
     return s
 end
 

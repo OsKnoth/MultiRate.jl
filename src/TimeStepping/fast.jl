@@ -31,13 +31,11 @@ q0 (qout may alias q0). Methods:
   :hevi_verlet  Strang: horizontal Störmer–Verlet half step, vertical Crank–Nicolson,
            horizontal half step (needs `fast_rhs_hthermo!`, `fast_rhs_hmomentum!`)
   :verlet  Störmer–Verlet: (ρ, Θ) half step, momentum full step, (ρ, Θ) half step
-  :verlet_b Störmer–Verlet with the momentum self-coupling (LMARS face pressure) integrated exactly in
-           the half steps (Bokhove's partition; DG `HDGFast2D`)
   :ei      Verlet EI (Imex.pdf, version 1 EI): (ρ, Θ) half step explicit in the full divergence,
            U explicit, W with the trapezoidal rule in the vertical pressure gradient and gravity
            (off-centring `EI_GAMMA`), (ρ, Θ) half step; one column solve per step (needs
            `fast_rhs_hthermo!`, `fast_rhs_hmomentum!`, `ei_vertical!`, `ei_vertical_solve!`)
-  :fb      forward-backward: momentum explicit, interface implicit, then (ρ, Θ)
+  :fb      forward-backward: momentum, then (ρ, Θ)
   :wrf     WRF acoustic step: horizontal momentum forward, then (ρ, Θ, vertical momentum)
            vertically implicit, off-centred Crank–Nicolson (β = WRF_BETA[]), divergence damping
            by the pressure extrapolation of WRF (γd = WRF_SMDIV)
@@ -135,7 +133,7 @@ end
 const NO_COMPOSITION = [1.0]
 const COMPOSITIONS = Dict{Symbol,Tuple{Symbol,Vector{Float64}}}(
     Symbol(base, suf) => (base, collect(ws))
-    for base in (:verlet, :verlet_b, :hevi, :hevi_verlet, :hevi_relax, :imex, :fb, :ei, :cs)
+    for base in (:verlet, :hevi, :hevi_verlet, :imex, :fb, :ei, :cs)
     for (suf, ws) in (("_y4", YOSHIDA4), ("_s4", SUZUKI4), ("_y6", YOSHIDA6)))
 
 """max|w_k| of the composition: the base loop sees substeps up to this factor times dτ."""
@@ -151,12 +149,8 @@ function _fast_loop!(method, q, s, f, dt, nsteps, Y, k1, k2, tmp, rhs)
         hevi_loop!(q, s, f, dt, nsteps, Y, k1, k2, tmp, rhs)
     elseif method == :hevi_verlet
         hevi_verlet_loop!(q, s, f, dt, nsteps, Y, k1, k2, tmp, rhs)
-    elseif method == :hevi_relax
-        hevi_loop!(q, s, f, dt, nsteps, Y, k1, k2, tmp, rhs; relax_horizontal = true)
     elseif method == :verlet
         verlet_loop!(q, s, f, dt, nsteps, k1, k2)
-    elseif method == :verlet_b
-        bokhove_verlet_loop!(q, s, f, dt, nsteps, k1, k2)
     elseif method == :ei
         ei_loop!(q, s, f, dt, nsteps, Y, k1, k2)
     elseif method == :fb
@@ -164,7 +158,7 @@ function _fast_loop!(method, q, s, f, dt, nsteps, Y, k1, k2, tmp, rhs)
     elseif method == :wrf
         wrf_loop!(q, s, f, dt, nsteps, Y, k1, k2, tmp, rhs)
     else
-        error("unknown fast method $method (available: :imex, :hevi, :hevi_verlet, :hevi_relax, :verlet, :fb, :wrf, :rosenbrock_amf, :hevi_amf, and _y4/_s4/_y6 compositions of the symmetric ones)")
+        error("unknown fast method $method (available: :imex, :hevi, :hevi_verlet, :verlet, :fb, :wrf, :rosenbrock_amf, :hevi_amf, and _y4/_s4/_y6 compositions of the symmetric ones)")
     end
     return q
 end
@@ -183,25 +177,17 @@ function imex_loop!(q, s, f, dt, nsteps, Y, k1, k2)
 end
 
 """HEVI with the IMEX tableau: horizontal part explicit, vertical part implicit."""
-function hevi_loop!(q, s, f, dt, nsteps, Y, k1, k2, tmp, rhs; relax_horizontal = false)
+function hevi_loop!(q, s, f, dt, nsteps, Y, k1, k2, tmp, rhs)
     F = vertical_factor(s, dt * IMEX_GM)
     a21 = IMEX_AE[2, 1]
     a31 = IMEX_AE[3, 1]
     a32 = IMEX_AE[3, 2]
     i32 = IMEX_AI[3, 2]
     for _ in 1:nsteps
-        if relax_horizontal
-            fast_rhs_horizontal_relaxed!(k1, s, q, f, dt)
-        else
-            fast_rhs_horizontal!(k1, s, q, f)
-        end
+        fast_rhs_horizontal!(k1, s, q, f)
         @. rhs = q + (dt * a21) * k1
         vertical_solve!(Y, s, F, rhs)                    # implicit stage 2
-        if relax_horizontal
-            fast_rhs_horizontal_relaxed!(k2, s, Y, f, dt)
-        else
-            fast_rhs_horizontal!(k2, s, Y, f)
-        end
+        fast_rhs_horizontal!(k2, s, Y, f)
         vertical_apply!(tmp, s, Y)
         @. rhs = q + dt * (a31 * k1 + a32 * k2 + i32 * tmp)
         vertical_solve!(q, s, F, rhs)                    # stage 3 = new state
@@ -265,10 +251,6 @@ end
 """Placement of the constant fast forcing in `:hevi_verlet` (:vertical or :horizontal)."""
 const HEVI_VERLET_FORCING = Ref(:horizontal)
 
-"""Störmer–Verlet with the momentum self-coupling D_b integrated exactly in the half steps (Bokhove's
-partition, `fast = :verlet_b`); implemented by the model (DG: `HDGFast2D`)."""
-function bokhove_verlet_loop! end
-
 """Störmer–Verlet (Xu, van der Vegt, Bokhove 2008, eq. 4.6 with f = 0)."""
 function verlet_loop!(q, s, f, dt, nsteps, kT, km)
     for _ in 1:nsteps
@@ -284,13 +266,13 @@ function verlet_loop!(q, s, f, dt, nsteps, kT, km)
     return q
 end
 
-"""Forward-backward Euler: momentum explicit, interface variables implicit (relaxed), then (ρ, Θ)."""
+"""Forward-backward Euler: momentum, then (ρ, Θ) with the interface variables of the new momentum."""
 function fb_loop!(q, s, f, dt, nsteps, kT, km)
     interface_update!(s, q)
     for _ in 1:nsteps
         fast_rhs_momentum!(km, s, q, f)
         @. q += dt * km
-        interface_update!(s, q; relax = true, dt = dt)
+        interface_update!(s, q)
         fast_rhs_thermo!(kT, s, q, f)
         @. q += dt * kT
     end

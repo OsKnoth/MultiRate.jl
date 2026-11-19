@@ -10,27 +10,21 @@ Submodules (load with e.g. `using MultiRate.Euler2D`):
                       :verlet, :fb, :wrf), RK4 reference; interface for the discretizations
   LinearAnalysis      amplification matrices of MIS steps for linear test problems (Fourier modes)
   DGSEM:
-    HDGRelaxTheta     1D nodal DGSEM fast operator (HDG, LMARS, relaxed traces, energy-stable split form)
-    SplitExplicitEuler 1D nonlinear DGSEM with the fast operator of HDGRelaxTheta
-    Euler2D           2D x–z DGSEM with terrain, matrix-free fast operator, HEVI column solver
+    Euler2D           2D x–z DGSEM with terrain, matrix-free fast operator, HEVI column solver,
+                      DGPressureModel (pressure as additional variable, column solve by LU or static condensation)
   FV:
     FV2D              WRF-style finite volumes on an Arakawa C-grid (flat)
     FV3D              3D C-grid finite volumes, flat or cut cells, frozen split (src/FV3D)
-  Legacy:
-    HDGRelaxEuler     v1: modal DG, linearized perturbation equations
 """
 module MultiRate
 
 include("Common/Common.jl")
 include("TimeStepping/TimeStepping.jl")
 include("LinearAnalysis/LinearAnalysis.jl")
-include("Legacy/HDGRelaxEuler.jl")
-include("DGSEM/HDGRelaxTheta/HDGRelaxTheta.jl")
-include("DGSEM/SplitExplicitEuler/SplitExplicitEuler.jl")
 include("DGSEM/Euler2D/Euler2D.jl")
 include("FV/FV2D.jl")
 include("FV3D/FV3D.jl")
 
-export Common, TimeStepping, LinearAnalysis, HDGRelaxEuler, HDGRelaxTheta, SplitExplicitEuler, Euler2D, FV2D, FV3D
+export Common, TimeStepping, LinearAnalysis, Euler2D, FV2D, FV3D
 
 end # module

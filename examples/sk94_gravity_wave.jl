@@ -1,8 +1,7 @@
 # Nonhydrostatic gravity wave of Skamarock & Klemp (1994, Mon. Wea. Rev. 122, 2623): channel 300 km × 10 km, U = 20 m/s,
 # N = 0.01/s, θ' = Δθ0 sin(πz/H)/(1 + ((x - L/3)/a)²), Δθ0 = 0.01 K, a = 5 km, T = 3000 s, grid aspect ratio 1
 # (Δx = Δz = 1 km: DG degree 5 on 60 × 2 elements of 5 km). MIS54 with the explicit Störmer–Verlet small step
-# (docs/fast_2d): S1 for the standard formulation (DGSEM, LMARS in ρu), E1 for the extended one (interface momentum,
-# κ = 1/2). Error of θ against RK4 of the standard model; θ' at T as in Fig. 1 of the paper.
+# (docs/fast_2d, scheme S1; DGSEM, LMARS in ρu). Error of θ against RK4; θ' at T as in Fig. 1 of the paper.
 #
 #     [DTS=12,24] [NSUBS=..] julia --project=examples examples/sk94_gravity_wave.jl
 include(joinpath(@__DIR__, "euler2d_common.jl"))
@@ -16,7 +15,6 @@ base = build_model(:dg; L, H, P = 5, NEX = 60, NEZ = 2, ρr, Θr, gas)
 qb = project2d(base, (x, z) -> (ρ = Θr(z) / (θr(z) + Δθ0 * sin(π * z / H) / (1 + ((x - L / 3) / a)^2)); (ρ, ρ * U, 0.0, Θr(z))))
 M = base.mesh
 ms = E2.DGPressureModel(base; lmars = :momentum)            # standard
-me = E2.DGPressureModel(base; interface = true)             # extended (κ = 1/2)
 c = sound_speed_max(base, qb)
 dτ0 = 0.85 * 0.52 * min(M.Lx / M.Nex, M.H / M.Nez) / ((2M.p + 1) * c)   # explicit Verlet limit (CFL table, P = 5)
 nref = ceil(Int, T / (0.5dτ0))
@@ -26,7 +24,7 @@ tr = @elapsed qref = TS.run_rk4(ms, E2.pressure_state(ms, qb), T / nref, nref)
 @printf("SK94 gravity wave, %s; explicit small step %.2f s; RK4 %d steps (%.0f s); max θ' %.2e K\n",
         grid_info(base), dτ0, nref, tr, maximum(θref .- θr.(M.Z)))
 res = Dict{Tuple{Symbol,Float64,Float64},Any}()
-for Δt in DTS, (lab, m) in ((:S1, ms), (:E1, me)), f in FACS
+for Δt in DTS, (lab, m) in ((:S1, ms),), f in FACS
     n = round(Int, T / Δt); nsub = ceil(Int, Δt / (f * dτ0))
     q = similar(qref)
     t = @elapsed try
@@ -40,7 +38,7 @@ for Δt in DTS, (lab, m) in ((:S1, ms), (:E1, me)), f in FACS
             isfinite(e) ? @sprintf("error θ %.2e K", e) : "failed", t)
 end
 
-# θ' at T (Fig. 1 of the paper): RK4, S1 and E1 at Δt = DTS[1] with the first stable small step. DG nodes on element faces
+# θ' at T (Fig. 1 of the paper): RK4 and S1 at Δt = DTS[1] with the first stable small step. DG nodes on element faces
 # exist twice: average them for the contour plot.
 function unique_points(X, Z, V)
     d = Dict{Tuple{Float64,Float64},Tuple{Float64,Int}}()
@@ -51,13 +49,12 @@ function unique_points(X, Z, V)
     return first.(ks), last.(ks), [d[k][1] / d[k][2] for k in ks]
 end
 firststable(lab) = (for f in FACS; q = res[(lab, DTS[1], f)]; all(isfinite, q) && return (f, q); end; (NaN, fill(NaN, 1)))
-fS, qS = firststable(:S1); fE, qE = firststable(:E1)
+fS, qS = firststable(:S1)
 X = vec(M.X) ./ 1e3; Z = vec(M.Z) ./ 1e3
 lev = vcat(collect(-5e-3:5e-4:-5e-4), collect(5e-4:5e-4:5e-3))
-fig = Figure(; size = (1100, 1250))
-panels = (("θ' [K], RK4", qref, false), (@sprintf("θ' [K], S1 (standard), Δt = %g s, small step %.1f × limit", DTS[1], fS), qS, false),
-          (@sprintf("θ' [K], E1 (extended, κ = 1/2), Δt = %g s, small step %.1f × limit", DTS[1], fE), qE, false),
-          ("θ(S1) - θ(RK4) [K]", qS, true), ("θ(E1) - θ(RK4) [K]", qE, true))
+fig = Figure(; size = (1100, 760))
+panels = (("θ' [K], RK4", qref, false), (@sprintf("θ' [K], S1, Δt = %g s, small step %.1f × limit", DTS[1], fS), qS, false),
+          ("θ(S1) - θ(RK4) [K]", qS, true))
 for (r, (lab, q, diff)) in enumerate(panels)
     all(isfinite, q) || continue
     v = diff ? vec(θf(q) .- θref) : vec(θf(q) .- θr.(M.Z))

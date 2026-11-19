@@ -1,14 +1,13 @@
 # Agnesi hills for the split-explicit MIS introduction.
 # Run one of the three scales: a1, a10, a100 (half-widths 1, 10, 100 km).
 # The channel is 40 a wide; the default 50 elements keep nodal Δx = 0.2 a at P = 4.
-# HEVI is the default. `hevi_relax` compares HEVI with relaxed horizontal DG face momentum;
-# `fb` demonstrates the separate forward-backward relaxed update. `fvc` selects cut-cell FV.
+# HEVI is the default; `fb` is the forward-backward step. `fvc` selects cut-cell FV.
 #
 #     julia --project=examples examples/intro_2d/agnesi_hills.jl a1  [T|-] [fast] [dg|fv|fvc]
 #     julia --project=examples examples/intro_2d/agnesi_hills.jl a10 [T|-] [fast] [dg|fv|fvc]
 #     julia --project=examples examples/intro_2d/agnesi_hills.jl a100 [T|-] [fast] [dg|fv|fvc]
 #
-# Set NEX, NEZ, P, LX, LFACTOR, EPS_IF, H0 and VADV (auto|0|1) in the environment to change the run.
+# Set NEX, NEZ, P, LX, LFACTOR, H0 and VADV (auto|0|1) in the environment to change the run.
 
 include(joinpath(@__DIR__, "../euler2d_common.jl"))
 
@@ -31,9 +30,8 @@ table_default, nsub_default, fast_default = default_scheme(disc)
 table = Symbol(get(ENV, "TABLE", string(table_default)))
 FAST = length(ARGS) > 2 ? Symbol(ARGS[3]) : fast_default
 NSUB = parse(Int, get(ENV, "NSUB", string(nsub_default)))
-eps_if = parse(Float64, get(ENV, "EPS_IF", "0"))
 if disc == :dg
-    FAST in (:hevi, :hevi_verlet, :hevi_relax, :fb, :verlet) || error("DG hill fast method must be hevi, hevi_verlet, hevi_relax, fb or verlet")
+    FAST in (:hevi, :hevi_verlet, :fb, :verlet) || error("DG hill fast method must be hevi, hevi_verlet, fb or verlet")
 elseif disc == :fvc
     FAST in (:hevi, :hevi_amf, :fb, :verlet, :rosenbrock_amf) || error("cut-cell FV hill fast method must be hevi, hevi_amf, fb, verlet or rosenbrock_amf")
 else
@@ -56,9 +54,9 @@ set_vadv!(U, Δt, H / (P * NEZ))
 name = "intro_agnesi_$(case)_$(round(Int, L / a))a_$(disc)_$(FAST)"
 @printf("Agnesi hill %s: a = %.0f km, x domain = %.0f km (%.0f a), H = %.1f km\n",
         case, a / 1e3, L / 1e3, L / a, H / 1e3)
-@printf("%s, T = %.0f s, %s, nsub = %d, fast = %s, eps_if = %.3g s\n",
-        grid_info(model), T, table, NSUB, FAST, eps_if)
+@printf("%s, T = %.0f s, %s, nsub = %d, fast = %s\n",
+        grid_info(model), T, table, NSUB, FAST)
 run_with_output(model, q0; name, Δt, T, nsub = NSUB, table, fast = FAST,
-                 fast_options = (; eps_if), refreeze_every = 10, nout = 10,
+                 refreeze_every = 10, nout = 10,
                  plot_names = ["w", "theta_prime"],
                  zoom = ((xm - min(15a, L / 2), xm + min(15a, L / 2)), (0.0, 10e3)))

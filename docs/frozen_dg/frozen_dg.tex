@@ -374,7 +374,7 @@ $\dt=100$\,s fails, and EB4 at 100\,s on the hill is wrong by 9\,K, with every s
 (MIS54, $\dt=100$\,s): Verlet 18\,s, CS 18\,s, CSFB 9\,s. The predictors and the re-evaluation cost
 CS about six matrix-vector products and one column solve per small step, which still has to be reduced.
 
-\subsection{Implicit face dissipation: Verwer's $D$, Bokhove's Verlet and the HDG traces}\label{sec:implicitD}
+\subsection{Implicit face dissipation: Verwer's $D$ and Bokhove's Verlet}\label{sec:implicitD}
 In Verwer's Maxwell system the second block row contains the conductivity, $b'=K^{\rm T}a-\sigma b$, and his component
 splitting takes it with the trapezoidal rule. In \eqref{eq:csdg} this is done for the vertical $D_{b1}$ (and, through
 the half steps, for $D_{a1}$), but not for the horizontal $D_{a0}$, $D_{b0}$.
@@ -399,8 +399,7 @@ C_c(D_0)=(I-\tfrac c2D_0)^{-1}(I+\tfrac c2D_0)
 \]
 is the trapezoidal rule for $z'=D_0z$; it leaves the face means $\avg p$, $\avg{m_n}$ unchanged and multiplies the jumps
 $\jump p$, $\jump{m_n}$ by $(1-\tfrac c2\delta)/(1+\tfrac c2\delta)$, $\delta$ the jump rate of the face ($\delta=c_f\,s/(J\,w_{\rm end})$ up to the
-frozen coefficients). In HDG terms it is the implicit, trapezoidal update of the traces $\hat M$, $\hat P$; the
-existing relaxation of $\hat M$ in \code{HDGFast2D} (\code{eps\_if}) is the first-order (implicit Euler) form of it.
+frozen coefficients). In HDG terms it is the implicit, trapezoidal update of the traces $\hat M$, $\hat P$.
 
 \paragraph{Proposed step.}
 \[
@@ -531,107 +530,14 @@ lengths of a stage).
 
 \paragraph{The vertical part in HDG form.} The column system can likewise be condensed onto the $\eta$-face traces: the element
 rows are eliminated locally and a tridiagonal system per node column remains for the face momentum (the \code{:hevi}
-solver of the base model, after CGDycore.jl). This replaces the sparse LU and is the second option to reduce the cost of
-CS; it does not change the scheme.
-
-\subsection{The HDG fast operator: Störmer--Verlet with Bokhove's partition (\code{fast = :verlet\_b})}\label{sec:hdgb}
-The refrozen HDG fast operator of the base model (\code{HDGFast2D}, \code{fast\_split.jl}, used by \code{run\_mis}) has a
-different structure. The thermodynamic rows see only the face momentum $\hat M$, an additional face variable,
-and the momentum rows the face pressure $\hat P$:
-\[
-a'=\hat K\,b+D_a\,a+f_a,\qquad b'=L\,a+D_b\,b+f_b,\qquad
-\hat M^*=\tilde n\cdot\avg m-\tau|\tilde n|\tfrac{a}{2c}\jump\Theta,\quad \hat P=\avg{a\Theta}-\tfrac{\tau c}2\jump{m_n},
-\]
-$D_a$ the $\jump\Theta$ part of $\hat M^*$, $D_b$ the $\jump{m_n}$ part of $\hat P$ (and $\tau c\,m_n$ at the walls), on all faces: the
-explicit fast step is limited by the smallest element size, here the vertical one. The steps used so far are Störmer--Verlet
-(\code{:verlet}: $\hat M=\hat M^*(q)$ before each half step, $D_b$ explicit in the momentum step) and symplectic Euler
-(\code{:fb}, $\hat M$ relaxed towards $\hat M^*$ by implicit Euler with the time \code{eps\_if}).
-
-\paragraph{1D analysis} (\code{docs/frozen\_dg/hdg\_trace\_1d.jl}, $P=4$, limit $c\,h/\Delta x_e$, $\varepsilon_{\rm if}=\kappa h$): Verlet and symplectic
-Euler 0.075 for $\kappa=0$, 0.049/0.046 for $\kappa=0.5$, 0.031 for $\kappa=1$, 0.021 for $\kappa=2$; symplectic Euler with exact $D_b$ 0.075;
-Verlet with Bokhove's flows 0.182. The relaxation of $\hat M$ lowers the limit: it delays the central part $\avg{m_n}$ as well, and a
-delayed coupling destabilises the skew acoustic system. (With relaxation the eigenvalue 1 of the constant mode is defective;
-the stability test needs a tolerance of $10^{-6}$ against round-off.)
-
-\paragraph{The step.} As in Section~\ref{sec:implicitD}, with the flows
-\[
-\mathcal A_c:\ a'=\hat Kb+f_a,\ b'=D_bb;\qquad \mathcal B_c:\ a'=D_aa,\ b'=La+f_b,
-\]
-$\hat K$ with the central $\avg{m_n}$ only, $L$ with the central $\avg{a\Theta}$ only; both exact: $b\leftarrow e^{cD_b}b$, $a\leftarrow a+\hat K\int b+cf_a$,
-$\int b=c\varphi_1(cD_b)b$, and likewise for $\mathcal B$. The step is $\mathcal A_{h/2}\circ\mathcal B_h\circ\mathcal A_{h/2}$, and the $\mathcal A_{h/2}$ of consecutive steps
-combine to one $\mathcal A_h$. $D=D_a+D_b$ is assembled per re-freeze (checked against the kernels to $2\cdot10^{-16}$). Its blocks
-(one per face node pair, linked at the element corners to at most 8 unknowns) are found once; per step length the
-exponentials are computed blockwise, rank-one blocks in closed form ($X^2=\lambda X$: $e^X=I+\varphi_1(\lambda)X$,
-$\varphi_1(X)=I+\varphi_2(\lambda)X$), the corner blocks by the exponential of an augmented matrix.
-
-\paragraph{Order and stability} (gravity wave grid, $P=4$, $30\times4$ elements, CFL $=c\,\Delta\tau(2p+1)/h$, $h$ the vertical element
-size). Growth per fast step (power iteration of the linear part, $U=20$\,m/s):
-\begin{center}\footnotesize\setlength{\tabcolsep}{3pt}
-\begin{tabular}{lcccccc}\toprule
-CFL & 0.6 & 0.7 & 0.9 & 1.2 & 1.4 & 1.6\\\midrule
-\code{:verlet} flat / hill & 1.0014 / 1.0015 & 1.133 / 1.114 & 2.18 & 4.17 / 4.12 & 5.75 & 7.51\\
-\code{:verlet\_b} flat / hill & 1.0014 / 1.0015 & 1.0011 / 1.0012 & 1.0005 & 1.0008 / 1.0007 & 1.0006 / 1.0007 & 1.21\\\bottomrule
-\end{tabular}
-\end{center}
-\code{:verlet\_b} is stable up to CFL 1.4 instead of 0.63, 2.2 times the step (test mesh $P=3$: 1.8 instead of 0.79). Fast loop
-alone on the hill (20\,s, relative error against \code{:verlet} with 3000 steps): \code{:verlet} with 48/96/192 steps
-$2.1\cdot10^{-4}$/$9.3\cdot10^{-5}$/$4.4\cdot10^{-5}$, first order (explicit Euler for $D_b$ in the momentum step); \code{:verlet\_b} with
-24/48/96 steps $5.0\cdot10^{-4}$/$1.3\cdot10^{-4}$/$3.3\cdot10^{-5}$, second order. With the slow forcing $N-L$ of the MIS step the numbers are
-the same.
-
-\paragraph{MIS results} (\code{examples/hdg\_verlet\_b.jl}, MIS4a, error of $\theta$ in K against RK4, $T=3000$\,s; rows: $\dt$ and $n_{\rm sub}$ for the four CFL):
-\begin{center}\footnotesize\setlength{\tabcolsep}{4pt}
-\begin{tabular}{llcccc}\toprule
- & & CFL 0.535 & 0.9 & 1.2 & 1.35\\\midrule
-flat, 10\,s (24/14/11/10) & \code{:verlet} & $6.04\cdot10^{-6}$ & -- & -- & --\\
- & \code{:verlet\_b} & $6.08\cdot10^{-6}$ & $6.32\cdot10^{-6}$ & $6.66\cdot10^{-6}$ & $6.74\cdot10^{-6}$\\
-flat, 20\,s (47/28/21/19) & \code{:verlet} & $2.22\cdot10^{-5}$ (6\,s) & -- & -- & --\\
- & \code{:verlet\_b} & $2.22\cdot10^{-5}$ (17\,s) & $2.23\cdot10^{-5}$ (14\,s) & $2.25\cdot10^{-5}$ (13\,s) & $2.26\cdot10^{-5}$ (12\,s)\\\midrule
-hill, 10\,s (25/15/11/10) & \code{:verlet} & $8.83\cdot10^{-4}$ & -- & -- & --\\
- & \code{:verlet\_b} & $3.44\cdot10^{-3}$ & $7.79\cdot10^{-3}$ & $1.91\cdot10^{-2}$ & $1.60\cdot10^{-2}$\\
-hill, 20\,s (49/29/22/20) & \code{:verlet} & $1.41\cdot10^{-3}$ & -- & -- & --\\
- & \code{:verlet\_b} & $3.21\cdot10^{-3}$ & $9.11\cdot10^{-3}$ & $1.60\cdot10^{-2}$ & $1.60\cdot10^{-2}$\\\bottomrule
-\end{tabular}
-\end{center}
-On the flat grid \code{:verlet\_b} runs with 2.4 times fewer fast steps without loss of accuracy. On the hill it converges to the
-same MIS solution ($n_{\rm sub}=49$/97: $1.6\cdot10^{-3}$/$9.9\cdot10^{-4}$, \code{:verlet} $8.8\cdot10^{-4}$/$9.1\cdot10^{-4}$), but its fast-step error is
-much larger. Against MIS with \code{:verlet} at $n_{\rm sub}=200$ the difference is small at first and then grows ($n_{\rm sub}=25$: $1.9\cdot10^{-5}$\,K
-at 300\,s, $2.7\cdot10^{-3}$ at 3000\,s, $1.1\cdot10^{-2}$ at 6000\,s; \code{:verlet}: $5.2\cdot10^{-5}$, $1.6\cdot10^{-4}$, $4.3\cdot10^{-4}$), not exponentially, and it
-sits at the $\eta$-face nodes of the lowest element layer in the lee of the hill. Explanation: in a steady state the face
-jumps balance damping and forcing, $D_bb=-(La+f_b)$ on the range of $D_b$. In $\mathcal A_{h/2}\circ\mathcal B_h\circ\mathcal A_{h/2}$ the damping and the
-forcing of a jump sit in different flows; for a scalar jump with rate $\delta$ the fixed point is $F/\delta$ times $x/\sinh x$ ($b$) or
-$x\coth x$ ($a$), $x=h\delta/2$, i.e.\ wrong by $O(1)$ for $h\delta=O(1)$, while explicit Verlet, which updates damping and forcing
-together, keeps steady states exactly. The lee wave of the hill is such a forced quasi-steady state with face jumps.
-Three remedies were tried and dropped:
-\begin{itemize}
-\item the forcing with the damping ($f_b$ in $\mathcal A$, $f_a$ in $\mathcal B$): separates $f_b$ from $La$, which balance hydrostatically; error 0.33
-  (relative) in the fast loop;
-\item the jump part $g=Pr$ of the residual of the other flow moved into the damping flow ($P$ the spectral projector onto the
-  range of the face block; the sum of the flows is unchanged): correct steady states (hill $9.8\cdot10^{-5}$ at 3000\,s), but $g$ lags
-  by half a step, the step drops to first order and is unstable at CFL 1.35;
-\item balance factors $\tanh x/x$, $\sinh x/x$ of $hD/2$ on the increments (exact fixed points, symmetric, second order in the fast loop):
-  the transient jumps are distorted, MIS error $3\cdot10^{-2}$ from the start.
-\end{itemize}
-
-\paragraph{Cost.} A \code{:verlet\_b} step (two kernel evaluations and four products with the face-block matrices, after combining
-the $\mathcal A$ steps) costs 0.7\,ms against 0.33\,ms for \code{:verlet}; the face blocks cost 1--2\,ms per re-freeze and 5--10\,ms per
-step length, and every MIS stage has its own step length. In the MIS runs this outweighs the 2.4 times larger step (flat,
-$\dt=20$\,s: 12\,s against 6\,s).
-
-\paragraph{Assessment.} In the HDG form only $D_b$ sits in the momentum row, as in Verwer's Maxwell system, and Bokhove's exact
-treatment of it, together with $D_a$ from the face momentum, more than doubles the stable explicit step and makes the step of
-second order. As a fast step of MIS it is not better than explicit Verlet: steady forced face jumps (terrain) are not kept, and
-the face blocks are not cheap enough. In the column-implicit \code{:csb} (Section~\ref{sec:csb}) the same flows act only on the
-$\xi$ faces, the stiff vertical jumps are in the column solve, and there the gain is real. Open: a treatment of the face jumps that
-keeps steady states without a lagged residual (e.g.\ the jump part of the forcing integrated together with the damping, but
-hydrostatically balanced), and the relaxation of the dissipative part of $\hat M$ only.
+solver of the base model, after CGDycore.jl). This replaces the sparse LU and does not change the scheme; it is implemented
+for LMARS in $\rho u$ (\code{DGPressureModel(base; lmars = :momentum, vsolver = :hdg)}, \code{docs/fast\_2d}).
 
 \section{Relation to the current implementation and open points}
 \begin{itemize}
 \item Implemented: the pressure as an additional variable with the column-implicit small step
   (Section~\ref{sec:pdg}), and CS with Bokhove's partition of the horizontal part (\code{:csb}, Section~\ref{sec:csb}),
-  stable with 2.5 times larger small steps; for the HDG operator Störmer--Verlet with Bokhove's partition
-  (\code{:verlet\_b}, Section~\ref{sec:hdgb}): 2.2 times larger stable steps, but not a better MIS fast step on terrain; $\pi$ instead of $p$, moisture and the thermodynamic variables $\rho e$, $\rho s$ of the
+  stable with 2.5 times larger small steps; the column solve by static condensation (\code{vsolver = :hdg}); $\pi$ instead of $p$, moisture and the thermodynamic variables $\rho e$, $\rho s$ of the
   FV model are next, and the cost of a \code{:csb} small step.
 \item \code{src/DGSEM/Euler2D/frozen.jl} splits the \emph{conservative} DGSEM (pressure $\{p\}$ in the
   two-point momentum flux, gravity with a logarithmic mean of $\rho$, LMARS in the velocity): there

@@ -5,14 +5,13 @@
 # T = 3000 s against RK4 of the base DG model; explicit Verlet of the base model for comparison.
 #
 #     [TERRAIN=flat|hill] [METHODS=MIS54,WSRK3,EB4] [FASTS=verlet,cs,csfb,csb] [OFFCENTER=ε] [SMDIV=γ]
-#     [DTS=100,50] [NSUBFAC=1,2] [INTERFACE=1 EPSIF=0.05,0.1] julia --project=examples examples/frozen_dg_cs.jl
+#     [DTS=100,50] [NSUBFAC=1,2] [LMARS=velocity|momentum] [VSPLIT=full|contravariant] [VSOLVER=lu|hdg]
+#     julia --project=examples examples/frozen_dg_cs.jl
 #
-# INTERFACE=1: the interface momentum M̂ as additional unknown with the relaxed constraint (docs/hdg_extended),
-# M̂_t = κ σ_f (P̂_L - P̂_R) with κ = KAPPA (default 1/2), or relaxation time ε = EPSIF Δx_e/c; horizontal step simple Verlet (D explicit), vertical part incl. M̂ of the
-# η-faces in the column solve. The error is measured against RK4 of the LMARS model (includes the model error).
-# LMARS=velocity|momentum: the form of LMARS (default: momentum with INTERFACE=1, else velocity = base model);
-# the reference is RK4 of the model with the same form. VSPLIT=full|contravariant: the vertical (implicit) part, all
-# η-terms (full) or only those without m_x (contravariant: the column contains ρ, Θ, p, m_z, as the FV trick).
+# LMARS=velocity|momentum: the form of LMARS (default velocity = base model); the reference is RK4 of the model with
+# the same form. VSPLIT=full|contravariant: the vertical (implicit) part, all η-terms (full) or only those without m_x
+# (contravariant: the column contains ρ, Θ, p, m_z, as the FV trick). VSOLVER=hdg (with LMARS=momentum): the column
+# system by static condensation (interface momentum only in the solve), otherwise sparse LU.
 #
 # Small steps: Verlet at the vertical limit (`fast_step(:verlet)`, the vertical node spacing), :cs/:csfb at the
 # horizontal limit 0.85·0.63 Δx_e/((2p+1) c) (Δx_e the element width), divided by NSUBFAC. :csb is CS with
@@ -29,18 +28,16 @@ const OFFC = parse(Float64, get(ENV, "OFFCENTER", "0.1"))
 const SMDIV = parse(Float64, get(ENV, "SMDIV", "0.1"))
 const DTS = parse.(Float64, split(get(ENV, "DTS", "100,50"), ","))
 const NSUBFAC = parse.(Float64, split(get(ENV, "NSUBFAC", "1"), ","))
-const INTERFACE = get(ENV, "INTERFACE", "0") == "1"
-const EPSIF = parse.(Float64, split(get(ENV, "EPSIF", "0"), ","))      # 0: κ = KAPPA
-const KAPPA = parse(Float64, get(ENV, "KAPPA", "0.5"))
 gas = Gas()
 ρr, Θr, θr = stratified_reference(gas; θ0 = 300.0, N = 0.01)
 hill = TERRAIN == "hill"
 zsf(x) = hill ? 400.0 / (1 + ((x - L / 2) / 10e3)^2) : 0.0
 dzs(x) = hill ? -400.0 * 2 * (x - L / 2) / 10e3^2 / (1 + ((x - L / 2) / 10e3)^2)^2 : 0.0
 base = build_model(:dg; L, H, P = 4, NEX = 30, NEZ = 4, ρr, Θr, gas, zs = zsf)
-const LMARS = Symbol(get(ENV, "LMARS", get(ENV, "INTERFACE", "0") == "1" ? "momentum" : "velocity"))
+const LMARS = Symbol(get(ENV, "LMARS", "velocity"))
 const VSPLIT = Symbol(get(ENV, "VSPLIT", "full"))     # full | contravariant (η-terms with m_x horizontal, FV trick)
-m = E2.DGPressureModel(base; lmars = LMARS, vsplit = VSPLIT)
+const VSOLVER = Symbol(get(ENV, "VSOLVER", "lu"))
+m = E2.DGPressureModel(base; lmars = LMARS, vsplit = VSPLIT, vsolver = VSOLVER)
 qb = project2d(base, (x, z) -> (ρ = Θr(z) / (θr(z) + 0.01 * sin(π * z / H) / (1 + ((x - L / 3) / a)^2));
                                  (ρ, ρ * U, ρ * U * dzs(x) * (H - z) / (H - zsf(x)), Θr(z))))
 q0 = E2.pressure_state(m, qb)
@@ -55,15 +52,10 @@ yr = θf(qref)
 err(q) = all(isfinite, q) ? maximum(abs.(θf(q[1:base.nq]) .- yr)) : Inf
 @printf("DG %s, %s; Verlet step %.2f s (vertical limit), horizontal limit %.2f s; RK4 %d steps (%.0f s), max|θ - mean| %.2f K\n",
         TERRAIN, grid_info(base), dτv, dτh, nref, tr, maximum(abs, yr))
-@printf("ε = %.2f, γ_d = %.2f for :cs/:csfb, LMARS in the %s form, vertical split %s\n", OFFC, SMDIV, LMARS, VSPLIT)
-for meth in METHODS, Δt in DTS, fast in FASTS, εr in (INTERFACE && fast !== :verlet ? EPSIF : (-1.0,)),
-    f in (fast === :verlet ? (1.0,) : NSUBFAC)
+@printf("ε = %.2f, γ_d = %.2f for :cs/:csfb, LMARS in the %s form, vertical split %s, column solve %s\n", OFFC, SMDIV, LMARS, VSPLIT, VSOLVER)
+for meth in METHODS, Δt in DTS, fast in FASTS, f in (fast === :verlet ? (1.0,) : NSUBFAC)
     n = round(Int, T / Δt)
     model, x0 = fast === :verlet ? (base, qb) : (m, q0)
-    if εr >= 0
-        model = E2.DGPressureModel(base; interface = true, lmars = LMARS, vsplit = VSPLIT, kappa = KAPPA, eps_if = εr * (M.Lx / M.Nex) / c)
-        x0 = E2.pressure_state(model, qb)
-    end
     nsub = ceil(Int, f * Δt / (fast === :verlet ? dτv : dτh))
     ε, γ = fast === :verlet ? (0.0, 0.0) : (OFFC, SMDIV)
     q = similar(x0)
@@ -73,6 +65,6 @@ for meth in METHODS, Δt in DTS, fast in FASTS, εr in (INTERFACE && fast !== :v
         e isa DomainError || rethrow(); fill!(q, NaN)
     end
     e = err(q)
-    @printf("%-6s Δt = %5.1f s %-6s%s nsub %4d: %s (%.0f s)\n", meth, Δt, fast, εr > 0 ? @sprintf(" ε=%.2f", εr) : εr == 0 ? @sprintf(" κ=%.2f", KAPPA) : "", nsub,
+    @printf("%-6s Δt = %5.1f s %-6s nsub %4d: %s (%.0f s)\n", meth, Δt, fast, nsub,
             isfinite(e) ? @sprintf("error θ %.2e K", e) : "failed", t)
 end

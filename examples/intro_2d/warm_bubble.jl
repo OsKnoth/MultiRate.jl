@@ -1,12 +1,12 @@
 # Warm bubble at constant pressure in a stably stratified atmosphere.
 # Compare DGSEM + HDG, terrain-following FV, and Cartesian cut-cell FV.
 #
-#     julia --project=examples examples/intro_2d/warm_bubble.jl dg [T] [hevi|hevi_relax|fb|verlet]
+#     julia --project=examples examples/intro_2d/warm_bubble.jl dg [T] [hevi|fb|verlet]
 #     julia --project=examples examples/intro_2d/warm_bubble.jl fv [T] [hevi|wrf|fb|verlet]
 #     julia --project=examples examples/intro_2d/warm_bubble.jl fvc [T] [hevi|verlet|fb|rosenbrock_amf]
 #
 # Configure with LX, H, NEX, NEZ, P, BUBBLE_X, BUBBLE_Z, BUBBLE_RX, BUBBLE_RZ,
-# DELTA_THETA, N, U, NSUB and EPS_IF. Both use MIS4 with HEVI fast steps by default.
+# DELTA_THETA, N, U and NSUB. Both use MIS4 with HEVI fast steps by default.
 
 include(joinpath(@__DIR__, "../euler2d_common.jl"))
 
@@ -29,7 +29,6 @@ table, nsub_default, fast_default = default_scheme(disc)
 NSUB = parse(Int, get(ENV, "NSUB", string(nsub_default)))
 FAST = length(ARGS) > 2 ? Symbol(ARGS[3]) : fast_default
 disc == :fvc && !(FAST in (:hevi, :verlet, :fb, :rosenbrock_amf)) && error("cut-cell FV supports hevi, verlet, fb or rosenbrock_amf")
-eps_if = parse(Float64, get(ENV, "EPS_IF", "0"))
 0 <= zc <= H || error("BUBBLE_Z must lie between 0 and H")
 
 gas = Gas()
@@ -52,4 +51,4 @@ name = "intro_bubble_$(disc)_$(FAST)"
 @printf("warm bubble: %s, %.1f × %.1f km, Δθ = %.2f K, T = %.1f s\n",
         grid_info(model), LX / 1e3, H / 1e3, Δθ, T)
 run_with_output(model, q0; name, Δt, T, nsub = NSUB, table, fast = FAST,
-                 fast_options = (; eps_if), nout = 10, plot_names = ["theta_prime", "w"])
+                 nout = 10, plot_names = ["theta_prime", "w"])

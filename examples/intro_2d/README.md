@@ -20,7 +20,6 @@ Run the examples themselves with:
 
 ```sh
 julia --project=examples examples/intro_2d/warm_bubble.jl dg
-EPS_IF=1 julia --project=examples examples/intro_2d/warm_bubble.jl dg - hevi_relax
 julia --project=examples examples/intro_2d/warm_bubble.jl fv
 julia --project=examples examples/intro_2d/warm_bubble.jl fvc
 julia --project=examples examples/intro_2d/agnesi_hills.jl a1
@@ -40,10 +39,6 @@ by the masked cut-cell advection Jacobian. Its step limit is based on the regula
 acoustic CFL. The masked advection Jacobian currently differentiates the cut-cell FV donor-cell
 residual; the MATLAB third-order `AdvectionCutThird` reconstruction is a later fidelity step. In
 `fvc` bubble runs the default cut terrain is a 500 m Agnesi hill (`CUT_H0`, `CUT_A` override it).
-Set `EPS_IF` to a positive relaxation time and select `hevi_relax` to keep the HEVI vertical
-column solve while relaxing the horizontal DG face momentum. Compare with `hevi` under the same
-parameters; `EPS_IF=0` makes the variants coincide. `fb` remains available as a separate
-forward-backward method with relaxed face momentum.
 
 `check_bubble.jl` advances a warm bubble on a flat domain with both DGSEM/HDG and the
 finite-volume C-grid, using HEVI for both. FV uses the terrain-aware vertical column solver and a

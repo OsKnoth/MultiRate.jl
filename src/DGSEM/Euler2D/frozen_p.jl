@@ -18,7 +18,8 @@
 # Split: horizontal = ξ-volume pairs and ξ-faces (explicit), vertical = η-volume pairs and η-faces
 # (top/bottom element faces and walls; implicit). On terrain the η part acts on both momenta
 # (metric term z_x ∂η p and gravity in the η pairs): the column system contains (ρ, m_x, m_z, Θ, p)
-# of a node column (ex, i) and is solved as one sparse LU per stage and weight pair (UMFPACK).
+# of a node column (ex, i) and is solved as one sparse LU per stage and weight pair (UMFPACK), or, with
+# vsolver = :hdg, by static condensation as in hybridised DG (end of this file).
 # Parts of `frozen_fast!`: :hthermo = horizontal thermodynamic rows + their forcing + sponge,
 # :hmomentum = horizontal momentum rows + their forcing (so that b⁺ contains the forcing before the
 # horizontal mass flux of a⁺ is evaluated), :vertical = η part (no forcing); :thermo, :momentum, :all
@@ -48,16 +49,14 @@ mutable struct DGVertical
     diagpos::Vector{Int}                                # identity entries of Epat outside the blocks
     Epat::SparseMatrixCSC{Float64,Int}                  # pattern of e^{cD₀} and c φ₁(cD₀)
     flows::Dict{Float64,Tuple{SparseMatrixCSC{Float64,Int},SparseMatrixCSC{Float64,Int}}}   # c -> (e^{cD₀}, c φ₁(cD₀))
-    dh::Vector{Float64}                                 # diagonal of J_h (interface: implicit in the momentum step)
 end
 
 """
-    DGPressureModel(base::Euler2DModel; pvar = :p, interface = false, kappa = 0.5, kappa_slow = 0.0, eps_if = 0.0,
-                    lmars = interface ? :momentum : :velocity, vsplit = :full)
+    DGPressureModel(base::Euler2DModel; pvar = :p, lmars = :velocity, vsplit = :full, vsolver = :lu, hpredict = true)
 
 DG model with the pressure p as an additional prognostic variable (state `[q; p]`, `pressure_state`),
 frozen split with horizontal (:hthermo, :hmomentum) and vertical (:vertical) parts and a column-implicit
-vertical step, so that the small steps :cs, :csfb, :ei, :wrf and :hevi of `TimeStepping.frozen_fast_solve!`
+vertical step, so that the small steps :cs, :csfb, :csb, :ei, :wrf and :hevi of `TimeStepping.frozen_fast_solve!`
 apply. p is reset to p(Θ) after every MIS step.
 
 `lmars`: the LMARS of the fast face terms, `:velocity` (the base model: w* = {u_n} - [p]/(2ρ̄c), m_f = ρ_up w*,
@@ -68,19 +67,17 @@ c the mean face sound speed; θ_up from the upwind side of the base). The slow p
 both momenta (on terrain the column reads m_x). `:contravariant` (the FV trick, src/FV/vertical.jl): the η-terms are
 split by the components of the vertical normal ñ_η = (Jη_x, Jη_z) of the contravariant vertical flux ñ_η·m; every
 term with m_x (the Jη_x m_x part of the η-mass flux, the metric force Jη_x ∂_η p and the η-face terms on m_x) goes
-to the horizontal, explicit part, so that the column contains only ρ, Θ, p, m_z (and M̂ of the η-faces).
+to the horizontal, explicit part, so that the column contains only ρ, Θ, p, m_z.
 `:contravariant_volume`: only the η volume pairs are split this way; the η-faces and walls stay vertical (the column
 reads m_x at the face nodes). Identical to `:full` on a flat grid.
 
-`interface = true` (docs/hdg_extended): the interface momentum (the LMARS mass flux, stored contravariant,
-M̂ = ñ·m̂ = s m_f) is an additional unknown on every interior face node (state `[q; p; M̂]`). The thermodynamic rows use M̂ in place of
-m_f, the momentum rows the interface pressure of their side written with M̂, P̂_K - p_K = ρc (M̂/ρ_up - m_ν/ρ_K)
-(no pressure), and the constraint P̂_L = P̂_R is relaxed, M̂_t = κ σ_f (P̂_L - P̂_R) with σ_f = s/(J w) of the face
-(mean of the two sides) and κ = `kappa` (default 1/2); since P̂_L - P̂_R = (m_f(z) - M̂)/C₃, the relaxation time is
-ε = C₃/(κ σ_f) ≈ 1/(c σ_f). With `eps_if > 0` instead M̂_t = (m_f(z) - M̂)/ε, ε = `eps_if` [s]. The M̂ rows
-count as momentum rows (group Y = (m, M̂)): on ξ-faces horizontal, on η-faces vertical (column solve). M̂ is
-reset to m_f(q) after every MIS step. With M̂ = m_f the operator equals the LMARS operator. In the horizontal momentum
-step of :cs the diagonal of D_Y is implicit (`frozen_hmomentum!`).
+`vsolver`: the column solve of I - D J_v. `:lu` one sparse LU (UMFPACK); `:hdg` (needs `lmars = :momentum`) static
+condensation as in hybridised DG: the interface momentum M̂ = s m_f of the η-faces is introduced only in the solve,
+the elements are eliminated locally and a tridiagonal system in M̂ remains per node column (`_hdg_factor`); the
+result is that of the LU.
+
+`hpredict`: the horizontal momentum step of :cs with the midpoint predictor of the ξ-face self-coupling (true) or
+with D_M^x explicit (false, docs/fast_2d scheme S2).
 """
 struct DGPressureModel
     base::Euler2DModel
@@ -89,25 +86,32 @@ struct DGPressureModel
     C::Vector{Float64}
     S::Vector{Float64}
     vert::DGVertical
-    interface::Bool
+    hybrid::Bool                                        # internal: face terms written with M̂ (vsolver = :hdg only)
     lmars::Symbol
     vsplit::Symbol
-    kappa::Float64
-    kappa_slow::Float64                                 # part of the relaxation in the slow tendency (explicit in MIS)
-    eps_if::Float64
-    mhat::Vector{Int}                                   # face pair index fi -> state index of M̂ (0: wall)
+    mhat::Vector{Int}                                   # hybrid: face pair index fi -> index of M̂ (0: wall)
+    vsolver::Symbol                                     # column solve: :lu (sparse LU) or :hdg (static condensation)
+    hpredict::Bool                                      # midpoint predictor of the horizontal momentum step
+    aux::Union{Nothing,DGPressureModel}                 # :hdg: the same operator written with M̂ (only its J_v is used)
+    cols::Vector{Tuple{Vector{Vector{Int}},Vector{Int}}}  # :hdg: per node column the element unknowns and the η-face M̂ (aux)
 end
-function DGPressureModel(base::Euler2DModel; pvar::Symbol = :p, interface::Bool = false, kappa::Real = 0.5, kappa_slow::Real = 0.0,
-                         eps_if::Real = 0.0,
-                         lmars::Symbol = interface ? :momentum : :velocity, vsplit::Symbol = :full)
+function DGPressureModel(base::Euler2DModel; pvar::Symbol = :p, lmars::Symbol = :velocity, vsplit::Symbol = :full,
+                         vsolver::Symbol = :lu, hpredict::Bool = true)
+    vsolver in (:lu, :hdg) || error("DGPressureModel: vsolver = :lu or :hdg")
+    vsolver === :hdg && lmars !== :momentum && error("DGPressureModel: vsolver = :hdg needs lmars = :momentum")
     vsplit in (:full, :contravariant, :contravariant_volume) ||
         error("DGPressureModel: vsplit = :full, :contravariant or :contravariant_volume")
     lmars in (:velocity, :momentum) || error("DGPressureModel: lmars = :velocity or :momentum")
     pvar === :p || error("DGPressureModel: pvar = :p (π not yet)")
+    aux = vsolver === :hdg ? _dgp_build(base, pvar, :momentum, vsplit, :lu, hpredict, true, nothing, Tuple{Vector{Vector{Int}},Vector{Int}}[]) : nothing
+    cols = vsolver === :hdg ? _hdg_columns(base, aux) : Tuple{Vector{Vector{Int}},Vector{Int}}[]
+    return _dgp_build(base, pvar, lmars, vsplit, vsolver, hpredict, false, aux, cols)
+end
+function _dgp_build(base, pvar, lmars, vsplit, vsolver, hpredict, hybrid, aux, cols)
     M = base.mesh
     nqp = base.nq + M.np^2 * M.Ne
     mhat = Int[]; nM = 0
-    if interface
+    if hybrid
         _foreach_face_dir(M) do fi, dir, kind, args...
             push!(mhat, kind === :wall ? 0 : nqp + (nM += 1)); nothing
         end
@@ -118,8 +122,25 @@ function DGPressureModel(base::Euler2DModel; pvar::Symbol = :p, interface::Bool 
                            DGVertical(zeros(nc), spzeros(nq, nq), spzeros(nq, nq), false, Int[], Int[],
                                       Dict{Tuple{Float64,Float64},Any}(), Dict{Tuple{Float64,Float64},Any}(), zeros(nq), zeros(nq),
                                       zeros(nq), Vector{Int}[], Matrix{Int}[], Matrix{Int}[], Int[], spzeros(nq, nq),
-                                      Dict{Float64,Tuple{SparseMatrixCSC{Float64,Int},SparseMatrixCSC{Float64,Int}}}(), zeros(nq)),
-                           interface, lmars, vsplit, Float64(kappa), Float64(kappa_slow), Float64(eps_if), mhat)
+                                      Dict{Float64,Tuple{SparseMatrixCSC{Float64,Int},SparseMatrixCSC{Float64,Int}}}()),
+                           hybrid, lmars, vsplit, mhat, vsolver, hpredict, aux, cols)
+end
+
+"""Node columns (ex, i) for the condensed column solve: the element unknowns (ρ, m_x, m_z, Θ, p at the np nodes of the
+η-line i) of the elements ez = 1..Nez, and the M̂ index (in the hybrid model `mi`) of the η-faces between them."""
+function _hdg_columns(base::Euler2DModel, mi)
+    M = base.mesh; np = M.np
+    fM = Dict{Tuple{Int,Int},Int}()
+    _foreach_face_dir(M) do fi, dir, kind, iL, jL, eL, args...
+        dir == 2 && kind === :interior && (fM[(eL, iL)] = mi.mhat[fi]); nothing
+    end
+    cols = Tuple{Vector{Vector{Int}},Vector{Int}}[]
+    for ex in 1:M.Nex, i in 1:np
+        es = [elem(M, ex, ez) for ez in 1:M.Nez]
+        idx = [vcat([node_iq(np, e, r, i, j) for r in 1:4 for j in 1:np], [base.nq + _pnode(np, e, i, j) for j in 1:np]) for e in es]
+        push!(cols, (idx, [fM[(es[ez], i)] for ez in 1:M.Nez-1]))
+    end
+    return cols
 end
 
 @inline _pnode(np, e, i, j) = ((e - 1) * np + (j - 1)) * np + i
@@ -153,34 +174,7 @@ function frozen_data!(C, S, m::DGPressureModel, q)
         C[nb + _pnode(np, e, i, j)] = b.gas.γ * pressure(b.gas, Θ) / Θ
     end
     m.lmars === :momentum && _lmars_momentum!(C, m, q)
-    m.interface && _interface_slow!(S, m, C, q)
     return C, S
-end
-
-"""Slow tendency of the interface momentum: that of its LMARS value s m* (the target of the relaxation),
-S_M̂ = s (C₁ n·S_m,L + C₂ n·S_m,R - C₃ (S_p,R - S_p,L)). Without it M̂ lags behind the slowly (advectively) changing
-mass flux by the relaxation time, and the extended system is not Galilean invariant."""
-function _interface_slow!(S, m::DGPressureModel, C, q)
-    b = m.base; M = b.mesh; np = M.np
-    _foreach_face_dir(M) do fi, dir, kind, iL, jL, eL, iR, jR, eR, ñx, ñz, we
-        kind === :wall && return nothing
-        s = hypot(ñx, ñz); n1, n2 = ñx / s, ñz / s
-        o = _fc(M, fi)
-        fL = n1 * S[node_iq(np, eL, 2, iL, jL)] + n2 * S[node_iq(np, eL, 3, iL, jL)]
-        fR = n1 * S[node_iq(np, eR, 2, iR, jR)] + n2 * S[node_iq(np, eR, 3, iR, jR)]
-        kM = m.mhat[fi]
-        S[kM] = s * (C[o+1] * fL + C[o+2] * fR - C[o+3] * (S[ip_dg(m, eR, iR, jR)] - S[ip_dg(m, eL, iL, jL)]))
-        if m.kappa_slow > 0
-            # part κ_s of the relaxation in the slow tendency: 2c κ_s σ̄ (s m*(q) - M̂) = κ_s σ̄ s (P̂_L - P̂_R)(q)
-            mnL = n1 * q[node_iq(np, eL, 2, iL, jL)] + n2 * q[node_iq(np, eL, 3, iL, jL)]
-            mnR = n1 * q[node_iq(np, eR, 2, iR, jR)] + n2 * q[node_iq(np, eR, 3, iR, jR)]
-            mf = C[o+1] * mnL + C[o+2] * mnR - C[o+3] * (q[ip_dg(m, eR, iR, jR)] - q[ip_dg(m, eL, iL, jL)])
-            σs = 0.5 * s * (1 / (M.J[iL, jL, eL] * we) + 1 / (M.J[iR, jR, eR] * we))
-            S[kM] += m.kappa_slow * σs / C[o+3] * (s * mf - q[kM])
-        end
-        nothing
-    end
-    return S
 end
 
 """Face coefficients of LMARS in ρu: m_f = {m_n} - [p]/(2c), f_Θ = θ_up m_f, p* = {p} - c [m_n]/2 (interior faces;
@@ -295,10 +289,11 @@ function _dgp_terms!(emit::E, m::DGPressureModel, C, dirs; vol::Bool = true, fac
             mnΘ(eL, iL, jL, mxL, mzL, c * C[o+2])
             mn(mxL, mxL, mzL, -c * n1 * C[o+1])
             mn(mzL, mxL, mzL, -c * n2 * C[o+1])
-        elseif m.interface
-            # interface momentum M̂ (docs/hdg_extended): thermodynamic rows with M̂, momentum rows with the interface
-            # pressure of their side, P̂ - p = M̂/(2C₃) - 2C₇ m_nL (L) resp. M̂/(2C₃) - 2C₈ m_nR (R), and the relaxed
-            # constraint M̂_t = κ σ_f (P̂_L - P̂_R) = (κ σ_f/C₃)(C₁ m_nL + C₂ m_nR - C₃ [p] - M̂)  (or 1/ε in place of κ σ_f/C₃)
+        elseif m.hybrid
+            # the LMARS face terms written with the interface momentum M̂ (static condensation, vsolver = :hdg):
+            # thermodynamic rows with M̂, momentum rows with the interface pressure of their side,
+            # P̂ - p = M̂/(2C₃) - 2C₇ m_nL (L) resp. M̂/(2C₃) - 2C₈ m_nR (R); M̂ row: the constraint s m_f(z) - M̂
+            # (P̂_L = P̂_R). With M̂ = s m_f(z) the element rows equal those of the LMARS operator.
             ρR, mxR, mzR, pR = iq(eR, 1, iR, jR), iq(eR, 2, iR, jR), iq(eR, 3, iR, jR), ipr(eR, iR, jR)
             σR = 1 / (M.J[iR, jR, eR] * we)
             cL, cR = σL * s, σR * s
@@ -317,10 +312,9 @@ function _dgp_terms!(emit::E, m::DGPressureModel, C, dirs; vol::Bool = true, fac
             for (row, nn) in ((mxR, n1), (mzR, n2))
                 emit(row, kM, cR * nn * iZ * is); mn(row, mxR, mzR, -cR * nn * 2 * C[o+8])
             end
-            iε = m.eps_if > 0 ? 1 / m.eps_if : m.kappa * 0.5 * (cL + cR) / C[o+3]   # κ σ_f/C₃
-            # M̂_t = iε (s m_f - M̂), s m_f = C₁ ñ·m_L + C₂ ñ·m_R - s C₃ [p]
-            mn(kM, mxL, mzL, s * C[o+1] * iε); mn(kM, mxR, mzR, s * C[o+2] * iε)
-            emit(kM, pR, -s * C[o+3] * iε); emit(kM, pL, s * C[o+3] * iε); emit(kM, kM, -iε)
+            # constraint row: s m_f - M̂, s m_f = C₁ ñ·m_L + C₂ ñ·m_R - s C₃ [p]
+            mn(kM, mxL, mzL, s * C[o+1]); mn(kM, mxR, mzR, s * C[o+2])
+            emit(kM, pR, -s * C[o+3]); emit(kM, pL, s * C[o+3]); emit(kM, kM, -1.0)
         else
             ρR, mxR, mzR, pR = iq(eR, 1, iR, jR), iq(eR, 2, iR, jR), iq(eR, 3, iR, jR), ipr(eR, iR, jR)
             σR = 1 / (M.J[iR, jR, eR] * we)
@@ -419,30 +413,11 @@ function rhs_nonlinear!(out, m::DGPressureModel, q::AbstractVector)
     return frozen_fast!(out, m, m.C, q, :all, m.S)
 end
 
-"""p ← p(Θ) after a MIS step (and M̂ ← m_f(q) with `interface`)."""
+"""p ← p(Θ) after a MIS step."""
 function frozen_step_end!(m::DGPressureModel, q)
     b = m.base; M = b.mesh; np = M.np
     @inbounds for e in 1:M.Ne, j in 1:np, i in 1:np
         q[ip_dg(m, e, i, j)] = pressure(b.gas, q[node_iq(np, e, 4, i, j)])
-    end
-    m.interface && interface_reset!(m, q)
-    return q
-end
-
-"""M̂ ← s m_f(q) = s (C₁ m_nL + C₂ m_nR - C₃ (p_R - p_L)) with the coefficients C(q) (consistent contravariant
-interface momentum)."""
-function interface_reset!(m::DGPressureModel, q)
-    b = m.base; M = b.mesh; np = M.np
-    frozen_data!(m.C, m.S, m, q)
-    C = m.C
-    _foreach_face_dir(M) do fi, dir, kind, iL, jL, eL, iR, jR, eR, ñx, ñz, we
-        kind === :wall && return nothing
-        s = hypot(ñx, ñz); n1, n2 = ñx / s, ñz / s
-        o = _fc(M, fi)
-        mnL = n1 * q[node_iq(np, eL, 2, iL, jL)] + n2 * q[node_iq(np, eL, 3, iL, jL)]
-        mnR = n1 * q[node_iq(np, eR, 2, iR, jR)] + n2 * q[node_iq(np, eR, 3, iR, jR)]
-        q[m.mhat[fi]] = s * (C[o+1] * mnL + C[o+2] * mnR - C[o+3] * (q[ip_dg(m, eR, iR, jR)] - q[ip_dg(m, eL, iL, jL)]))
-        nothing
     end
     return q
 end
@@ -476,10 +451,13 @@ function frozen_stage_begin!(m::DGPressureModel, C, z)
     v.C = C
     v.Jh = _dgp_matrix!(v.Jh, v.hmap, m, C, :h)
     v.Jv = _dgp_matrix!(v.Jv, v.vmap, m, C, :v)
+    if m.vsolver === :hdg                              # η part written with M̂, same C
+        a = m.aux.vert
+        a.Jv = _dgp_matrix!(a.Jv, a.vmap, m.aux, C, :v)
+    end
     v.valid = true
     empty!(v.factors)
     _dgp_dissipation!(m)                               # blocks of D₀ (once)
-    m.interface && (v.dh .= diag(v.Jh))
     empty!(v.flows)
     return nothing
 end
@@ -640,6 +618,7 @@ function _dgp_factor(m::DGPressureModel, ct, cw)
     v = m.vert
     v.valid || error("DGPressureModel: frozen_stage_begin! must precede the vertical solve")
     key = (Float64(ct), Float64(cw))
+    m.vsolver === :hdg && return get!(() -> _hdg_factor(m, ct, cw), v.factors, key)
     get!(v.factors, key) do
         d = [_dgp_isthermo(m, r) ? ct : cw for r in 1:m.nq]
         A = I - Diagonal(d) * v.Jv
@@ -671,7 +650,7 @@ end
 #       dissipation b←b is then a second-order midpoint step instead of explicit Euler).
 # Forcing and sponge are evaluated at z.
 
-frozen_hthermo_reeval(m::DGPressureModel) = !m.interface   # LMARS: the ξ-face mass flux depends on [p]; with M̂ not
+frozen_hthermo_reeval(m::DGPressureModel) = true   # LMARS: the ξ-face mass flux depends on [p]
 
 """Momentum rows of y ← z + c (src)_b (thermodynamic rows of z unchanged)."""
 function _dgp_predict!(y, m::DGPressureModel, z, c, src)
@@ -695,37 +674,11 @@ function frozen_hthermo!(out, m::DGPressureModel, C, z, F, w)
 end
 
 function frozen_hmomentum!(out, m::DGPressureModel, C, z, F, h)
-    if m.interface
-        # Verlet momentum step of the group Y = (m, M̂) with the diagonal Λ of D_Y implicit (a division, no solve):
-        # Y⁺ = (Y + h (r - Λ Y))/(1 - h Λ), i.e. the increment h r/(1 - h Λ), r the horizontal tendency of Y
-        frozen_fast!(out, m, C, z, :hmomentum, F)
-        dh = m.vert.dh
-        @inbounds for k in eachindex(out)
-            _dgp_isthermo(m, k) || (out[k] /= 1 - h * dh[k])
-        end
-        return out
-    end
+    m.hpredict || return frozen_fast!(out, m, C, z, :hmomentum, F)    # D_M^x M⁰ explicit (docs/fast_2d, S2)
     v = m.vert
     frozen_fast!(v.zv, m, C, z, :hmomentum, F)
     _dgp_predict!(v.zp, m, z, h / 2, v.zv)
     return frozen_fast!(out, m, C, v.zp, :hmomentum, F)
-end
-
-"""Momentum self-coupling implicit (`fast = :verlet_i`): k ← (I - h D_M)⁻¹ k with D_M the entries of J_h + J_v with
-row and column in the momentum group (m_x, m_z and, extended, M̂): the face terms of the node's own momentum, the
-node-face couplings and the relaxation of M̂; local (face node pairs, linked at the element corners)."""
-function frozen_momentum_implicit!(k, m::DGPressureModel, C, h)
-    v = m.vert
-    v.valid && C === v.C || error("frozen_momentum_implicit!: frozen_stage_begin! with these coefficients first")
-    F = get!(v.factors, (-1.0, Float64(h))) do
-        Jf = v.Jh + v.Jv
-        Is, Js, Vs = findnz(Jf)
-        keep = [!_dgp_isthermo(m, Is[t]) && !_dgp_isthermo(m, Js[t]) for t in eachindex(Is)]
-        DM = sparse(Is[keep], Js[keep], Vs[keep], m.nq, m.nq)
-        lu(I - h * DM)
-    end
-    ldiv!(v.zv, F, k); k .= v.zv
-    return k
 end
 
 """y = (I - D J_v)⁻¹ R."""
@@ -737,4 +690,108 @@ function frozen_vertical_step!(z, m::DGPressureModel, C, dt, k, y)
     ldiv!(y, _dgp_factor(m, dt / 2, dt / 2), k)
     @. z += y
     return z
+end
+
+# --------------------------------------------------------------- condensed column solve (vsolver = :hdg)
+# The column system (I - Δ J_v) Z = R of the standard formulation (LMARS in ρu), solved as in hybridised DG: the
+# interface momentum M̂ = s m_f(Z) of the η-faces is introduced as an auxiliary unknown with the exact constraint.
+# With it the element rows only contain the unknowns of their element and the M̂ of its two faces (J_v of the
+# hybrid model `m.aux`, element rows: J_ee, J_eM), and m_f(Z) = G Z (the constraint rows of the hybrid model). Per node column and element K
+#   E_K Z_K - Δ_K J_eM,K M̂ = R_K,  E_K = I - Δ_K J_ee,K,
+#   Z_K = y_K + W_K M̂,  y_K = E_K⁻¹ R_K,  W_K = E_K⁻¹ Δ_K J_eM,K,
+#   M̂ = G Z:  (I - Σ_K G_K W_K) M̂ = Σ_K G_K y_K   (tridiagonal over the Nez - 1 η-faces of the column).
+# Since the element rows with M̂ = s m_f equal the LMARS operator, the result is that of the sparse LU.
+const _TriLU = LinearAlgebra.LU{Float64,LinearAlgebra.Tridiagonal{Float64,Vector{Float64}},Vector{Int}}
+struct HDGColumnFactor
+    cols::Vector{Tuple{Vector{Vector{Int}},Vector{Int}}}
+    E::Vector{Vector{LinearAlgebra.LU{Float64,Matrix{Float64},Vector{Int}}}}
+    W::Vector{Vector{Matrix{Float64}}}
+    G::Vector{Vector{Matrix{Float64}}}
+    S::Vector{_TriLU}                                   # LU of the tridiagonal interface system
+    yk::Vector{Float64}
+    r::Vector{Float64}
+end
+
+function _hdg_factor(m::DGPressureModel, ct, cw)
+    Jx = m.aux.vert.Jv
+    nqp = m.base.nq + m.base.mesh.np^2 * m.base.mesh.Ne
+    # owners: element unknown k -> (column, element, local index), η-face M̂ -> (column, face)
+    oc = zeros(Int, nqp); oK = zeros(Int, nqp); ot = zeros(Int, nqp)
+    fc = zeros(Int, size(Jx, 1)); ff = zeros(Int, size(Jx, 1))
+    for (c, (idx, F)) in enumerate(m.cols)
+        for (K, id) in enumerate(idx), (t, k) in enumerate(id); oc[k] = c; oK[k] = K; ot[k] = t; end
+        for (f, k) in enumerate(F); fc[k] = c; ff[k] = f; end
+    end
+    A = [[zeros(length(id), length(id)) for id in idx] for (idx, F) in m.cols]       # J_ee
+    B = [[zeros(length(id), length(F)) for id in idx] for (idx, F) in m.cols]        # J_eM
+    G = [[zeros(length(F), length(id)) for id in idx] for (idx, F) in m.cols]        # M̂ rows, element columns
+    dF = [zeros(length(F)) for (idx, F) in m.cols]                                    # minus the M̂ diagonal
+    rv, nz = rowvals(Jx), nonzeros(Jx)
+    @inbounds for j in 1:size(Jx, 2), q in nzrange(Jx, j)
+        r, v = rv[q], nz[q]
+        v == 0 && continue
+        if r <= nqp
+            c, K, t = oc[r], oK[r], ot[r]
+            if j <= nqp
+                (oc[j] == c && oK[j] == K) || error("vsolver = :hdg: element rows couple to another element")
+                A[c][K][t, ot[j]] += v
+            else
+                fc[j] == c || error("vsolver = :hdg: element row couples to a face of another column")
+                B[c][K][t, ff[j]] += v
+            end
+        elseif fc[r] > 0
+            c, f = fc[r], ff[r]
+            if j <= nqp
+                oc[j] == c || error("vsolver = :hdg: constraint couples to another column")
+                G[c][oK[j]][f, ot[j]] += v
+            elseif j == r
+                dF[c][f] = -v
+            else
+                error("vsolver = :hdg: constraint couples two faces")
+            end
+        end
+    end
+    Es = Vector{LinearAlgebra.LU{Float64,Matrix{Float64},Vector{Int}}}[]; Ws = Vector{Matrix{Float64}}[]; Ss = _TriLU[]
+    nmax = 0
+    for (c, (idx, F)) in enumerate(m.cols)
+        nf = length(F)
+        S = Matrix{Float64}(I, max(nf, 1), max(nf, 1))
+        EK = LinearAlgebra.LU{Float64,Matrix{Float64},Vector{Int}}[]; WK = Matrix{Float64}[]
+        for (K, id) in enumerate(idx)
+            Δ = [_dgp_isthermo(m, r) ? ct : cw for r in id]
+            Ak = A[c][K]; Ak .*= -Δ; for t in axes(Ak, 1); Ak[t, t] += 1; end
+            E = lu!(Ak)
+            W = B[c][K]; W .*= Δ; ldiv!(E, W)
+            G[c][K] ./= dF[c]
+            nf > 0 && (S .-= G[c][K] * W)
+            push!(EK, E); push!(WK, W)
+            nmax += length(id)
+        end
+        push!(Es, EK); push!(Ws, WK); push!(Ss, lu!(LinearAlgebra.Tridiagonal(S)))
+    end
+    nyk = maximum(cl -> sum(length, cl[1]), m.cols)
+    return HDGColumnFactor(m.cols, Es, Ws, G, Ss, zeros(nyk), zeros(max(1, maximum(cl -> length(cl[2]), m.cols))))
+end
+
+function LinearAlgebra.ldiv!(y::AbstractVector, F::HDGColumnFactor, R::AbstractVector)
+    @inbounds for (c, (idx, Fc)) in enumerate(F.cols)
+        nf = length(Fc); r = view(F.r, 1:nf); fill!(r, 0.0)
+        o = 0
+        for (K, id) in enumerate(idx)
+            yK = view(F.yk, o+1:o+length(id))
+            for (t, k) in enumerate(id); yK[t] = R[k]; end
+            ldiv!(F.E[c][K], yK)
+            nf > 0 && mul!(r, F.G[c][K], yK, 1.0, 1.0)
+            o += length(id)
+        end
+        nf > 0 && ldiv!(F.S[c], r)
+        o = 0
+        for (K, id) in enumerate(idx)
+            yK = view(F.yk, o+1:o+length(id))
+            nf > 0 && mul!(yK, F.W[c][K], r, 1.0, 1.0)
+            for (t, k) in enumerate(id); y[k] = yK[t]; end
+            o += length(id)
+        end
+    end
+    return y
 end

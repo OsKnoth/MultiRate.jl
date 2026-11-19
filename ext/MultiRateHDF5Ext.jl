@@ -14,7 +14,7 @@ using HDF5
 using MultiRate.Common: output_fields
 using MultiRate.Euler2D: Euler2DModel
 using MultiRate.FV2D: FVModel, CutCellFVGrid
-using MultiRate.HDGRelaxTheta: lagrange_basis
+using MultiRate.Euler2D: lagrange_basis
 import MultiRate.Common: open_vtkhdf, write_vtkhdf!
 
 const VTK_LAGRANGE_QUADRILATERAL = UInt8(70)

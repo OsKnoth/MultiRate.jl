@@ -11,7 +11,7 @@
 # thermodynamic / momentum split (:verlet, :fb):
 #   fast_rhs_thermo!(out, s, q, f)          (ρ, Θ) tendency, momentum rows 0
 #   fast_rhs_momentum!(out, s, q, f)        momentum tendency, (ρ, Θ) rows 0
-#   interface_update!(s, q; relax, dt)      interface variables from q (default: nothing to do)
+#   interface_update!(s, q)                 interface variables from q (default: nothing to do)
 # horizontal / vertical split (:hevi, :wrf):
 #   fast_rhs_horizontal!(out, s, q, f)      explicit horizontal part + f/M
 #   vertical_apply!(out, s, q)              vertical part A_v q (no forcing)
@@ -40,7 +40,6 @@ function fast_hevi_amf! end
 function fast_rhs_thermo! end
 function fast_rhs_momentum! end
 function fast_rhs_horizontal! end
-function fast_rhs_horizontal_relaxed! end
 function vertical_apply! end
 function vertical_factor end
 function vertical_solve! end
@@ -48,10 +47,9 @@ function fast_rhs_hmomentum! end
 function fast_rhs_hthermo! end
 
 """Interface variables of the fast operator (e.g. the DG face momentum); default: none."""
-interface_update!(s::AbstractFastOperator, q; relax::Bool = false, dt = 0.0) = s
+interface_update!(s::AbstractFastOperator, q) = s
 
 fast_forcing(s::AbstractFastOperator) = s.fb
 fast_mass(s::AbstractFastOperator) = s.Mdiag
 fast_workspace(s::AbstractFastOperator) = s.work
-fast_rhs_horizontal_relaxed!(out, s::AbstractFastOperator, q, f, dt) =
-    error("relaxed horizontal HEVI is not implemented for $(typeof(s))")
+

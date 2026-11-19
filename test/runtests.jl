@@ -1,13 +1,10 @@
-# Unit tests (fast). The detailed verification reports are in examples/v*_report.jl.
+# Unit tests (fast).
 #
 #     julia --project -e 'using Pkg; Pkg.test()'
 
 using MultiRate
 using LinearAlgebra, Random, Test
 
-const V1 = MultiRate.HDGRelaxEuler
-const V2 = MultiRate.HDGRelaxTheta
-const V3 = MultiRate.SplitExplicitEuler
 const E2 = MultiRate.Euler2D
 const FV = MultiRate.FV2D
 const TS = MultiRate.TimeStepping
@@ -48,92 +45,8 @@ end
 
 @testset "MultiRate" begin
 
-@testset "v1 HDGRelaxEuler: periodic normal mode" begin
-    atm = V1.Atmosphere(T0 = 250.0, Γ = 0.0)
-    Lz = 2000.0
-    c = sqrt(V1.c2(atm, 0.0)); g, γ = atm.g, atm.γ
-    k = 2π / Lz
-    A = [0.0 1.0 0.0; 0.0 0.0 1.0; 0.0 c^2 0.0]
-    S = [0.0 0.0 0.0; -g 0.0 0.0; 0.0 (-(γ - 1) * g) 0.0]
-    E = eigen(ComplexF64.(-im * k .* A .+ S))
-    i = argmax(imag.(E.values)); λ = E.values[i]
-    v = E.vectors[:, i] ./ E.vectors[3, i] .* 100
-    ex(t) = z -> real.(v .* exp.(im * k .* permutedims(z) .+ λ * t))
-    Tend = Lz / c
-    errs = map((8, 16)) do Ne
-        s = V1.HDGRelax(Ne, 2, 0.0, Lz, atm; bc = :periodic)
-        n = ceil(Int, Tend / (s.h / c / 5))
-        U = V1.run!(s, V1.initial_state(s, V1.project(s, ex(0.0))), Tend / n, n)
-        V1.l2_error(s, U[1:s.nq], ex(Tend))[3]
-    end
-    @test rate(errs...) > 2.5
-end
-
-@testset "v2 HDGRelaxTheta: fast operator" begin
-    atm = V2.Atmosphere(T0 = 288.0, Γ = 0.0065)
-    for pfac in (1.0, 1.4)
-        fr = V2.frozen_from_atmosphere(atm; pfac = pfac)
-        s = V2.HDGRelaxTh(10, 3, 0.0, 1e4, fr; bc = :wall)
-        λ = eigvals(Diagonal(1 ./ s.Mdiag) * Matrix(s.K + s.G * s.H))
-        @test maximum(real.(λ)) < 1e-12                                  # energy stable (split form)
-        Z = V2.nodes(s)                                                    # nodal constructor ≈ function one
-        s2 = V2.HDGRelaxTh(10, 3, 0.0, 1e4, V2.coef_a.(Ref(fr), Z), fr.theta.(Z), V2.coef_b.(Ref(fr), Z); g = fr.g)
-        @test norm(s2.K - s.K) / norm(s.K) < 1e-9
-        qb = V2.balanced_state(s, z -> V2.atm_Theta(atm, z))                    # well balanced
-        U = V2.run!(s, V2.initial_state(s, qb), 0.05, 20)
-        @test maximum(abs.(U[1:s.nq] .- qb) ./ max.(abs.(qb), 1.0)) < 1e-10
-    end
-    s = V2.HDGRelaxTh(8, 2, 0.0, 1e4, V2.frozen_from_atmosphere(atm); bc = :wall)
-    s_std = V2.HDGRelaxTh(8, 2, 0.0, 1e4, V2.frozen_from_atmosphere(atm); bc = :wall, form = :standard)
-    λstd = eigvals(Diagonal(1 ./ s_std.Mdiag) * Matrix(s_std.K + s_std.G * s_std.H))
-    @test maximum(real.(λstd)) > 1e-6                                     # standard form is not
-    q = randn(MersenneTwister(1), s.nq)                                                       # split-explicit hook
-    U = V2.run!(s, V2.initial_state(s, q), 0.5, 10; method = :imex, F_slow = -V2.tendency(s, q))
-    @test maximum(abs.(U[1:s.nq] .- q)) < 1e-10
-end
-
-@testset "v3 SplitExplicitEuler: MIS for nonlinear Euler" begin
-    atm = V3.Atmosphere(T0 = 288.0, Γ = 0.0065)
-    eu = V3.Euler1D(10, 3, 0.0, 1e4)
-    qb = V3.hydrostatic_state(eu, z -> V3.atm_Theta(atm, z))
-    @test maximum(abs.(V3.rhs_nonlinear(eu, qb))) < 1e-10
-    dτ = 0.1 * eu.h / (V3.sound_speed_max(eu, qb) * (2eu.p + 1))     # acoustic substep
-    q = V3.run_mis(eu, qb, 12dτ, 5; tab = V3.mis_tableau(:MIS4a), nsub = 12)
-    @test maximum(abs.(q .- qb) ./ max.(abs.(qb), 1.0)) < 1e-11
-
-    pert(z) = begin
-        a = 1.4 .* V3.atm_p.(Ref(atm), z) ./ V3.atm_Theta.(Ref(atm), z)
-        thp = 0.5 .* exp.(-((z .- 6000) ./ 1000) .^ 2)
-        vcat(permutedims(-V3.atm_rho.(Ref(atm), z) .* thp ./ V3.atm_theta.(Ref(atm), z)), zeros(1, length(z)),
-             permutedims(100.0 .* exp.(-((z .- 3000) ./ 1000) .^ 2) ./ a))
-    end
-    q0 = qb .+ V3.project(eu, pert)
-    Tend = 4.0
-    dtr = 0.2 * eu.h / (V3.sound_speed_max(eu, q0) * (2eu.p + 1))
-    nref = ceil(Int, Tend / dtr)
-    qref = V3.run_rk4(eu, q0, Tend / nref, nref)
-    for (name, order) in ((:MIS2, 2), (:MIS4, 3), (:WSRK3, 2))
-        e = [V3.l2_error(eu, V3.run_mis(eu, q0, Δt, round(Int, Tend / Δt); tab = V3.mis_tableau(name),
-                                        nsub = 24) .- qref)[2] for Δt in (1.0, 0.5)]
-        @test rate(e...) > min(order, 2) - 0.4      # fixed ratio nsub: the 2nd-order fast integrator limits the rate
-    end
-    q = V3.run_mis(eu, q0, 12dτ, 4; tab = V3.mis_tableau(:MIS4), nsub = 12)
-    @test abs(V3.total(eu, q, 1) - V3.total(eu, q0, 1)) < 1e-12 * V3.total(eu, q0, 1)
-    @test abs(V3.total(eu, q, 3) - V3.total(eu, q0, 3)) < 1e-12 * V3.total(eu, q0, 3)
-
-    # linear stability of N about the hydrostatic state: two-point gravity is neutral, the
-    # pointwise source -g ρ_i has a real positive eigenvalue O(h)
-    @test jacobian_max_re(q -> V3.rhs_nonlinear(eu, q), qb) < 1e-10
-    eup = V3.Euler1D(10, 3, 0.0, 1e4; volume_flux = :kg, gravity = :pointwise)
-    @test jacobian_max_re(q -> V3.rhs_nonlinear(eup, q), V3.hydrostatic_state(eup, z -> V3.atm_Theta(atm, z))) > 1e-6
-
-    s = V3.fast_operator(eu, q)                                              # re-frozen, non-smooth state
-    λ = eigvals(Diagonal(1 ./ s.Mdiag) * Matrix(s.K + s.G * s.H))
-    @test maximum(real.(λ)) < 1e-12
-end
-
 @testset "Euler2D: x–z slice with terrain" begin
-    gas = V3.Gas()
+    gas = CM.Gas()
     ρr, Θr, θr = E2.stratified_reference(gas; θ0 = 300.0, N = 0.01)
     # isothermal atmosphere (T = 250 K): exactly at rest with the logarithmic gravity mean
     # (:waruszewski, default) and no background state subtracted (Artiano et al.)
@@ -161,8 +74,8 @@ end
             ev[k] = 1.0; E2.vertical_apply!(col, sv, ev); Av[:, k] .= col; ev[k] = 0.0
         end
         Ys = q .* (1 .+ 0.1 .* sin.(1:m.nq)); Y = similar(Ys)
-        E2.hevi_solve!(Y, sv, E2.hevi_factor(sv, 3.0 * V2.IMEX_GM), Ys)   # factor of I - c A_v, c = dt γ
-        @test norm(Y .- (I - 3.0 * V2.IMEX_GM * Av) \ Ys) < 1e-12 * norm(Y)
+        E2.hevi_solve!(Y, sv, E2.hevi_factor(sv, 3.0 * TS.IMEX_GM), Ys)   # factor of I - c A_v, c = dt γ
+        @test norm(Y .- (I - 3.0 * TS.IMEX_GM * Av) \ Ys) < 1e-12 * norm(Y)
         s = E2.fast_operator(m, q)                                                           # bounded growth
         @test maximum(real.(eigvals(E2.fast_matrix(s)))) < 1e-3
     end
@@ -184,23 +97,23 @@ end
     c = E2.sound_speed_max(m, q0)
     dtr = 0.25 * 5e3 / ((c + 20) * 7)
     nref = ceil(Int, 100 / dtr)
-    qref = V3.run_rk4(m, q0, 100 / nref, nref)
+    qref = TS.run_rk4(m, q0, 100 / nref, nref)
     dev = norm(qref .- q0)
     for (fast, Δts) in ((:imex, (4.0, 2.0)), (:hevi, (10.0, 5.0)))                   # nsub = 12: dτ refined with Δt
-        e = [norm(V3.run_mis(m, q0, Δt, round(Int, 100 / Δt); tab = V3.mis_tableau(:MIS4), nsub = 12,
+        e = [norm(TS.run_mis(m, q0, Δt, round(Int, 100 / Δt); tab = TS.mis_tableau(:MIS4), nsub = 12,
                              fast = fast) .- qref) for Δt in Δts]
         @test e[2] < 0.05 * dev
         @test rate(e...) > 1.7
     end
     qb = E2.project2d(m, (x, z) -> (ρi(z), 0.0, 0.0, Θi(z)))                                  # isothermal rest
-    q = V3.run_mis(m, qb, 10.0, 3; tab = V3.mis_tableau(:MIS4), nsub = 12, fast = :hevi)
+    q = TS.run_mis(m, qb, 10.0, 3; tab = TS.mis_tableau(:MIS4), nsub = 12, fast = :hevi)
     @test maximum(abs.(q .- qb) ./ max.(abs.(qb), 1.0)) < 1e-10                              # well balanced
 
     # thermodynamic/momentum split with the interface momentum, Verlet and forward-backward
     let m = m, q0 = q0
         s2 = E2.fast_operator(m, q0; reuse = false)
         kf = zeros(m.nq); kT = zeros(m.nq); km = zeros(m.nq)
-        V2.fast_apply!(kf, s2, q0, s2.fb)
+        TS.fast_apply!(kf, s2, q0, s2.fb)
         E2.interface_momentum!(s2, q0); E2.fast_rhs_thermo!(kT, s2, q0, s2.fb); E2.fast_rhs_momentum!(km, s2, q0, s2.fb)
         @test maximum(abs.(kT .+ km .- kf)) < 1e-12 * maximum(abs.(kf))
         Ms = E2.Mesh2D(4, 2, 3, 20e3, 10e3; zs = x -> 1000.0 / (1 + ((x - 10e3) / 3e3)^2))
@@ -212,7 +125,7 @@ end
             dt = cfl * hmin / (7 * ss.cmax)
             A = zeros(ms.nq, ms.nq); e = zeros(ms.nq); y = zeros(ms.nq); F = -ss.fb ./ ss.Mdiag
             for k in 1:ms.nq
-                e[k] = 1.0; V2.fast_solve!(y, ss, e, F, dt, 1; method = method); A[:, k] .= y; e[k] = 0.0
+                e[k] = 1.0; TS.fast_solve!(y, ss, e, F, dt, 1; method = method); A[:, k] .= y; e[k] = 0.0
             end
             @test maximum(abs.(eigvals(A))) < 1 + 1e-10
         end
@@ -224,33 +137,33 @@ end
         dt = 0.5 * hmin / (7 * sc.cmax)
         A = zeros(ms.nq, ms.nq); e = zeros(ms.nq); y = zeros(ms.nq); F = -sc.fb ./ sc.Mdiag
         for k in 1:ms.nq
-            e[k] = 1.0; V2.fast_solve!(y, sc, e, F, dt, 1; method = :verlet); A[:, k] .= y; e[k] = 0.0
+            e[k] = 1.0; TS.fast_solve!(y, sc, e, F, dt, 1; method = :verlet); A[:, k] .= y; e[k] = 0.0
         end
         μ = abs.(eigvals(A))
         @test maximum(abs.(μ .- 1)) < 1e-8
         qq = copy(q0)
-        @test allocs(() -> V2.fast_solve!(qq, s2, q0, nothing, 0.05, 5; method = :verlet)) == 0
-        @test allocs(() -> V2.fast_solve!(qq, s2, q0, nothing, 0.05, 5; method = :fb)) == 0
+        @test allocs(() -> TS.fast_solve!(qq, s2, q0, nothing, 0.05, 5; method = :verlet)) == 0
+        @test allocs(() -> TS.fast_solve!(qq, s2, q0, nothing, 0.05, 5; method = :fb)) == 0
         sh2 = E2.fast_operator(m, q0; fast = :hevi, reuse = false)
-        @test allocs(() -> V2.fast_solve!(qq, sh2, q0, nothing, 0.5, 5; method = :hevi)) < 50_000
+        @test allocs(() -> TS.fast_solve!(qq, sh2, q0, nothing, 0.5, 5; method = :hevi)) < 50_000
     end
-    e = [norm(V3.run_mis(m, q0, Δt, round(Int, 100 / Δt); tab = V3.mis_tableau(:MIS4), nsub = 12,
+    e = [norm(TS.run_mis(m, q0, Δt, round(Int, 100 / Δt); tab = TS.mis_tableau(:MIS4), nsub = 12,
                          fast = :verlet) .- qref) for Δt in (8.0, 4.0)]
     @test e[2] < 0.05 * dev
     @test rate(e...) > 1.7
-    q = V3.run_mis(m, qb, 8.0, 3; tab = V3.mis_tableau(:MIS4), nsub = 12, fast = :verlet)
+    q = TS.run_mis(m, qb, 8.0, 3; tab = TS.mis_tableau(:MIS4), nsub = 12, fast = :verlet)
     @test maximum(abs.(q .- qb) ./ max.(abs.(qb), 1.0)) < 1e-10
 
     # allocation-free kernels (in a let block: the testset reassigns m, s, q, which would be boxed)
     let m = m, q0 = q0
         out = zeros(m.nq)
-        @test allocs(() -> V3.rhs_nonlinear!(out, m, q0)) == 0
+        @test allocs(() -> TS.rhs_nonlinear!(out, m, q0)) == 0
         sh = E2.fast_operator(m, q0; fast = :hevi)
-        @test allocs(() -> V2.fast_apply!(out, sh, q0, sh.fb)) == 0
+        @test allocs(() -> TS.fast_apply!(out, sh, q0, sh.fb)) == 0
         qq = copy(q0)
-        @test allocs(() -> V2.fast_solve!(qq, sh, q0, nothing, 0.1, 5; method = :imex)) == 0
-        tab = V3.mis_tableau(:MIS4); w = V3.MISWork(m.nq, 4)
-        @test allocs(() -> V3.mis_step!(qq, m, q0, 4.0, tab, sh, w; nsub = 12, fast = :imex)) == 0
+        @test allocs(() -> TS.fast_solve!(qq, sh, q0, nothing, 0.1, 5; method = :imex)) == 0
+        tab = TS.mis_tableau(:MIS4); w = TS.MISWork(m.nq, 4)
+        @test allocs(() -> TS.mis_step!(qq, m, q0, 4.0, tab, sh, w; nsub = 12, fast = :imex)) == 0
         se = E2.fast_operator(m, q0; reuse = false)               # explicit only: no LU factors
         @test allocs(() -> E2.refreeze!(se, m, q0, 1.4)) == 0     # coefficients re-frozen in place
     end
@@ -1402,7 +1315,7 @@ end
     @test qc[base.nq+1:end] ≈ [CM.pressure(gas, qc[E2.node_iq(np, e, 4, i, j)]) for e in 1:M.Ne for j in 1:np for i in 1:np]
 end
 
-@testset "Euler2D: interface momentum as additional variable (DGPressureModel, interface = true)" begin
+@testset "Euler2D: column solve by static condensation (DGPressureModel, vsolver = :hdg)" begin
     gas = CM.Gas()
     ρr, Θr, θr = CM.stratified_reference(gas; θ0 = 300.0, N = 0.01)
     L, H, U = 80e3, 10e3, 20.0
@@ -1410,60 +1323,22 @@ end
     M = E2.Mesh2D(8, 4, 3, L, H; zs = hill)
     base = E2.Euler2DModel(M, gas, ρr, Θr)
     qb = CM.project2d(base, (x, z) -> (ρ = Θr(z) / (θr(z) + 0.01 * exp(-((x - L / 3) / 5e3)^2)); (ρ, ρ * U, 0.0, Θr(z))))
-    m0 = E2.DGPressureModel(base; lmars = :momentum); mi = E2.DGPressureModel(base; interface = true)
-    z0 = E2.pressure_state(m0, qb); z0 .+= 1e-3 .* sin.(1:m0.nq) .* abs.(z0)
-    zi = vcat(z0, zeros(mi.nq - m0.nq)); E2.interface_reset!(mi, zi)          # M̂ = m_f(z)
-    @test mi.nq - m0.nq == (2M.Nex * M.Nez - M.Nex) * M.np                 # one M̂ per interior face node
-    C0 = zeros(TS.frozen_ncoef(m0)); S0 = zeros(m0.nq); TS.frozen_data!(C0, S0, m0, z0)
-    Ci = zeros(TS.frozen_ncoef(mi)); Si = zeros(mi.nq); TS.frozen_data!(Ci, Si, mi, zi)
-    @test maximum(abs, Si[m0.nq+1:end]) > 0                                # slow tendency of M̂ (of its LMARS value)
-    Si[m0.nq+1:end] .= 0                                                   # the constraint check below without it
-    for part in (:all, :hthermo, :hmomentum, :vertical)
-        f0 = TS.frozen_fast!(zeros(m0.nq), m0, C0, z0, part, S0)
-        fi = TS.frozen_fast!(zeros(mi.nq), mi, Ci, zi, part, Si)
-        @test norm(fi[1:m0.nq] .- f0) < 1e-11 * norm(f0)                  # equals the LMARS operator for M̂ = m_f
-        zz = copy(zi); zz[m0.nq+1:end] .= 0                               # scale of the M̂ rows: rate times s m_f
-        sc = maximum(abs, TS.frozen_fast!(zeros(mi.nq), mi, Ci, zz, part, Si)[m0.nq+1:end])
-        @test maximum(abs, fi[m0.nq+1:end]) <= 1e-10 * max(sc, eps())     # the constraint holds
+    for vs in (:full, :contravariant_volume)
+        ml = E2.DGPressureModel(base; lmars = :momentum, vsplit = vs)
+        mh = E2.DGPressureModel(base; lmars = :momentum, vsplit = vs, vsolver = :hdg)
+        z0 = E2.pressure_state(ml, qb); z0 .+= 1e-3 .* sin.(1:ml.nq) .* abs.(z0)
+        C0 = zeros(TS.frozen_ncoef(ml)); S0 = zeros(ml.nq); TS.frozen_data!(C0, S0, ml, z0)
+        for m in (ml, mh); TS.frozen_stage_begin!(m, C0, z0); end
+        # the element rows of the hybrid form with M̂ = s m_f(z) are the LMARS operator
+        Jx = mh.aux.vert.Jv; nqp = ml.nq
+        dM = Vector(diag(Jx)[nqp+1:end])                              # -1 on the η-face constraint rows, 0 on the ξ-faces
+        G = Diagonal([d == 0 ? 0.0 : -1 / d for d in dM]) * Jx[nqp+1:end, 1:nqp]   # s m_f(z) = G z
+        @test norm(Jx[1:nqp, 1:nqp] * z0 + Jx[1:nqp, nqp+1:end] * (G * z0) - ml.vert.Jv * z0) < 1e-11 * norm(ml.vert.Jv * z0)
+        R = sin.(1:ml.nq) .* abs.(z0)
+        y1 = TS.frozen_vertical_solve!(zeros(ml.nq), ml, C0, 0.7, 0.9, R)
+        y2 = TS.frozen_vertical_solve!(zeros(ml.nq), mh, C0, 0.7, 0.9, R)
+        @test norm(y2 .- y1) < 1e-12 * norm(y1)
     end
-end
-
-@testset "Euler2D: HDG Störmer–Verlet with Bokhove's partition (:verlet_b)" begin
-    gas = CM.Gas()
-    ρr, Θr, θr = CM.stratified_reference(gas; θ0 = 300.0, N = 0.01)
-    L, H, U = 80e3, 10e3, 20.0
-    hill(x) = 400 / (1 + ((x - L / 2) / 5e3)^2)
-    dhill(x) = -400 * 2 * (x - L / 2) / 5e3^2 / (1 + ((x - L / 2) / 5e3)^2)^2
-    M = E2.Mesh2D(8, 4, 3, L, H; zs = hill)
-    base = E2.Euler2DModel(M, gas, ρr, Θr)
-    qb = CM.project2d(base, (x, z) -> (ρ = Θr(z) / (θr(z) + 0.01 * exp(-((x - L / 3) / 5e3)^2));
-                                        (ρ, ρ * U, ρ * U * dhill(x) * (H - z) / (H - hill(x)), Θr(z))))
-    s = TS.fast_operator(base, qb; fast = :verlet_b)
-    nq, np = base.nq, M.np
-    # D_b, D_a: the self-couplings of the momentum and the thermodynamic tendency (face-local)
-    mom(k) = mod1(cld(k, np^2), 4) in (2, 3)
-    rng = MersenneTwister(5)
-    b = [mom(k) ? randn(rng) : 0.0 for k in 1:nq]; a = [mom(k) ? 0.0 : randn(rng) for k in 1:nq]; z0 = zeros(nq)
-    r = E2.fast_rhs_momentum!(zeros(nq), s, b, z0)
-    @test norm(r .- E2.momentum_damping(s) * b) < 1e-12 * norm(r)
-    E2.interface_momentum!(s, a); r = E2.fast_rhs_thermo!(zeros(nq), s, a, z0)
-    @test norm(r .- E2.thermo_damping(s) * a) < 1e-12 * norm(r)
-    # second order (reference: :verlet with very small steps)
-    T = 5.0; fs(meth, n) = TS.fast_solve!(zeros(nq), s, qb, nothing, T / n, n; method = meth)
-    zr = fs(:verlet, 4000)
-    e = [norm(fs(:verlet_b, n) .- zr) for n in (10, 20, 40)]
-    @test e[1] / e[2] > 3.7 && e[2] / e[3] > 3.7
-    # stable at CFL 1.5 (P = 3), where explicit Verlet (limit 0.79) grows
-    c = CM.sound_speed_max(base, qb); h = min(L / M.Nex, minimum(M.Z[:, end, :] .- M.Z[:, 1, :]))
-    function growth(meth, dτ)
-        g0 = TS.fast_solve!(zeros(nq), s, z0, nothing, dτ, 1; method = meth)
-        z = randn(MersenneTwister(1), nq); z ./= norm(z); g = 0.0; out = zeros(nq)
-        for _ in 1:300
-            TS.fast_solve!(out, s, z, nothing, dτ, 1; method = meth); out .-= g0; g = norm(out); z .= out ./ g
-        end
-        g
-    end
-    @test growth(:verlet_b, 1.5h / (7c)) < 1.005 && growth(:verlet, 1.5h / (7c)) > 1.5
 end
 
 @testset "LinearAnalysis: MIS amplification (Knoth–Wensch, MISDG grid)" begin
