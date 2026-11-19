@@ -10,7 +10,9 @@ module Common
 export Gas, pressure, stratified_reference,
        Atmosphere, atm_T, atm_p, atm_rho, atm_theta, atm_Theta, atm_pi,
        project2d, total2d, output_fields, field_section, sound_speed_max, with_sponge,
-       open_vtkhdf, write_vtkhdf!, plot_fields
+       open_vtkhdf, write_vtkhdf!, plot_fields,
+       MoistGas, psat, latent, moist_state, moist_exner, theta_e, fischer_burmeister,
+       theta_phase_factor, pressure_phase_factor, exner_derivatives
 
 """Dry ideal gas: R, γ, p00 and the gravitational acceleration g."""
 Base.@kwdef struct Gas
@@ -108,5 +110,7 @@ function write_vtkhdf! end
 Makie figure of output fields; needs a Makie backend, e.g. `using CairoMakie` (package extension).
 """
 function plot_fields end
+
+include("moist_thermo.jl")
 
 end # module

@@ -39,6 +39,8 @@ using SparseArrays
 using ..Common: Gas, pressure, stratified_reference
 import ..Common: project2d, total2d, output_fields, field_section, sound_speed_max, with_sponge
 using ..Common: open_vtkhdf, write_vtkhdf!, plot_fields
+using ..Common: MoistGas, _e0v, psat, _xlog, _sB, latent, _temp, moist_state, moist_exner, _moist_p, _theta_e, theta_e, _Θof,
+                fischer_burmeister, theta_phase_factor, pressure_phase_factor, exner_derivatives
 using ..TimeStepping: AbstractFastOperator, rhs_nonlinear
 import ..TimeStepping: rhs_nonlinear!, fast_operator, fast_apply!, fast_rhs_thermo!, fast_rhs_momentum!,
                        fast_rhs_horizontal!, vertical_apply!, vertical_factor, vertical_solve!,

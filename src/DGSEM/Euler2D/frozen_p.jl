@@ -94,22 +94,36 @@ struct DGPressureModel
     hpredict::Bool                                      # midpoint predictor of the horizontal momentum step
     aux::Union{Nothing,DGPressureModel}                 # :hdg: the same operator written with M̂ (only its J_v is used)
     cols::Vector{Tuple{Vector{Vector{Int}},Vector{Int}}}  # :hdg: per node column the element unknowns and the η-face M̂ (aux)
+    moist::Bool                                         # moist air: state [q; p; ρq_v; ρq_c], Θ = ρθ_ρ
+    mgas::MoistGas
+    micro::Symbol                                       # phase change: :fast (every small step), :slow (stages), :none
+    τ::Float64                                          # relaxation time of the phase change
+    nqp::Int                                            # unknowns without M̂
 end
 function DGPressureModel(base::Euler2DModel; pvar::Symbol = :p, lmars::Symbol = :velocity, vsplit::Symbol = :full,
-                         vsolver::Symbol = :lu, hpredict::Bool = true)
+                         vsolver::Symbol = :lu, hpredict::Bool = true, moist::Bool = false, mgas::MoistGas = MoistGas(),
+                         micro::Symbol = :fast, τfac::Real = 0.5, cs::Real = 350.0, τ = nothing)
     vsolver in (:lu, :hdg) || error("DGPressureModel: vsolver = :lu or :hdg")
     vsolver === :hdg && lmars !== :momentum && error("DGPressureModel: vsolver = :hdg needs lmars = :momentum")
     vsplit in (:full, :contravariant, :contravariant_volume) ||
         error("DGPressureModel: vsplit = :full, :contravariant or :contravariant_volume")
     lmars in (:velocity, :momentum) || error("DGPressureModel: lmars = :velocity or :momentum")
     pvar === :p || error("DGPressureModel: pvar = :p (π not yet)")
-    aux = vsolver === :hdg ? _dgp_build(base, pvar, :momentum, vsplit, :lu, hpredict, true, nothing, Tuple{Vector{Vector{Int}},Vector{Int}}[]) : nothing
-    cols = vsolver === :hdg ? _hdg_columns(base, aux) : Tuple{Vector{Vector{Int}},Vector{Int}}[]
-    return _dgp_build(base, pvar, lmars, vsplit, vsolver, hpredict, false, aux, cols)
-end
-function _dgp_build(base, pvar, lmars, vsplit, vsolver, hpredict, hybrid, aux, cols)
+    micro in (:fast, :slow, :none) || error("DGPressureModel: micro = :fast, :slow or :none")
+    moist && mgas.thvar !== :thetarho && error("DGPressureModel: moist with mgas.thvar = :thetarho (Θ = ρθ_ρ) only")
     M = base.mesh
-    nqp = base.nq + M.np^2 * M.Ne
+    # relaxation time: given, or τfac times the explicit horizontal acoustic step 0.85·0.63 Δx_e/((2p+1) c_s)
+    τv = τ !== nothing ? Float64(τ) : τfac * 0.85 * 0.63 * (M.Lx / M.Nex) / ((2M.p + 1) * cs)
+    ph = (moist, mgas, micro, τv)
+    aux = vsolver === :hdg ? _dgp_build(base, pvar, :momentum, vsplit, :lu, hpredict, true, nothing, Tuple{Vector{Vector{Int}},Vector{Int}}[], ph) : nothing
+    cols = vsolver === :hdg ? _hdg_columns(base, aux) : Tuple{Vector{Vector{Int}},Vector{Int}}[]
+    return _dgp_build(base, pvar, lmars, vsplit, vsolver, hpredict, false, aux, cols, ph)
+end
+function _dgp_build(base, pvar, lmars, vsplit, vsolver, hpredict, hybrid, aux, cols, ph)
+    moist = ph[1]
+    M = base.mesh
+    N = M.np^2 * M.Ne
+    nqp = base.nq + (moist ? 3 : 1) * N
     mhat = Int[]; nM = 0
     if hybrid
         _foreach_face_dir(M) do fi, dir, kind, args...
@@ -117,13 +131,14 @@ function _dgp_build(base, pvar, lmars, vsplit, vsolver, hpredict, hybrid, aux, c
         end
     end
     nq = nqp + nM
-    nc = frozen_ncoef(base) + M.np^2 * M.Ne
+    # coefficients: base, then per node ∂p/∂Θ; moist also ∂p/∂ρ, ∂p/∂ρ_v, ∂p/∂ρ_c, q_v, q_c and per face the upwind side
+    nc = frozen_ncoef(base) + (moist ? 6N + _nface(M) : N)
     return DGPressureModel(base, pvar, nq, zeros(nc), zeros(nq),
                            DGVertical(zeros(nc), spzeros(nq, nq), spzeros(nq, nq), false, Int[], Int[],
                                       Dict{Tuple{Float64,Float64},Any}(), Dict{Tuple{Float64,Float64},Any}(), zeros(nq), zeros(nq),
                                       zeros(nq), Vector{Int}[], Matrix{Int}[], Matrix{Int}[], Int[], spzeros(nq, nq),
                                       Dict{Float64,Tuple{SparseMatrixCSC{Float64,Int},SparseMatrixCSC{Float64,Int}}}()),
-                           hybrid, lmars, vsplit, mhat, vsolver, hpredict, aux, cols)
+                           hybrid, lmars, vsplit, mhat, vsolver, hpredict, aux, cols, ph..., nqp)
 end
 
 """Node columns (ex, i) for the condensed column solve: the element unknowns (ρ, m_x, m_z, Θ, p at the np nodes of the
@@ -137,7 +152,9 @@ function _hdg_columns(base::Euler2DModel, mi)
     cols = Tuple{Vector{Vector{Int}},Vector{Int}}[]
     for ex in 1:M.Nex, i in 1:np
         es = [elem(M, ex, ez) for ez in 1:M.Nez]
-        idx = [vcat([node_iq(np, e, r, i, j) for r in 1:4 for j in 1:np], [base.nq + _pnode(np, e, i, j) for j in 1:np]) for e in es]
+        N = np^2 * M.Ne; nt = (mi.nqp - base.nq) ÷ N          # p (and ρq_v, ρq_c)
+        idx = [vcat([node_iq(np, e, r, i, j) for r in 1:4 for j in 1:np],
+                    [base.nq + (t - 1) * N + _pnode(np, e, i, j) for t in 1:nt for j in 1:np]) for e in es]
         push!(cols, (idx, [fM[(es[ez], i)] for ez in 1:M.Nez-1]))
     end
     return cols
@@ -167,14 +184,86 @@ frozen_ncoef(m::DGPressureModel) = length(m.C)
 """C(y) and S(y): those of the base model, plus P'(Θ) = γ p/Θ per node."""
 function frozen_data!(C, S, m::DGPressureModel, q)
     b = m.base; M = b.mesh; np = M.np
-    frozen_data!(C, S, b, q)                   # writes the base coefficients; S = 0 on the p rows
-    nb = frozen_ncoef(b)
+    nb = frozen_ncoef(b); N = np^2 * M.Ne
+    if !m.moist
+        frozen_data!(C, S, b, q)               # writes the base coefficients; S = 0 on the p rows
+        @inbounds for e in 1:M.Ne, j in 1:np, i in 1:np
+            Θ = q[node_iq(np, e, 4, i, j)]
+            C[nb + _pnode(np, e, i, j)] = b.gas.γ * pressure(b.gas, Θ) / Θ
+        end
+        m.lmars === :momentum && _lmars_momentum!(C, m, q)
+        return C, S
+    end
+    # moist: LMARS coefficients with the pressure of the moist equation of state, ∂p/∂(Θ, ρ, ρq_v, ρq_c), q_v, q_c
+    mg = m.mgas
+    pf(e, i, j) = _dgp_peos(m, q, e, i, j)
+    frozen_data!(C, S, b, q; pfun = pf)
     @inbounds for e in 1:M.Ne, j in 1:np, i in 1:np
-        Θ = q[node_iq(np, e, 4, i, j)]
-        C[nb + _pnode(np, e, i, j)] = b.gas.γ * pressure(b.gas, Θ) / Θ
+        pn = _pnode(np, e, i, j)
+        ρ, Θ = q[node_iq(np, e, 1, i, j)], q[node_iq(np, e, 4, i, j)]
+        V, Cc = q[b.nq + N + pn], q[b.nq + 2N + pn]
+        a, bb, c, d = exner_derivatives(mg, ρ, Θ, V, Cc; f = _moist_p)
+        C[nb + pn] = bb; C[nb + N + pn] = a; C[nb + 2N + pn] = c; C[nb + 3N + pn] = d
+        C[nb + 4N + pn] = V / ρ; C[nb + 5N + pn] = Cc / ρ
+    end
+    # upwind side of every face (that of the θ_ρ of the base coefficients, C₄ = θ_up C₁)
+    _foreach_face_dir(M) do fi, dir, kind, iL, jL, eL, iR, jR, eR, ñx, ñz, we
+        o = _fc(M, fi)
+        if kind === :wall
+            C[nb + 6N + fi] = 1.0
+        else
+            θup = C[o+4] / C[o+1]
+            C[nb + 6N + fi] = abs(θup - C[o+9]) <= abs(θup - C[o+10]) ? 1.0 : 0.0
+        end
+        nothing
     end
     m.lmars === :momentum && _lmars_momentum!(C, m, q)
+    m.micro === :slow && _dgp_phase!(S, m, q)
     return C, S
+end
+
+"""Pressure of the equation of state at node (e, i, j) of q (moist: p(ρ, Θ, ρq_v, ρq_c), dry: p(Θ))."""
+@inline function _dgp_peos(m::DGPressureModel, q, e, i, j)
+    b = m.base; np = b.mesh.np
+    Θ = q[node_iq(np, e, 4, i, j)]
+    m.moist || return pressure(b.gas, Θ)
+    N = np^2 * b.mesh.Ne; pn = _pnode(np, e, i, j)
+    return _moist_p(m.mgas, q[node_iq(np, e, 1, i, j)], Θ, q[b.nq + N + pn], q[b.nq + 2N + pn])
+end
+
+"""Phase change (moist): S_c = -φ_FB(ρ_vs - ρ_v, ρ_c)/τ at every node of z, explicit: S_c to ρq_c, -S_c to ρq_v, the
+latent heating (∂Θ/∂ρ_c) S_c to Θ = ρθ_ρ and (∂p/∂ρ_c) S_c to p (Bryan & Fritsch; factors at the live state)."""
+function _dgp_phase!(out, m::DGPressureModel, z)
+    b = m.base; np = b.mesh.np; mg = m.mgas
+    N = np^2 * b.mesh.Ne
+    @inbounds for e in 1:b.mesh.Ne, j in 1:np, i in 1:np
+        pn = _pnode(np, e, i, j)
+        kρ, kΘ, kV, kC = node_iq(np, e, 1, i, j), node_iq(np, e, 4, i, j), b.nq + N + pn, b.nq + 2N + pn
+        ρ, Θ, ρv, ρc = z[kρ], z[kΘ], z[kV], z[kC]
+        φ, T = fischer_burmeister(mg, ρ, Θ, ρv, ρc)
+        Sc = -φ / m.τ
+        p = (mg.Rd * (ρ - ρv - ρc) + mg.Rv * ρv) * T
+        out[kC] += Sc
+        out[kV] -= Sc
+        out[kΘ] += theta_phase_factor(mg, ρ, Θ, T, p, ρv, ρc) * Sc
+        out[b.nq + pn] += pressure_phase_factor(mg, ρ, T, ρv, ρc) * Sc
+    end
+    return out
+end
+
+"""Moist state [q; p; ρq_v; ρq_c] of a base state q (ρ, m_x, m_z, Θ = ρθ_ρ) and the total water density Q(x, z), split
+into vapour and condensate of phase equilibrium (initial states only; the model has no saturation adjustment)."""
+function moist_dg_state(m::DGPressureModel, q, Q)
+    m.moist || error("moist_dg_state: model with moist = true")
+    b = m.base; M = b.mesh; np = M.np; N = np^2 * M.Ne
+    x = vcat(q[1:b.nq], zeros(m.nq - b.nq))
+    @inbounds for e in 1:M.Ne, j in 1:np, i in 1:np
+        pn = _pnode(np, e, i, j)
+        T, ρv, ρc, _ = moist_state(m.mgas, q[node_iq(np, e, 1, i, j)], q[node_iq(np, e, 4, i, j)], Q(M.X[i, j, e], M.Z[i, j, e]))
+        x[b.nq + N + pn] = ρv; x[b.nq + 2N + pn] = ρc
+    end
+    frozen_step_end!(m, x)
+    return x
 end
 
 """Face coefficients of LMARS in ρu: m_f = {m_n} - [p]/(2c), f_Θ = θ_up m_f, p* = {p} - c [m_n]/2 (interior faces;
@@ -184,7 +273,7 @@ function _lmars_momentum!(C, m::DGPressureModel, q)
     _foreach_face_dir(M) do fi, dir, kind, iL, jL, eL, iR, jR, eR, ñx, ñz, we
         kind === :wall && return nothing
         o = _fc(M, fi)
-        sp(e, i, j) = sqrt(γ * pressure(b.gas, q[node_iq(np, e, 4, i, j)]) / q[node_iq(np, e, 1, i, j)])
+        sp(e, i, j) = sqrt(γ * _dgp_peos(m, q, e, i, j) / q[node_iq(np, e, 1, i, j)])
         cm = b.clmars > 0 ? b.clmars : 0.5 * (sp(eL, iL, jL) + sp(eR, iR, jR))
         θup = C[o+4] / C[o+1]
         C[o+1] = 0.5; C[o+2] = 0.5; C[o+3] = 1 / (2cm)
@@ -237,21 +326,53 @@ direction (1: ξ-face, 2: η-face or wall)."""
     return fi
 end
 
+# p row of the frozen pressure equation p_t = a ρ_t + b Θ_t + c (ρq_v)_t + d (ρq_c)_t: every emission to a ρ, Θ, ρq_v
+# or ρq_c row is passed on to the p row of the node with its coefficient (dry: b Θ_t only).
+struct _DGPRow{E}
+    emit::E
+    C::Vector{Float64}
+    nqb::Int
+    np2::Int
+    N::Int
+    nb::Int
+    moist::Bool
+end
+@inline function (w::_DGPRow)(r, c, v)
+    w.emit(r, c, v)
+    if r <= w.nqb
+        var = mod1(cld(r, w.np2), NV)
+        (var == 4 || (var == 1 && w.moist)) || return nothing
+        pn = (cld(r, NV * w.np2) - 1) * w.np2 + mod1(r, w.np2)
+        @inbounds w.emit(w.nqb + pn, c, (var == 4 ? w.C[w.nb + pn] : w.C[w.nb + w.N + pn]) * v)
+    elseif w.moist && r > w.nqb + w.N && r <= w.nqb + 3w.N
+        t = cld(r - w.nqb, w.N)                                   # 2: ρq_v, 3: ρq_c
+        pn = r - w.nqb - (t - 1) * w.N
+        @inbounds w.emit(w.nqb + pn, c, w.C[w.nb + t * w.N + pn] * v)
+    end
+    return nothing
+end
+
 """
     _dgp_terms!(emit, m, C, dirs)
 
 All terms of the linear fast operator in the directions `dirs` (1 = ξ, 2 = η; volume pairs and
 faces) as emit(row, column, coefficient): out[row] += coefficient z[column].
 """
-function _dgp_terms!(emit::E, m::DGPressureModel, C, dirs; vol::Bool = true, fac::Bool = true) where {E}
+function _dgp_terms!(emit0::E, m::DGPressureModel, C, dirs; vol::Bool = true, fac::Bool = true) where {E}
     b = m.base; M = b.mesh
     np, Ne, D, g = M.np, M.Ne, M.D, b.gas.g
-    nb = frozen_ncoef(b); nqb = b.nq
+    nb = frozen_ncoef(b); nqb = b.nq; N = np^2 * Ne
+    emit = _DGPRow(emit0, C, nqb, np^2, N, nb, m.moist)
     iq(e, r, i, j) = node_iq(np, e, r, i, j)
     ipr(e, i, j) = nqb + _pnode(np, e, i, j)
-    CP(e, i, j) = C[nb + _pnode(np, e, i, j)]
-    # Θ row and the p row (P' times the Θ row) of node (e, i, j)
-    @inline emitΘ(e, i, j, col, v) = (emit(iq(e, 4, i, j), col, v); emit(ipr(e, i, j), col, CP(e, i, j) * v))
+    iV(e, i, j) = nqb + N + _pnode(np, e, i, j)
+    iC(e, i, j) = nqb + 2N + _pnode(np, e, i, j)
+    qv(e, i, j) = C[nb + 4N + _pnode(np, e, i, j)]
+    qc(e, i, j) = C[nb + 5N + _pnode(np, e, i, j)]
+    # Θ row (the p row follows through `emit`)
+    @inline emitΘ(e, i, j, col, v) = emit(iq(e, 4, i, j), col, v)
+    # tracer rows ρq_v, ρq_c of node (e, i, j) with the mixing ratios (qa, qb): the mass flux term v times q
+    @inline emitQ(e, i, j, col, v, a, c) = (emit(iV(e, i, j), col, a * v); emit(iC(e, i, j), col, c * v))
     @inbounds for e in 1:Ne, j in 1:np, i in 1:np
         Jinv = 1 / M.J[i, j, e]
         ρa, mxa, mza, pa = iq(e, 1, i, j), iq(e, 2, i, j), iq(e, 3, i, j), ipr(e, i, j)
@@ -266,6 +387,11 @@ function _dgp_terms!(emit::E, m::DGPressureModel, C, dirs; vol::Bool = true, fac
             ρb, mxb, mzb, pb = iq(e, 1, ib, jb), iq(e, 2, ib, jb), iq(e, 3, ib, jb), ipr(e, ib, jb)
             emit(ρa, mxa, f * C[o+1] * ax); emit(ρa, mza, f * C[o+1] * az)
             emit(ρa, mxb, f * C[o+2] * ax); emit(ρa, mzb, f * C[o+2] * az)
+            if m.moist                                   # ρq: the mass flux with the pair mean of q
+                qa, qcm = 0.5 * (qv(e, i, j) + qv(e, ib, jb)), 0.5 * (qc(e, i, j) + qc(e, ib, jb))
+                emitQ(e, i, j, mxa, f * C[o+1] * ax, qa, qcm); emitQ(e, i, j, mza, f * C[o+1] * az, qa, qcm)
+                emitQ(e, i, j, mxb, f * C[o+2] * ax, qa, qcm); emitQ(e, i, j, mzb, f * C[o+2] * az, qa, qcm)
+            end
             emitΘ(e, i, j, mxa, f * C[o+3] * ax); emitΘ(e, i, j, mza, f * C[o+3] * az)
             emitΘ(e, i, j, mxb, f * C[o+4] * ax); emitΘ(e, i, j, mzb, f * C[o+4] * az)
             G = f * C[o+5] * 0.5 * g * (M.Z[ib, jb, e] - M.Z[i, j, e])
@@ -283,9 +409,17 @@ function _dgp_terms!(emit::E, m::DGPressureModel, C, dirs; vol::Bool = true, fac
         σL = 1 / (M.J[iL, jL, eL] * we)
         mn(row, mx, mz, v) = (emit(row, mx, v * n1); emit(row, mz, v * n2))
         mnΘ(e, i, j, mx, mz, v) = (emitΘ(e, i, j, mx, v * n1); emitΘ(e, i, j, mz, v * n2))
+        mnQ(e, i, j, mx, mz, v, a, c) = (emitQ(e, i, j, mx, v * n1, a, c); emitQ(e, i, j, mz, v * n2, a, c))
+        if m.moist && kind !== :wall
+            up = C[nb + 6N + fi] > 0.5                   # upwind side of the face (left)
+            qvu = up ? qv(eL, iL, jL) : qv(eR, iR, jR); qcu = up ? qc(eL, iL, jL) : qc(eR, iR, jR)
+        else
+            qvu = qcu = 0.0
+        end
         if kind === :wall
             c = σL * s
             mn(ρL, mxL, mzL, c)
+            m.moist && mnQ(eL, iL, jL, mxL, mzL, c, qv(eL, iL, jL), qc(eL, iL, jL))
             mnΘ(eL, iL, jL, mxL, mzL, c * C[o+2])
             mn(mxL, mxL, mzL, -c * n1 * C[o+1])
             mn(mzL, mxL, mzL, -c * n2 * C[o+1])
@@ -305,6 +439,10 @@ function _dgp_terms!(emit::E, m::DGPressureModel, C, dirs; vol::Bool = true, fac
             emit(ρL, kM, -cL * is); mn(ρL, mxL, mzL, cL)
             emitΘ(eL, iL, jL, kM, -cL * θup * is); mnΘ(eL, iL, jL, mxL, mzL, cL * C[o+9])
             emit(ρR, kM, cR * is); mn(ρR, mxR, mzR, -cR)
+            if m.moist
+                emitQ(eL, iL, jL, kM, -cL * is, qvu, qcu); mnQ(eL, iL, jL, mxL, mzL, cL, qv(eL, iL, jL), qc(eL, iL, jL))
+                emitQ(eR, iR, jR, kM, cR * is, qvu, qcu); mnQ(eR, iR, jR, mxR, mzR, -cR, qv(eR, iR, jR), qc(eR, iR, jR))
+            end
             emitΘ(eR, iR, jR, kM, cR * θup * is); mnΘ(eR, iR, jR, mxR, mzR, -cR * C[o+10])
             for (row, nn) in ((mxL, n1), (mzL, n2))
                 emit(row, kM, cL * nn * iZ * is); mn(row, mxL, mzL, -cL * nn * 2 * C[o+7])
@@ -322,6 +460,15 @@ function _dgp_terms!(emit::E, m::DGPressureModel, C, dirs; vol::Bool = true, fac
             # left: -cL (m_f - m_nL), -cL (f_Θ - θ_L m_nL), -cL n (p_s - p_L)
             mn(ρL, mxL, mzL, -cL * (C[o+1] - 1)); mn(ρL, mxR, mzR, -cL * C[o+2])
             emit(ρL, pR, cL * C[o+3]); emit(ρL, pL, -cL * C[o+3])
+            if m.moist                                   # -cL (q_up m_f - q_L m_nL), +cR (q_up m_f - q_R m_nR)
+                for (e_, i_, j_, sg) in ((eL, iL, jL, -cL), (eR, iR, jR, cR))
+                    emitQ(e_, i_, j_, mxL, sg * C[o+1] * n1, qvu, qcu); emitQ(e_, i_, j_, mzL, sg * C[o+1] * n2, qvu, qcu)
+                    emitQ(e_, i_, j_, mxR, sg * C[o+2] * n1, qvu, qcu); emitQ(e_, i_, j_, mzR, sg * C[o+2] * n2, qvu, qcu)
+                    emitQ(e_, i_, j_, pR, -sg * C[o+3], qvu, qcu); emitQ(e_, i_, j_, pL, sg * C[o+3], qvu, qcu)
+                end
+                mnQ(eL, iL, jL, mxL, mzL, cL, qv(eL, iL, jL), qc(eL, iL, jL))
+                mnQ(eR, iR, jR, mxR, mzR, -cR, qv(eR, iR, jR), qc(eR, iR, jR))
+            end
             mnΘ(eL, iL, jL, mxL, mzL, -cL * (C[o+4] - C[o+9])); mnΘ(eL, iL, jL, mxR, mzR, -cL * C[o+5])
             emitΘ(eL, iL, jL, pR, cL * C[o+6]); emitΘ(eL, iL, jL, pL, -cL * C[o+6])
             for (row, nn) in ((mxL, n1), (mzL, n2))
@@ -372,7 +519,7 @@ function _dgp_part_terms!(emit, m::DGPressureModel, C, which::Symbol)
     return nothing
 end
 
-@inline _dgp_isthermo(m::DGPressureModel, k) = k > m.base.nq ? k <= m.base.nq + m.base.mesh.np^2 * m.base.mesh.Ne :
+@inline _dgp_isthermo(m::DGPressureModel, k) = k > m.base.nq ? k <= m.nqp :
                                                  mod1(cld(k, m.base.mesh.np^2), NV) in (1, 4)
 
 """Fast part F_f(C, z) + F on the rows of `part`: :all, :thermo (ρ, Θ, p), :momentum (m_x, m_z),
@@ -395,6 +542,7 @@ function frozen_fast!(out, m::DGPressureModel, C, z, part::Symbol, F)
     end
     part === :vertical && return out
     keepth = part in (:all, :thermo, :hthermo)
+    m.moist && m.micro === :fast && keepth && _dgp_phase!(out, m, z)     # explicit phase change (before the row mask)
     keepmo = part in (:all, :momentum, :hmomentum)
     Fth = part in (:all, :thermo, :hthermo)
     Fmo = part in (:all, :momentum, :hmomentum)      # momentum forcing with the momentum step (in b⁺ before :hthermo)
@@ -413,11 +561,11 @@ function rhs_nonlinear!(out, m::DGPressureModel, q::AbstractVector)
     return frozen_fast!(out, m, m.C, q, :all, m.S)
 end
 
-"""p ← p(Θ) after a MIS step."""
+"""p ← p of the equation of state after a MIS step (moist: p(ρ, Θ, ρq_v, ρq_c), no saturation adjustment)."""
 function frozen_step_end!(m::DGPressureModel, q)
     b = m.base; M = b.mesh; np = M.np
     @inbounds for e in 1:M.Ne, j in 1:np, i in 1:np
-        q[ip_dg(m, e, i, j)] = pressure(b.gas, q[node_iq(np, e, 4, i, j)])
+        q[ip_dg(m, e, i, j)] = _dgp_peos(m, q, e, i, j)
     end
     return q
 end
@@ -714,7 +862,7 @@ end
 
 function _hdg_factor(m::DGPressureModel, ct, cw)
     Jx = m.aux.vert.Jv
-    nqp = m.base.nq + m.base.mesh.np^2 * m.base.mesh.Ne
+    nqp = m.nqp
     # owners: element unknown k -> (column, element, local index), η-face M̂ -> (column, face)
     oc = zeros(Int, nqp); oK = zeros(Int, nqp); ot = zeros(Int, nqp)
     fc = zeros(Int, size(Jx, 1)); ff = zeros(Int, size(Jx, 1))

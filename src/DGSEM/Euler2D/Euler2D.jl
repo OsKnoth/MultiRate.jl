@@ -53,6 +53,7 @@ using LinearAlgebra
 using ..Common: Gas, pressure, stratified_reference
 import ..Common: project2d, total2d, output_fields, field_section, sound_speed_max, with_sponge
 using ..Common: open_vtkhdf, write_vtkhdf!, plot_fields
+using ..Common: MoistGas, moist_state, _moist_p, fischer_burmeister, theta_phase_factor, pressure_phase_factor, exner_derivatives
 using ..TimeStepping: AbstractFastOperator, rhs_nonlinear, IMEX_GM
 import ..TimeStepping: rhs_nonlinear!, fast_operator, fast_apply!, fast_rhs_thermo!, fast_rhs_momentum!,
                        interface_update!, fast_rhs_horizontal!, vertical_apply!, vertical_factor, vertical_solve!,
@@ -64,7 +65,7 @@ export Mesh2D, Euler2DModel, HDGFast2D, with_sponge, output_fields, field_sectio
        rhs_nonlinear, rhs_nonlinear!, fast_operator, fast_matrix, sound_speed_max, dss,
        interface_momentum!, fast_rhs_thermo!, fast_rhs_momentum!,
        project2d, total2d, field, stratified_reference, energy2d, node_iq,
-       DGPressureModel, pressure_state, ip_dg
+       DGPressureModel, pressure_state, ip_dg, moist_dg_state
 
 const NV = 4
 

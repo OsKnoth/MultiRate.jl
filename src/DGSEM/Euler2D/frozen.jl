@@ -59,8 +59,8 @@ kind = :interior or :wall (then the R arguments repeat L)."""
     return fi
 end
 
-"""C(y) and the slow part S(y) (momentum advection) of the DG operator."""
-function frozen_data!(C, S, m::Euler2DModel, q)
+"""C(y) and the slow part S(y) (momentum advection) of the DG operator; `pfun(e, i, j)`: the nodal pressure (default p(Θ))."""
+function frozen_data!(C, S, m::Euler2DModel, q; pfun = nothing)
     M = m.mesh
     np, Ne, D, γ, g = M.np, M.Ne, M.D, m.gas.γ, m.gas.g
     U, W, P = m.cache.U, m.cache.W, m.cache.P
@@ -69,7 +69,7 @@ function frozen_data!(C, S, m::Euler2DModel, q)
         ρ = q[node_iq(np, e, 1, i, j)]
         U[i, j, e] = q[node_iq(np, e, 2, i, j)] / ρ
         W[i, j, e] = q[node_iq(np, e, 3, i, j)] / ρ
-        P[i, j, e] = pressure(m.gas, q[node_iq(np, e, 4, i, j)])
+        P[i, j, e] = pfun === nothing ? pressure(m.gas, q[node_iq(np, e, 4, i, j)]) : pfun(e, i, j)   # (moist: the EOS of the caller)
     end
     fill!(S, 0.0)
     @inbounds for e in 1:Ne, j in 1:np, i in 1:np

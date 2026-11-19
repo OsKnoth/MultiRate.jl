@@ -1341,6 +1341,49 @@ end
     end
 end
 
+@testset "Euler2D: moist air with the pressure as additional variable (DGPressureModel, moist = true)" begin
+    mg = CM.MoistGas()
+    gas = CM.Gas(R = mg.Rd, γ = mg.Cpd / (mg.Cpd - mg.Rd), p00 = mg.p0)
+    ρr, Θr, θr = CM.stratified_reference(gas; θ0 = 300.0, N = 0.01)
+    L, H = 80e3, 10e3
+    M = E2.Mesh2D(8, 4, 3, L, H; zs = x -> 400 / (1 + ((x - L / 2) / 5e3)^2))
+    base = E2.Euler2DModel(M, gas, ρr, Θr)
+    qb = CM.project2d(base, (x, z) -> (ρ = Θr(z) / (θr(z) + 0.5 * exp(-((x - L / 3) / 5e3)^2 - ((z - 3e3) / 2e3)^2)); (ρ, ρ * 20, 0.0, Θr(z))))
+    md = E2.DGPressureModel(base; lmars = :momentum)
+    mm = E2.DGPressureModel(base; lmars = :momentum, moist = true, mgas = mg)
+    # no water: the dry model (same gas constants)
+    zd = E2.pressure_state(md, qb); z0 = E2.moist_dg_state(mm, qb, (x, z) -> 0.0)
+    fd = TS.rhs_nonlinear!(zeros(md.nq), md, zd); f0 = TS.rhs_nonlinear!(zeros(mm.nq), mm, z0)
+    @test norm(f0[1:md.nq] .- fd) < 1e-8 * norm(fd)                    # ∂p/∂Θ by central differences
+    # with water (partly saturated): stage matrices = kernel, split parts add up, total water and mass conserved
+    zq = E2.moist_dg_state(mm, qb, (x, z) -> 0.012 * exp(-z / 3000))
+    N = M.np^2 * M.Ne
+    @test maximum(zq[base.nq+2N+1:base.nq+3N]) > 0                     # condensate present
+    C = zeros(TS.frozen_ncoef(mm)); S = zeros(mm.nq); TS.frozen_data!(C, S, mm, zq)
+    y = zq .+ 1e-3 .* sin.(1:mm.nq) .* abs.(zq)
+    f1 = TS.frozen_fast!(zeros(mm.nq), mm, C, y, :all, S)
+    TS.frozen_stage_begin!(mm, C, zq)
+    f2 = TS.frozen_fast!(zeros(mm.nq), mm, C, y, :all, S)
+    @test norm(f1 .- f2) < 1e-12 * norm(f1)
+    f3 = sum(TS.frozen_fast!(zeros(mm.nq), mm, C, y, part, S) for part in (:hthermo, :hmomentum, :vertical))
+    @test norm(f3 .- f2) < 1e-12 * norm(f2)
+    wgt = [M.J[i, j, e] * M.wg[i] * M.wg[j] for i in 1:M.np, j in 1:M.np, e in 1:M.Ne]
+    @test abs(sum(vec(wgt) .* (f1[base.nq+N+1:base.nq+2N] .+ f1[base.nq+2N+1:base.nq+3N]))) <
+          1e-10 * sum(vec(wgt) .* abs.(f1[base.nq+N+1:base.nq+2N]))
+    @test abs(sum(wgt[i, j, e] * f1[E2.node_iq(M.np, e, 1, i, j)] for i in 1:M.np, j in 1:M.np, e in 1:M.Ne)) < 1e-12 * sum(wgt)
+    # p tendency = d p_eos/dt along the full tendency (O(h) finite difference)
+    fq = TS.rhs_nonlinear!(zeros(mm.nq), mm, zq); h = 1e-3; z2 = zq .+ h .* fq
+    pe = [(E2._dgp_peos(mm, z2, e, i, j) - E2._dgp_peos(mm, zq, e, i, j)) / h for i in 1:M.np, j in 1:M.np, e in 1:M.Ne]
+    @test maximum(abs, fq[base.nq+1:base.nq+N] .- vec(pe)) < 1e-5 * maximum(abs, pe)
+    # condensed column solve
+    mh = E2.DGPressureModel(base; lmars = :momentum, moist = true, mgas = mg, vsolver = :hdg)
+    TS.frozen_stage_begin!(mh, C, zq)
+    R = sin.(1:mm.nq) .* abs.(zq)
+    y1 = TS.frozen_vertical_solve!(zeros(mm.nq), mm, C, 0.7, 0.9, R)
+    y2 = TS.frozen_vertical_solve!(zeros(mm.nq), mh, C, 0.7, 0.9, R)
+    @test norm(y2 .- y1) < 1e-12 * norm(y1)
+end
+
 @testset "LinearAnalysis: MIS amplification (Knoth–Wensch, MISDG grid)" begin
     LA = MultiRate.LinearAnalysis
     tab(n) = TS.mis_tableau(n)
