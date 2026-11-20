@@ -103,3 +103,70 @@ function base_method(m::PolyMIS)
     M = (I - Ab) \ Pb
     return M[1:n-1, 1:n-1], M[n, 1:n-1]
 end
+
+"""
+    commutator_free(stages; T = Rational{Int})
+
+Commutator-free Lie group method (Celledoni, Marthinsen & Owren 2003) as MIS method. `stages[i]` is the list of
+coefficient vectors β⁽¹⁾, …, β⁽ᴶ⁾ of the true stage i+1 (the last entry is the output y_{n+1}):
+    Y_{i+1} = exp(h Σ_j β⁽ᴶ⁾_j F_j) ∘ … ∘ exp(h Σ_j β⁽¹⁾_j F_j) yⁿ,   F_j = F(Y_j, ·) the frozen vector field.
+Each exponential is the flow of a frozen field over unit time, i.e. one MIS stage with constant coupling that starts
+from the previous one (restart class, g = 0); the intermediate stages are not used as frozen arguments.
+"""
+function commutator_free(stages::AbstractVector; T::Type = Rational{Int})
+    ntrue = length(stages) + 1                       # true stages incl. Y₁ = yⁿ
+    nmis = 1 + sum(length, stages)
+    α = zeros(T, nmis, nmis); p = fill(T[], nmis, nmis); g = fill(T[], nmis, nmis)
+    truemis = [1]                                    # MIS index of true stage k
+    cur = 1
+    for (i, exps) in enumerate(stages)
+        prev = 1                                     # every true stage starts from yⁿ
+        for β in exps
+            cur += 1
+            for j in 1:cur-1; p[cur, j] = [zero(T)]; g[cur, j] = [zero(T)]; end
+            prev > 1 && (α[cur, prev] = one(T))
+            for (k, b) in enumerate(β); p[cur, truemis[k]] = [T(b)]; end
+            prev = cur
+        end
+        push!(truemis, cur)
+    end
+    return PolyMIS(α, p, g)
+end
+
+"""CF4 of Celledoni, Marthinsen & Owren (2003): four stages, five exponentials, order 4 as a Lie group method."""
+cf4(T::Type = Rational{Int}) = commutator_free([
+    [[1//2]],
+    [[0, 1//2]],
+    [[1//2], [-1//2, 0, 1]],                                   # Y₄ = exp(F₃ - ½F₁) exp(½F₁) yⁿ
+    [[3//12, 2//12, 2//12, -1//12], [-1//12, 2//12, 2//12, 3//12]]]; T)
+
+"""
+    lowstorage_cf(A, B; T = Float64)
+
+Low-storage commutator-free method of Bazavov (BIT 2022) from a Williamson 2N-storage Runge–Kutta method
+ΔY_i = A_i ΔY_{i-1} + h F(Y_{i-1}), Y_i = Y_{i-1} + B_i ΔY_i: Z_i = A_i Z_{i-1} + h F(Y_{i-1}), Y_i = exp(B_i Z_i) Y_{i-1}.
+In MIS form a telescopic method with constant coupling p_{i+1,j} = B_i Π_{k=j+1}^{i} A_k.
+"""
+function lowstorage_cf(A::AbstractVector, B::AbstractVector; T::Type = Float64)
+    s = length(B)
+    α = zeros(T, s + 1, s + 1); p = fill(T[], s + 1, s + 1); g = fill(T[], s + 1, s + 1)
+    for i in 1:s
+        i > 1 && (α[i+1, i] = one(T))
+        for j in 1:i
+            p[i+1, j] = [T(B[i] * prod(A[k] for k in j+1:i; init = one(T)))]
+            g[i+1, j] = [zero(T)]
+        end
+    end
+    return PolyMIS(α, p, g)
+end
+
+"""Lüscher's RK3 for the Wilson flow (JHEP 2010): the 2N-storage RK3 of Williamson, A = (0, -17/32, -32/27),
+B = (1/4, 8/9, 3/4), in the format of `lowstorage_cf`."""
+luscher3(T::Type = Rational{Int}) = lowstorage_cf(T[0, -17//32, -32//27], T[1//4, 8//9, 3//4]; T)
+
+"""Carpenter & Kennedy (1994) 2N-storage RK(5,4), solution 3, in the format of `lowstorage_cf`."""
+ck54_cf() = lowstorage_cf(
+    [0.0, -567301805773 / 1357537059087, -2404267990393 / 2016746695238, -3550918686646 / 2091501179385,
+     -1275806237668 / 842570457699],
+    [1432997174477 / 9575080441755, 5161836677717 / 13612068292357, 1720146321549 / 2090206949498,
+     3134564353537 / 4481467310338, 2277821191437 / 14882151754819])

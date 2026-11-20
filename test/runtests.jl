@@ -1549,6 +1549,9 @@ end
     e = [opnorm(MM.amplification(e2, 0.8S, 3L; inner = (:rk4, n)) - Re) for n in (20, 40)]
     @test e[1] / e[2] > 14
     @test MM.adv_limit(m54, MM.symbols(:fv); Csound = 0, θs = range(0, π, length = 32)) ≈ 2.05 atol = 0.01
+    @test MM.order(MM.cf4()) == 4                                   # commutator-free Lie group methods
+    @test MM.order(MM.luscher3()) == 3
+    @test MM.order(MM.ck54_cf(); tol = 1e-9) == 4                   # Bazavov's low-storage format, RK(5,4)
 end
 
 end
