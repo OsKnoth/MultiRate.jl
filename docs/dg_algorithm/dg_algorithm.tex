@@ -1,6 +1,6 @@
 \documentclass[11pt,a4paper]{article}
 \usepackage[margin=2.4cm]{geometry}
-\usepackage{amsmath,amssymb,booktabs,hyperref}
+\usepackage{amsmath,amssymb,booktabs,graphicx,hyperref}
 \newcommand{\avg}[1]{\{\!\{#1\}\!\}}
 \newcommand{\jump}[1]{[\![#1]\!]}
 \newcommand{\dt}{\Delta t}
@@ -95,7 +95,7 @@ $D_T^z$ the pressure jump of $m^*$ and $D_M^z$ the momentum jump of $p^*$ on the
 nodes of one node column (fixed $\xi$-line index) and only $T$ with $\tilde W$. On a flat grid $\mathcal T$ is diagonal and $(\tilde U,\tilde W)$ are
 $(m_x,m_z)$ up to the metric factors.
 
-\section{The small step S2}
+\section{The small step S2}\label{sec:s2}
 Störmer--Verlet with the vertical part implicit (Verwer's component splitting), off-centring $\beta=(1+\varepsilon)/2$ of the vertical force:
 \begin{enumerate}
 \item $T^{1/2}=T^0+\tfrac h2\big(A_T^xM^0+D_T^xT^0+f_T\big)+\tfrac h2\big(A_T^zM^0+D_T^zT^0\big)$
@@ -155,6 +155,30 @@ $\hat M$ is not kept; the result is the solution of the column system. The facto
 element $K$ touches only the faces $K-1$ and $K$, $W_K$ has two columns and $G_K$ two rows; $E_K^{-1}$ is stored as a dense inverse, so
 a solve costs per element one product with $E_K^{-1}$ and two with $W_K$, $G_K$, per column one tridiagonal solve.
 
+\section{Examples}
+All runs: MIS54, S2 (\code{fast = :cs}), $\varepsilon=0.1$, \code{lmars = :momentum}, $h$ at the explicit horizontal limit.
+
+\begin{figure}[h]\centering
+\includegraphics[width=0.75\textwidth]{rest_drift.png}
+\caption{Isothermal atmosphere ($T=250$\,K) at rest over a 400\,m hill (80\,km$\times$10\,km, $8\times4$ elements, $P=3$), $\dt=30$\,s,
+24 small steps. Maximum of the momenta; dashed: S2 with $D_M^x$ acting on $M^0+(1-\beta)h(\dots)$ and the explicit predictor (commit
+\code{a149165}), solid: the form of Section~\ref{sec:s2}. Blue: contravariant momenta, HDG; orange: \code{vsplit = :full}, LU.}
+\end{figure}
+
+\begin{figure}[h]\centering
+\includegraphics[width=\textwidth]{a100_w.png}
+\caption{Hydrostatic flow over the Agnesi hill, $a=100$\,km, $h_0=100$\,m, $U=10$\,m/s, $N=0.01$\,s$^{-1}$, $50\times16$ elements, $P=4$,
+sponge above 9\,km, $\dt=300$\,s, 22 small steps; contravariant momenta, HDG. Vertical velocity at $t=12$\,h, the linear hydrostatic
+steady solution and the difference. One MIS step costs 1.6\,s (HDG) and 1.7\,s (LU).}
+\end{figure}
+
+\begin{figure}[h]\centering
+\includegraphics[width=\textwidth]{moist_bubble.png}
+\caption{Moist bubble (saturated neutral atmosphere, $\theta_e=320$\,K, $r_t=0.02$, 20\,km$\times$10\,km, $20\times10$ elements, $P=4$) at
+$t=1000$\,s, moist pressure model with HDG; top: MIS54 with $\dt=2$\,s, bottom: RK4 reference.}
+\end{figure}
+\clearpage
+
 \section{Parameters and implementation}
 \begin{center}\small
 \begin{tabular}{ll}\toprule
@@ -174,5 +198,5 @@ q = run_frozen(m, q0, dt, n; tab = mis_tableau(:MIS54), nsub, fast = :cs,
 \code{vsplit = :contravariant\_momentum}: the split of the contravariant fast operator, assembled in Cartesian variables as
 $J_v=P^{-1}\tilde J^zP$, $J_h=J_f-J_v$ (the time stepper is unchanged); \code{vsolver = :hdg}: the static condensation (\code{\_hdg\_factor}),
 \code{:lu} the same system by a sparse LU; \code{hpredict = false}: $D_M^x$ explicit as in stage 2. Examples: \code{examples/frozen\_dg\_cs.jl} (gravity
-wave over a hill), \code{examples/sk94\_long\_channel.jl}, \code{examples/dg\_moist\_bubble.jl}.
+wave over a hill), \code{examples/sk94\_long\_channel.jl}, \code{examples/dg\_moist\_bubble.jl} (\code{FAST=cs VSOLVER=hdg DTS=2}); figures: \code{docs/dg\_algorithm/figures}.
 \end{document}
