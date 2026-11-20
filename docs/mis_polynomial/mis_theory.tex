@@ -1,0 +1,890 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[english]{babel}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{forest}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{longtable}
+\usepackage[margin=2.6cm]{geometry}
+\usepackage[colorlinks=true,linkcolor=blue!60!black,citecolor=green!40!black]{hyperref}
+
+\title{Multirate infinitesimal step methods with polynomial coupling:\\
+a B-series theory of order conditions and its subclasses}
+\author{Oswald Knoth}
+\date{\today}
+
+\newtheorem{theorem}{Theorem}[section]
+\newtheorem{proposition}[theorem]{Proposition}
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{corollary}[theorem]{Corollary}
+\theoremstyle{definition}
+\newtheorem{definition}[theorem]{Definition}
+\newtheorem{example}[theorem]{Example}
+\theoremstyle{remark}
+\newtheorem{remark}[theorem]{Remark}
+
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\T}{\mathcal{T}}
+\newcommand{\dd}{\,\mathrm{d}}
+
+% bicoloured trees (root at the bottom, root colour irrelevant)
+\forestset{
+  b/.style={circle,draw=black,fill=black,inner sep=1.3pt},
+  w/.style={circle,draw=black,fill=white,inner sep=1.3pt},
+  bitree/.style={for tree={grow=90,s sep=3pt,l=5pt,l sep=0pt,
+                 parent anchor=center,child anchor=center,edge={thin}},
+                 baseline}
+}
+\newcommand{\btree}[1]{\begin{forest}bitree #1\end{forest}}
+\newcommand{\Tb}{\btree{[,b]}}
+\newcommand{\Tbb}{\btree{[,b [,b]]}}
+\newcommand{\Tbw}{\btree{[,b [,w]]}}
+\newcommand{\Tbbb}{\btree{[,b [,b][,b]]}}
+\newcommand{\Tbbw}{\btree{[,b [,b][,w]]}}
+\newcommand{\Tbww}{\btree{[,b [,w][,w]]}}
+\newcommand{\Tbbbl}{\btree{[,b [,b [,b]]]}}
+\newcommand{\Tbbwl}{\btree{[,b [,b [,w]]]}}
+\newcommand{\Tbwbl}{\btree{[,b [,w [,b]]]}}
+\newcommand{\Tbwwl}{\btree{[,b [,w [,w]]]}}
+\newcommand{\Tfourbbw}{\btree{[,b [,b][,b][,w]]}}
+\newcommand{\Tfourbww}{\btree{[,b [,b][,w][,w]]}}
+\newcommand{\Tfourbbl}{\btree{[,b [,b [,b]][,w]]}}
+\newcommand{\Tfourbbwl}{\btree{[,b [,b [,b][,w]]]}}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Multirate infinitesimal step (MIS) methods integrate an ordinary differential equation $y'=F(y,y)$ whose first argument
+varies slowly and whose second argument carries the fast dynamics: the first argument is frozen at stage values of a
+Runge--Kutta-like outer scheme, and the second argument is integrated exactly in auxiliary (``infinitesimal'') initial
+value problems. We study MIS methods in which both the coupling to the frozen right-hand sides and the coupling to the
+increments of previous stages are polynomials in the inner time. Using B-series over trees with bicoloured non-root
+vertices, whose coefficients are polynomials in the inner time, we derive the order conditions in a Runge--Kutta-like
+form, give them explicitly up to order four, and provide an algorithm in exact arithmetic for arbitrary order. The
+general theory specialises to the known theories of several method classes: Runge--Kutta methods (the base method),
+multirate infinitesimal GARK methods, classical and generalised split-explicit MIS methods, commutator-free Lie group
+methods including their low-storage variant, and explicit exponential Runge--Kutta methods, whose non-stiff conditions are the conditions over a subset of the trees and whose stiff order
+conditions become algebraic conditions on the coupling polynomials. For methods whose inner problems start from a
+previous stage we prove that order three requires only the order-three conditions of the base method and a single
+coupling condition, and that the purely fast conditions hold automatically. As examples, the exponential
+Runge--Kutta method ETDRK4-B of Krogstad, read as an MIS method, has order four for the general problem $y'=F(y,y)$, and
+for the low-storage commutator-free methods of Bazavov the order-three question reduces to a single condition, which we
+observe to follow from the order of the underlying 2N-storage Runge--Kutta method.
+\end{abstract}
+
+\tableofcontents
+
+% =====================================================================
+\section{Introduction}
+\label{sec:intro}
+
+Many evolution problems contain processes on widely separated time scales. In atmospheric models for weather and
+climate prediction, and in low-Mach-number compressible flow, the solution of the compressible Euler equations is
+dominated by slow advection and physical processes, while sound waves (and, at high resolution, gravity waves) are fast
+but carry little energy. An explicit integrator would have to resolve the fast waves. Two remedies are in use:
+(semi-)implicit treatment of the fast terms, e.g.\ horizontally explicit/vertically implicit (HEVI) and IMEX schemes
+\cite{GiraldoKellyConstantinescu2013,BoscarinoFilbetRusso2016}, and \emph{split-explicit} schemes, in which the slow
+tendencies are evaluated with a large step and held fixed while the fast terms are integrated with many small steps
+\cite{KlempWilhelmson1978,WickerSkamarock2002,KlempSkamarockDudhia2007,Baldauf2010}.
+
+Split-explicit schemes do not split the right-hand side into a sum of a slow and a fast term. They freeze the slowly
+varying \emph{quantities}: in the compressible Euler equations, for example, the advecting velocity and the transported
+potential temperature are frozen at a stage value, while mass fluxes and pressure are integrated with small steps. This
+is formalised by writing the semi-discrete equation $y'=\mathcal F(y)$ as
+\begin{equation}\label{eq:G}
+y'=F(y,y),\qquad F:\R^N\times\R^N\to\R^N,\qquad F(y,y)=\mathcal F(y), \tag{$\mathcal G$}
+\end{equation}
+where the first argument carries the slow (frozen) and the second argument the fast (integrated) dependence. A method
+evaluates $F(Y_j,Z)$ with a stage value $Y_j$ and the solution $Z$ of an inner initial value problem. The
+\emph{multirate infinitesimal step} (MIS) methods \cite{KnothWolke1998,WenschKnothGalant2009,KnothWensch2014}
+provide the mathematical framework for such schemes: in the analysis the inner problems are solved exactly, which
+gives order conditions for the outer method. In applications the inner problems are solved by small steps of a cheap
+explicit or partly implicit method.
+
+In this paper the coupling of the inner problems to the frozen right-hand sides and to the increments of previous stages
+is a \emph{polynomial in the inner time}. This class contains the classical MIS and split-explicit methods (constant
+coupling), the multirate infinitesimal GARK (MRI-GARK) methods of Sandu \cite{Sandu2019} and related multirate
+exponential methods \cite{LuanChinomonaReynolds2020,ChinomonaReynolds2021}, commutator-free Lie group methods
+\cite{CelledoniMarthinsenOwren2003,Owren2006} and their low-storage form \cite{Bazavov2022}, and a class of explicit
+exponential Runge--Kutta methods \cite{HochbruckOstermann2005,HochbruckOstermann2010}. Our aim is a single order theory for the
+whole class, from which the theories of these subclasses follow by restricting the set of trees or the coefficients.
+
+\paragraph{Contributions.}
+\begin{itemize}
+\item B-series for MIS methods with polynomial coupling over trees with bicoloured non-root vertices
+  (Theorem~\ref{thm:recursion}), and the order conditions in Runge--Kutta-like form (Theorem~\ref{thm:general}), explicit
+  up to order four.
+\item The restriction to the problem classes affine, additive and linear in the fast argument, with the numbers of
+  conditions (Table~\ref{tab:treecount}).
+\item For methods whose inner problems start from a previous stage: the purely fast conditions hold automatically, and
+  order three is equivalent to order three of the base method plus one coupling condition (Theorem~\ref{thm:exactfast}),
+  without the uniform-speed (internal consistency) assumption.
+\item The reduction to known theories: Runge--Kutta methods (base method), constant-coupling MIS methods, MRI-GARK,
+  commutator-free Lie group methods and their low-storage variant, and explicit exponential Runge--Kutta methods
+  including their stiff order conditions (Section~\ref{sec:subclasses}).
+\end{itemize}
+
+\paragraph{Outline.}
+Section~\ref{sec:problem} introduces the problem classes, Section~\ref{sec:methods} the methods and their special cases,
+Section~\ref{sec:trees} the trees and B-series, Section~\ref{sec:oc} the order conditions, and
+Section~\ref{sec:subclasses} the specialisation to subclasses with an existing theory. Section~\ref{sec:algorithm}
+describes the computation of the conditions, and Section~\ref{sec:conclusions} lists open questions. The order-four
+conditions are given in Appendix~\ref{app:order4}.
+
+% =====================================================================
+\section{Problem classes}
+\label{sec:problem}
+
+We consider \eqref{eq:G} with $F$ sufficiently smooth. Throughout, the index $y$ ($z$) at a derivative denotes
+differentiation with respect to the first (second) argument. Important special cases are
+\begin{align}
+ &\text{affine in the fast argument:} && F(y,z)=f(y)+B(y)\,z, \tag{$\mathcal B$}\label{eq:B}\\
+ &\text{additive:} && F(y,z)=f(y)+g(z), \tag{$\mathcal A$}\label{eq:A}\\
+ &\text{constant linear fast part:} && F(y,z)=f(y)+Lz. \tag{$\mathcal L$}\label{eq:L}
+\end{align}
+In \eqref{eq:B} the fast operator depends on the frozen state, as in the split-explicit treatment of the Euler equations;
+if $B$ depends linearly on a set of frozen coefficient fields, a linear combination $\sum_jp_{ij}F(Y_j,z)$ needs only one
+application of $B$ to $z$, which makes polynomial coupling cheap. Every system \eqref{eq:G} can be written as a
+partitioned system by doubling the unknowns, $u'=F(u,v)$, $v'=F(u,v)$, $u(0)=v(0)$, so partitioned B-series (P-series)
+apply \cite{HairerNorsettWanner1993}; since both components are equal, the colour of the root plays no role.
+
+% =====================================================================
+\section{MIS methods with polynomial coupling}
+\label{sec:methods}
+
+Throughout, $\tau\in[0,1]$ denotes the normalised time of the inner problems.
+
+\begin{definition}[MIS method with polynomial coupling]\label{def:mis}
+Let $s\ge1$, and for $2\le i\le s+1$, $1\le j<i$ let $\alpha_{ij}\in\R$ and polynomials
+\[
+ p_{ij}(\tau)=\sum_{k=0}^{K}a_{ijk}\,\tau^k,\qquad g_{ij}(\tau)=\sum_{k=0}^{K}\gamma_{ijk}\,\tau^k
+\]
+be given. One step $y_n\mapsto y_{n+1}$ is defined by $Y_1=y_n$ and, for $i=2,\dots,s+1$,
+\begin{align}
+ Z_i(0) &= y_n+\sum_{j=1}^{i-1}\alpha_{ij}\,(Y_j-y_n), \label{eq:mis1}\\
+ Z_i'(\tau) &= \sum_{j=1}^{i-1}g_{ij}(\tau)\,(Y_j-y_n) + h\sum_{j=1}^{i-1}p_{ij}(\tau)\,F\big(Y_j,Z_i(\tau)\big),
+   \qquad \tau\in[0,1], \label{eq:mis2}\\
+ Y_i &= Z_i(1), \label{eq:mis3}
+\end{align}
+and $y_{n+1}=Y_{s+1}$. $K$ is the \emph{coupling degree}; $K=0$ is \emph{constant coupling}.
+\end{definition}
+
+The fast part is integrated with the speed $q_i(\tau):=\sum_jp_{ij}(\tau)$ over the fast time
+$Q_i(1)$, $Q_i(\tau):=\int_0^\tau q_i$. We call
+\begin{equation}\label{eq:uniform}
+ q_i(\tau)\equiv d_i\ \text{(constant)},\qquad\text{i.e.}\quad \sum_j a_{ij0}=d_i,\quad \sum_ja_{ijk}=0\ (k\ge1),
+\end{equation}
+\emph{uniform fast speed}. It does not make the inner problem autonomous, since the frozen arguments still enter with
+time-dependent weights.
+
+\subsection{Stage times and the base method}
+
+Let $P_{ij}(\tau)=\int_0^\tau p_{ij}$, $G_{ij}(\tau)=\int_0^\tau g_{ij}$. The \emph{stage times} are defined by the method
+applied to $y'=1$:
+\begin{equation}\label{eq:ci}
+ c_1=0,\qquad c_i=\sum_{j<i}\big(\alpha_{ij}+G_{ij}(1)\big)\,c_j+\sum_{j<i}P_{ij}(1).
+\end{equation}
+If $F$ does not depend on its second argument, the inner problems are quadratures and
+$Y_i-y_n=\sum_j(\alpha_{ij}+G_{ij}(1))(Y_j-y_n)+h\sum_jP_{ij}(1)F(Y_j)$. With the strictly lower triangular
+$(s+1)\times(s+1)$ matrices $\bar A=(\alpha_{ij}+G_{ij}(1))$, $\bar P=(P_{ij}(1))$ this is an explicit Runge--Kutta
+method, the \emph{base method}, with
+\begin{equation}\label{eq:base}
+ \begin{pmatrix}A^{RK}\\ b^{RK\,T}\end{pmatrix}=(I-\bar A)^{-1}\bar P .
+\end{equation}
+The shape of $p_{ij}$ and $g_{ij}$ enters only through the dependence on the fast argument.
+
+\subsection{Special cases}
+\label{sec:specialcases}
+
+\paragraph{Classical MIS and generalised split-explicit methods.}
+In \cite{WenschKnothGalant2009} the inner problem is posed on $[0,d_ih]$ with constant coefficients $\beta_{ij}$,
+$d_i=\sum_j\beta_{ij}$; after rescaling to $\tau\in[0,1]$ this is Definition~\ref{def:mis} with $K=0$,
+$p_{ij}\equiv\beta_{ij}$ and uniform fast speed. The generalised split-explicit methods of \cite{KnothWensch2014} add
+constant $g_{ij}\equiv\gamma_{ij}$.
+
+\paragraph{Split-explicit Runge--Kutta methods.}
+The RK3 scheme of Wicker and Skamarock \cite{WickerSkamarock2002} integrates every stage from $y_n$ with the slow
+tendency of the previous stage: $\alpha=0$, $g\equiv0$, $p_{i,i-1}\equiv c_i$ with $c=(0,\tfrac13,\tfrac12,1)$, all
+other $p_{ij}=0$.
+
+\paragraph{Telescopic methods, MRI-GARK.}
+If $\alpha_{i,i-1}=1$, all other $\alpha_{ij}=0$ and $g\equiv0$, then $Z_i(0)=Y_{i-1}$, and the stages are inner
+integrations over consecutive fast time intervals of length $c_i-c_{i-1}$. With polynomial $p_{ij}$ and additive $F$
+these are the explicit MRI-GARK methods of Sandu \cite{Sandu2019}; uniform fast speed corresponds to their internal
+consistency conditions. Related classes are the multirate exponential Runge--Kutta methods
+\cite{LuanChinomonaReynolds2020} and the IMEX-MRI-GARK methods \cite{ChinomonaReynolds2021}.
+
+\paragraph{Commutator-free Lie group methods.}
+A commutator-free method \cite{CelledoniMarthinsenOwren2003,Owren2006} computes its stages as compositions of flows of
+frozen vector fields,
+\begin{equation}\label{eq:cf}
+ Y_i=\exp\Big(h\sum_j\beta^{(J)}_{ij}F_j\Big)\circ\dots\circ\exp\Big(h\sum_j\beta^{(1)}_{ij}F_j\Big)\,y_n,\qquad
+ F_j=F(Y_j,\cdot),
+\end{equation}
+where $\exp(hX)y$ is the flow of the vector field $X$ over the time $h$. Each exponential is the solution of an inner
+problem \eqref{eq:mis2} with constant coupling $p_{ij}\equiv\beta^{(l)}_{ij}$, $g\equiv0$, that starts from the result of the
+previous exponential. Hence \eqref{eq:cf} is an MIS method with constant coupling whose stages are the exponentials; the
+intermediate exponentials are auxiliary stages, which are not used as frozen arguments (their columns of $p$ vanish).
+For the frame representation $F(y,z)=\sum_kf_k(y)E_k(z)$ of a problem on a homogeneous space these are the
+commutator-free Lie group methods; for general $F$ they are MIS methods for \eqref{eq:G}.
+
+\paragraph{Exponential Runge--Kutta methods.}
+For \eqref{eq:L} the inner problems are solved by the variation-of-constants formula. With
+\[
+ \varphi_{k+1}(z)=\int_0^1e^{(1-\tau)z}\frac{\tau^k}{k!}\dd\tau,\qquad k\ge0,
+\]
+a method with $\alpha=0$, $g\equiv0$ and uniform fast speed $q_i\equiv c_i$ gives
+\begin{equation}\label{eq:exprk}
+ Y_i=e^{c_ihL}y_n+h\sum_{j<i}a_{ij}(hL)f(Y_j),\qquad
+ a_{ij}(z)=\int_0^1e^{(1-\tau)c_iz}p_{ij}(\tau)\dd\tau=\sum_{k=0}^{K}k!\,a_{ijk}\,\varphi_{k+1}(c_iz).
+\end{equation}
+
+\begin{proposition}\label{prop:exprk}
+An explicit exponential Runge--Kutta method $Y_i=e^{c_ihL}y_n+h\sum_ja_{ij}(hL)f(Y_j)$, $y_{n+1}=Y_{s+1}$,
+$c_{s+1}=1$, is an MIS method with polynomial coupling, $\alpha=0$ and $g\equiv0$, if and only if every $a_{ij}(z)$ is a
+linear combination of $\varphi_k(c_iz)$, $k\ge1$, and $\sum_ja_{ij}(z)=c_i\varphi_1(c_iz)$.
+\end{proposition}
+
+\begin{proof}
+By \eqref{eq:exprk} and the linear independence of $\varphi_1(cz),\varphi_2(cz),\dots$ for fixed $c\ne0$. The condition
+$\sum_ja_{ij}=c_i\varphi_1(c_iz)$ is equivalent to $q_i\equiv c_i$.
+\end{proof}
+
+Such methods applied to \eqref{eq:G} are a nonlinear generalisation of exponential Runge--Kutta methods, in which the
+exponential is replaced by the flow of the fast part with frozen slow argument.
+
+\begin{example}\label{ex:exp}
+\begin{enumerate}[label=(\alph*)]
+\item Exponential Euler, $y_{n+1}=e^{hL}y_n+h\varphi_1(hL)f(y_n)$: $s=1$, $p_{21}=1$.
+\item ETD2RK of Cox and Matthews \cite{CoxMatthews2002}, $c_2=1$, $a_{21}=\varphi_1$, $b_1=\varphi_1-\varphi_2$,
+  $b_2=\varphi_2$: $p_{21}=1$, $p_{31}=1-\tau$, $p_{32}=\tau$; the slow tendency is linearly interpolated in time between
+  the two stages.
+\item ETDRK4-B of Krogstad \cite{Krogstad2005}, $c=(0,\tfrac12,\tfrac12,1)$, with $\varphi_{k,i}=\varphi_k(c_iz)$:
+  $a_{21}=\tfrac12\varphi_{1,2}$, $a_{31}=\tfrac12\varphi_{1,3}-\varphi_{2,3}$, $a_{32}=\varphi_{2,3}$,
+  $a_{41}=\varphi_{1,4}-2\varphi_{2,4}$, $a_{43}=2\varphi_{2,4}$, $b_1=\varphi_1-3\varphi_2+4\varphi_3$,
+  $b_2=b_3=2\varphi_2-4\varphi_3$, $b_4=4\varphi_3-\varphi_2$. In MIS form
+  \begin{gather*}
+   p_{21}=\tfrac12,\quad p_{31}=\tfrac12-\tau,\ p_{32}=\tau,\quad p_{41}=1-2\tau,\ p_{43}=2\tau,\\
+   p_{51}=1-3\tau+2\tau^2,\quad p_{52}=p_{53}=2\tau-2\tau^2,\quad p_{54}=-\tau+2\tau^2,
+  \end{gather*}
+  all other $p_{ij}=0$ (the factor $k!$ of \eqref{eq:exprk}: $\varphi_{k+1}\leftrightarrow\tau^k/k!$).
+\end{enumerate}
+\end{example}
+
+Without uniform fast speed the closed form remains available,
+\[
+ Y_i=e^{Q_i(1)hL}y_n+h\sum_j\int_0^1e^{(Q_i(1)-Q_i(\tau))hL}p_{ij}(\tau)\dd\tau\,f(Y_j),
+\]
+but the weights are no longer
+combinations of $\varphi$-functions; with $\alpha\ne0$ products $e^{d_iz}\varphi_k(c_jz)$ appear.
+
+\paragraph{Methods not contained.}
+Integrating-factor (Lawson) methods \cite{Lawson1967} use $e^{(c_i-c_j)hL}f(Y_j)$: the slow tendency is transported
+by the fast flow. In MIS form this would need an impulsive forcing at $\tau=c_j/c_i$, which is not polynomial.
+Semi-implicit schemes of the type \cite{BoscarinoFilbetRusso2016}, which also freeze the first argument and treat the
+second implicitly, are MIS-type methods in which the inner problem is replaced by a single implicit step.
+
+\subsection{Methods that restart from a previous stage}
+
+A subclass that contains most of the methods above consists of methods whose inner problems start at a previous stage
+and contain no increments of previous stages:
+\begin{equation}\label{eq:restart}
+ g_{ij}\equiv0,\qquad Z_i(0)=Y_{k(i)}\ \text{for some }k(i)<i
+\end{equation}
+(row $i$ of $\alpha$ is the unit vector $e_{k(i)}^T$, or zero if $k(i)=1$). It contains the classical MIS methods with
+$Z_i(0)=y_n$, the telescopic methods, the commutator-free methods \eqref{eq:cf}, and the exponential Runge--Kutta methods of Proposition~\ref{prop:exprk}; the
+coupling polynomials are arbitrary, uniform fast speed is not required. Following the chain
+$s+1\to k(s+1)\to k(k(s+1))\to\dots\to1$ we call its stages the \emph{chain} of the method.
+
+% =====================================================================
+\section{Bicoloured trees and B-series}
+\label{sec:trees}
+
+\subsection{Trees and elementary differentials}
+
+Let $\T$ be the set of rooted trees whose non-root vertices are coloured black or white. The colour of a vertex states
+which argument of the $F$ at its parent is differentiated: black the first (frozen) argument, white the second
+(integrated) one. Every tree is written $t=[t_1,\dots,t_m]$, where the subtrees $t_k$ carry the colour
+$\kappa(t_k)\in\{\mathrm b,\mathrm w\}$ of their roots. The elementary differentials of \eqref{eq:G} are
+\[
+ \mathbf F(\bullet)=F(y,y),\qquad
+ \mathbf F([t_1,\dots,t_m])=\partial_{\kappa(t_1)}\cdots\partial_{\kappa(t_m)}F(y,y)\big[\mathbf F(t_1),\dots,\mathbf F(t_m)\big],
+\]
+with $\partial_{\mathrm b}=\partial_y$, $\partial_{\mathrm w}=\partial_z$. Order $|t|$, symmetry $\sigma(t)$ (automorphisms
+preserving colours) and density $\gamma(t)=|t|\prod_k\gamma(t_k)$ are defined as usual. Since $y'=F(y,y)$, the exact
+solution is
+\[
+ y(t_n+h)=y_n+\sum_{t\in\T}\frac{h^{|t|}}{\sigma(t)\gamma(t)}\mathbf F(t)(y_n),
+\]
+independent of the colours. For the problem classes of Section~\ref{sec:problem} the set of trees shrinks:
+\begin{itemize}
+\item \eqref{eq:B}: $\partial_z^2F=0$, so a vertex has at most one white child;
+\item \eqref{eq:A}: $\partial_y\partial_zF=0$, so all children of a vertex have the same colour;
+\item \eqref{eq:L}: in addition $\partial_z^2F=0$, so a vertex has either only black children or exactly one, white,
+  child: the white vertices form chains ($L$-chains), the trees of exponential integrators;
+\item trees with only black vertices give the base method, trees with only white non-root vertices the purely fast
+  problem $y'=g(y)$.
+\end{itemize}
+
+\begin{table}[ht]
+\centering
+\caption{Number of trees per order (non-root vertices bicoloured, root colour irrelevant), i.e.\ the number of order
+conditions at each order, for the problem classes. Computed by enumeration.}
+\label{tab:treecount}
+\begin{tabular}{lrrrrrrr}
+\toprule
+order & 1 & 2 & 3 & 4 & 5 & 6 & 7\\\midrule
+general \eqref{eq:G} & 1 & 2 & 7 & 26 & 107 & 458 & 2058\\
+affine in $z$ \eqref{eq:B} & 1 & 2 & 6 & 20 & 73 & 278 & 1106\\
+additive \eqref{eq:A} & 1 & 2 & 6 & 18 & 60 & 204 & 734\\
+constant linear \eqref{eq:L} & 1 & 2 & 5 & 13 & 37 & 108 & 332\\
+classical RK (black only) & 1 & 1 & 2 & 4 & 9 & 20 & 48\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{B-series with polynomial coefficients}
+
+Write the stage values and the inner solutions as B-series,
+\[
+ Y_i=B(\eta_i,y_n),\qquad Z_i(\tau)=B\big(\zeta_i(\tau),y_n\big),\qquad
+ B(a,y)=a(\emptyset)y+\sum_{t\in\T}\frac{h^{|t|}a(t)}{\sigma(t)}\mathbf F(t)(y),
+\]
+with $\eta_i(\emptyset)=\zeta_i(\tau;\emptyset)=1$. The coefficients $\zeta_i(\tau;t)$ are polynomials in $\tau$.
+
+\begin{theorem}\label{thm:recursion}
+The coefficients of the method of Definition~\ref{def:mis} satisfy, for $t=[t_1,\dots,t_m]$, $2\le i\le s+1$,
+$\eta_1(t)=0$,
+\begin{align*}
+ \zeta_i(0;t) &= \sum_{j<i}\alpha_{ij}\,\eta_j(t),\\
+ \frac{\dd}{\dd\tau}\zeta_i(\tau;t) &= \sum_{j<i}g_{ij}(\tau)\,\eta_j(t)
+   + \sum_{j<i}p_{ij}(\tau)\prod_{k=1}^m\begin{cases}\eta_j(t_k), & \kappa(t_k)=\mathrm b,\\
+                  \zeta_i(\tau;t_k), & \kappa(t_k)=\mathrm w,\end{cases}\\
+ \eta_i(t) &= \zeta_i(1;t).
+\end{align*}
+The method has order $p$ if and only if $\eta_{s+1}(t)=1/\gamma(t)$ for all $t\in\T$ with $|t|\le p$ (for generic $F$).
+\end{theorem}
+
+\begin{proof}
+Insert the B-series of $Y_j$ and $Z_i(\tau)$ into $hF(Y_j,Z_i(\tau))$ and expand in a Taylor series in both arguments.
+The coefficient of $\mathbf F([t_1,\dots,t_m])$ is the product of the coefficients of the subtrees, each taken from the
+series of the argument that is differentiated; this is the composition of P-series \cite{HairerNorsettWanner1993}.
+Integrating in $\tau$ and using \eqref{eq:mis1}, \eqref{eq:mis3} gives the recursion. The equivalence with order $p$
+follows from the independence of the elementary differentials for generic $F$.
+\end{proof}
+
+The degree of $\zeta_i(\cdot;t)$ is at most $|t|(K+1)$; all integrals are exact.
+
+% =====================================================================
+\section{Order conditions}
+\label{sec:oc}
+
+\subsection{General form}
+
+Let $q_i=\sum_jp_{ij}$, $Q_i=\sum_jP_{ij}$, $\bar A$, $\bar P$ as in \eqref{eq:base}, and
+\[
+ \Lambda=(I-\bar A)^{-1},\qquad \hat b^T=e_{s+1}^T\Lambda,\qquad \mathfrak A=\Lambda\bar P .
+\]
+The stage times are $c=\Lambda(Q_i(1))_i$, and the \emph{inner time} of stage $i$ is the polynomial
+\[
+ z_i(\tau):=\zeta_i(\tau;\bullet)=\sum_{j<i}\big(\alpha_{ij}+G_{ij}(\tau)\big)c_j+Q_i(\tau),\qquad z_i(1)=c_i .
+\]
+$\mathfrak A$ is the coefficient matrix of the base method \eqref{eq:base}: its rows $2,\dots,s$ are the stage
+coefficients, its last row is $b^{RK\,T}$.
+
+\begin{theorem}[general form of the order conditions]\label{thm:general}
+For $t=[t_1,\dots,t_m]$ let
+\begin{equation}\label{eq:dit}
+ d_i(t)=\sum_{j<i}\int_0^1p_{ij}(\sigma)\prod_{k:\,\kappa(t_k)=\mathrm b}\eta_j(t_k)\prod_{k:\,\kappa(t_k)=\mathrm w}\zeta_i(\sigma;t_k)\dd\sigma .
+\end{equation}
+Then $\eta(t)=\Lambda\,d(t)$ and
+$\zeta_i(\tau;t)=\sum_{j<i}(\alpha_{ij}+G_{ij}(\tau))\eta_j(t)+\sum_{j<i}\int_0^\tau p_{ij}(\sigma)\prod\cdots\dd\sigma$ with the
+products of \eqref{eq:dit}. The method has order $p$ if and only if
+\begin{equation}\label{eq:oc}
+ \hat b^Td(t)=\sum_{i=2}^{s+1}\hat b_i\,d_i(t)=\frac1{\gamma(t)}\qquad\text{for all }t\in\T,\ |t|\le p .
+\end{equation}
+\end{theorem}
+
+\begin{proof}
+Integrating the recursion of Theorem~\ref{thm:recursion} from $0$ to $1$ gives $\eta_i(t)=\sum_j\bar A_{ij}\eta_j(t)+d_i(t)$,
+i.e.\ $(I-\bar A)\eta(t)=d(t)$. The formula for $\zeta_i$ is the integral from $0$ to $\tau$.
+\end{proof}
+
+The structure is that of the Runge--Kutta conditions $b^T\Phi(t)=1/\gamma(t)$: $\hat b$ plays the role of the weights,
+$d_i(t)$ integrates the product of the subtree coefficients against the coupling polynomials, black subtrees contribute
+stage values $\eta_j$ of the coupled stage $j$, and white subtrees the inner coefficients $\zeta_i(\sigma;\cdot)$ of the
+current stage $i$ along the inner time. Every condition is a polynomial equation in $\alpha_{ij}$, $a_{ijk}$,
+$\gamma_{ijk}$.
+
+\subsection{Explicit conditions up to order three}
+
+Table~\ref{tab:oc3} lists $d_i(t)$ for the ten trees of order $\le3$; the conditions are $\hat b^Td(t)=1/\gamma(t)$. The
+auxiliary quantities are
+\begin{align*}
+ \eta(\Tbb)&=\mathfrak Ac, &
+ \eta(\Tbw)&=\Lambda\Big(\int_0^1q_iz_i\Big)_i,\\
+ \zeta_i(\sigma;\Tbb)&=\sum_j\big(\alpha_{ij}+G_{ij}(\sigma)\big)\eta_j(\Tbb)+\sum_jP_{ij}(\sigma)c_j, &
+ \zeta_i(\sigma;\Tbw)&=\sum_j\big(\alpha_{ij}+G_{ij}(\sigma)\big)\eta_j(\Tbw)+\int_0^\sigma q_iz_i .
+\end{align*}
+
+\begin{table}[ht]
+\centering
+\caption{Order conditions $\sum_i\hat b_id_i(t)=1/\gamma(t)$ up to order three (trees drawn with the root at the
+bottom). Column ``class'' refers to Theorem~\ref{thm:exactfast}: B base method condition, F automatically satisfied,
+C coupling condition, -- implied.}
+\label{tab:oc3}
+\renewcommand{\arraystretch}{1.6}
+\begin{tabular}{rcllc}
+\toprule
+order & $t$ & $d_i(t)$ & $1/\gamma(t)$ & class\\\midrule
+1 & \Tb & $Q_i(1)$ & $1$ & B\\\midrule
+2 & \Tbb & $\sum_jP_{ij}(1)\,c_j$ & $\frac12$ & B\\
+  & \Tbw & $\int_0^1q_i(\sigma)\,z_i(\sigma)\dd\sigma$ & $\frac12$ & F\\\midrule
+3 & \Tbbb & $\sum_jP_{ij}(1)\,c_j^2$ & $\frac13$ & B\\
+  & \Tbbw & $\sum_jc_j\int_0^1p_{ij}(\sigma)\,z_i(\sigma)\dd\sigma$ & $\frac13$ & C\\
+  & \Tbww & $\int_0^1q_i(\sigma)\,z_i(\sigma)^2\dd\sigma$ & $\frac13$ & F\\
+  & \Tbbbl & $\sum_jP_{ij}(1)\,\eta_j(\Tbb)$ & $\frac16$ & B\\
+  & \Tbbwl & $\sum_jP_{ij}(1)\,\eta_j(\Tbw)$ & $\frac16$ & --\\
+  & \Tbwbl & $\int_0^1q_i(\sigma)\,\zeta_i(\sigma;\Tbb)\dd\sigma$ & $\frac16$ & --\\
+  & \Tbwwl & $\int_0^1q_i(\sigma)\,\zeta_i(\sigma;\Tbw)\dd\sigma$ & $\frac16$ & F\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The conditions of order four (26 trees) are given in Appendix~\ref{app:order4}.
+
+\subsection{The base method}
+
+\begin{proposition}\label{prop:base}
+For trees with only black vertices, $\eta(t)$ is the Runge--Kutta elementary weight of the base method
+$\mathfrak A=\Lambda\bar P$. In particular, order $p$ of the MIS method implies order $p$ of the base method.
+\end{proposition}
+
+\begin{proof}
+For black trees no $\zeta_i(\sigma;\cdot)$ appears in \eqref{eq:dit}, so $d_i(t)=\sum_jP_{ij}(1)\prod_k\eta_j(t_k)$ and
+$\eta(t)=\Lambda d(t)$ is the recursion of the elementary weights of the Runge--Kutta method $\mathfrak A$.
+\end{proof}
+
+\subsection{Methods that restart from a previous stage}
+
+Under \eqref{eq:restart}, $\Lambda$ has a simple structure: $\eta_i=\eta_{k(i)}+d_i$, hence $\hat b_i=1$ for the stages
+of the chain and $\hat b_i=0$ otherwise, and the inner time is $z_i(\sigma)=c_{k(i)}+Q_i(\sigma)$.
+
+\begin{theorem}\label{thm:exactfast}
+Assume \eqref{eq:restart} and $c_{s+1}=1$.
+\begin{enumerate}[label=(\alph*)]
+\item For every tree $u$ whose non-root vertices are all white, $\eta_i(u)=c_i^{|u|}/\gamma(u)$ and
+  $\zeta_i(\sigma;u)=z_i(\sigma)^{|u|}/\gamma(u)$. In particular all purely fast conditions are satisfied.
+\item For all stages
+  \[
+   \eta_i(\Tbbwl)=\tfrac12\,\eta_i(\Tbbb),\qquad \eta_i(\Tbbw)+\eta_i(\Tbwbl)=c_i\,\eta_i(\Tbb).
+  \]
+\item The method has order three if and only if the base method has order three and the coupling condition
+  \begin{equation}\label{eq:coupling3}
+   \sum_{i\in\text{chain}}\ \sum_{j<i}c_j\int_0^1p_{ij}(\sigma)\big(c_{k(i)}+Q_i(\sigma)\big)\dd\sigma=\frac13
+  \end{equation}
+  holds.
+\end{enumerate}
+\end{theorem}
+
+\begin{proof}
+(a) For $F(y,z)=g(z)$ the inner problem is $Z_i'=hq_i(\tau)g(Z_i)$, $Z_i(0)=Y_{k(i)}$, the flow of $g$ reparametrised in
+time. Hence $Z_i(\sigma)$ is the exact flow over the time $h(c_{k(i)}+Q_i(\sigma))=hz_i(\sigma)$, provided $Y_{k(i)}$ is the
+exact flow over $hc_{k(i)}$. Induction over $i$ gives the claim, since the coefficients of the exact flow over the time
+$hc$ are $c^{|u|}/\gamma(u)$.
+
+(b) By (a), $\eta_j(\Tbw)=c_j^2/2$, so $d_i(\Tbbwl)=\tfrac12d_i(\Tbbb)$. For the second identity, by (a) and
+integration by parts with $Q_i'=q_i$, $P_{ij}'=p_{ij}$, and $k=k(i)$,
+\begin{align*}
+ d_i(\Tbbw)+d_i(\Tbwbl)
+ &=\sum_jc_j\int_0^1p_{ij}\big(c_{k}+Q_i\big)+\int_0^1q_i\Big(\eta_{k}(\Tbb)+\sum_jP_{ij}c_j\Big)\\
+ &=c_k\sum_jP_{ij}(1)c_j+\sum_jc_j\big[P_{ij}Q_i\big]_0^1+Q_i(1)\eta_k(\Tbb)
+  =c_i\eta_i(\Tbb)-c_k\eta_k(\Tbb),
+\end{align*}
+using $c_i=c_k+Q_i(1)$ and $\eta_i(\Tbb)=\eta_k(\Tbb)+\sum_jP_{ij}(1)c_j$. Since $\eta_i=\eta_k+d_i$, induction over $i$
+gives the identity.
+
+(c) By (a) the conditions for \Tbw, \Tbww, \Tbwwl\ hold. By (b), $\eta_{s+1}(\Tbbwl)=\tfrac16$ if and only if
+$\eta_{s+1}(\Tbbb)=\tfrac13$, and, given $\eta_{s+1}(\Tbb)=\tfrac12$, $\eta_{s+1}(\Tbwbl)=\tfrac16$ if and only if
+$\eta_{s+1}(\Tbbw)=\tfrac13$, which is \eqref{eq:coupling3}. The remaining conditions \Tb, \Tbb, \Tbbb, \Tbbbl\ are those
+of the base method.
+\end{proof}
+
+\begin{proposition}[computational]\label{prop:count}
+Under \eqref{eq:restart} the numbers of coupling conditions that are independent of the base method conditions and of
+the conditions of lower order are
+\begin{center}
+\begin{tabular}{lcccc}
+\toprule
+order & 2 & 3 & 4 & 5\\\midrule
+all trees & 2 & 7 & 26 & 107\\
+base method (black trees) & 1 & 2 & 4 & 9\\
+coupling conditions, class \eqref{eq:restart} & 0 & 1 & 4 & 16\\
+coupling conditions, general $\alpha$, $g_{ij}$ & 1 & 5 & 22 & 89\\
+\bottomrule
+\end{tabular}
+\end{center}
+At order four a possible choice of the four coupling conditions is (with $\hat b_i=1$ on the chain, $k=k(i)$,
+$z_i(\sigma)=c_{k}+Q_i(\sigma)$)
+\begin{align*}
+ &\Tfourbbw: && \sum_i\hat b_i\sum_jc_j^2\int_0^1p_{ij}z_i=\tfrac14, &
+ &\Tfourbww: && \sum_i\hat b_i\sum_jc_j\int_0^1p_{ij}z_i^2=\tfrac14,\\
+ &\Tfourbbl: && \sum_i\hat b_i\sum_j\eta_j(\Tbb)\int_0^1p_{ij}z_i=\tfrac18, &
+ &\Tfourbbwl: && \sum_i\hat b_i\sum_jP_{ij}(1)\,\eta_j(\Tbbw)=\tfrac1{12},
+\end{align*}
+with $\eta_j(\Tbbw)=\sum_{l\in\text{chain}(j)}\sum_rc_r\int_0^1p_{lr}z_l$. All other mixed trees of order four are implied
+(class -- in Table~\ref{tab:oc4}).
+\end{proposition}
+
+The counts were obtained as ranks of the stage-wise coefficient vectors of many random methods, computed exactly modulo
+a large prime, with the products of lower-order coefficients included as admissible relations. For orders two and three
+they agree with Theorem~\ref{thm:exactfast}; a proof of the order-four statement in the style of
+Theorem~\ref{thm:exactfast}(b) is open.
+
+% =====================================================================
+\section{Subclasses with an existing order theory}
+\label{sec:subclasses}
+
+The general theory reduces to the known theories of several subclasses in two ways: by restricting the set of trees to
+the problem class (Section~\ref{sec:trees}) and by restricting the coefficients of the method.
+
+\subsection{Runge--Kutta methods}
+If $F$ does not depend on $z$, only black trees remain, and by Proposition~\ref{prop:base} the conditions
+\eqref{eq:oc} are the Runge--Kutta conditions of the base method \eqref{eq:base}. Conversely, every explicit
+Runge--Kutta method $(A,b)$ is the base method of the MIS method with $\alpha=0$, $g\equiv0$ and constant
+$p_{ij}\equiv a_{ij}$, and of its telescopic form with $p_{ij}\equiv a_{ij}-a_{i-1,j}$, $\alpha_{i,i-1}=1$.
+
+\subsection{Constant coupling: classical MIS and split-explicit methods}
+For $K=0$ all polynomials are constants, $z_i(\sigma)$ is linear in $\sigma$, and every integral in \eqref{eq:dit} is
+explicit. The conditions of Table~\ref{tab:oc3} then reduce to those of
+\cite{WenschKnothGalant2009,KnothWensch2014} for constant coupling and are extended to all orders by
+Theorem~\ref{thm:general}; constant-coupling conditions were extended in \cite{BauerKnoth2021}. The split-explicit RK3
+method of Wicker and Skamarock is of order two for \eqref{eq:G} and \eqref{eq:A}: its base method has $b=(0,0,1)$,
+$c=(0,\tfrac13,\tfrac12)$, so the condition $b^Tc^2=\tfrac13$ of \Tbbb\ fails ($b^Tc^2=\tfrac14$). Its base method has linear order three,
+but with a fast part a coupling condition of order three fails as well (the residual of \Tbwbl\ is $\tfrac1{12}$), so
+it is of order two also for \eqref{eq:L}.
+
+\subsection{Additive splitting and MRI-GARK}
+For \eqref{eq:A} the conditions are those of the trees in which all children of a vertex have the same colour
+(Table~\ref{tab:treecount}). For telescopic methods with polynomial coupling these are MRI-GARK methods, for which
+Sandu \cite{Sandu2019} derived the order conditions via GARK theory \cite{GuntherSandu2016}: the conditions of the slow
+base method plus coupling conditions, under the internal consistency (uniform fast speed) assumption. Telescopic methods
+satisfy \eqref{eq:restart}, so Theorem~\ref{thm:exactfast} applies: the purely fast conditions hold for exact inner
+solutions, and order three needs only the base method and \eqref{eq:coupling3}, with or without uniform fast speed. The
+uniform fast speed remains relevant for the inner integrator, since $q_i<0$ would integrate the fast part backwards in
+time. As a check of the reduction, the recursion of Theorem~\ref{thm:recursion} gives order three for MRI-GARK-ERK33 and
+order four for MRI-GARK-ERK45a \cite{Sandu2019}. In contrast to the GARK-based derivation, the general theory also gives
+the conditions for non-additive $F$, i.e.\ for frozen slow arguments inside the fast part.
+
+\subsection{Commutator-free Lie group methods}
+\label{sec:cf}
+
+By Section~\ref{sec:specialcases}, a commutator-free method \eqref{eq:cf} is an MIS method of the restart class
+\eqref{eq:restart} with constant coupling. Theorem~\ref{thm:general} applied to it gives its order conditions for
+arbitrary frozen vector fields $F(Y_j,\cdot)$ on $\R^N$, i.e.\ for \eqref{eq:G}. Owren \cite{Owren2006} derived the order
+conditions of commutator-free Lie group methods in a free Lie algebra. Since the Lie algebra of all vector fields on
+$\R^N$ satisfies no relations beyond those of a free Lie algebra in the generic case, we expect both sets of conditions to
+characterise the same methods; a formal proof is open, and in all examples below the orders agree. By
+Theorem~\ref{thm:exactfast}, applied to the MIS form:
+\begin{itemize}
+\item the purely fast conditions hold automatically (the exponentials are exact flows);
+\item a commutator-free method has order three if and only if its base method --- the Runge--Kutta method obtained by
+  replacing every exponential by the Euler step $y\mapsto y+h\sum_j\beta^{(l)}_{ij}F_j$ --- has order three and the single
+  coupling condition \eqref{eq:coupling3} holds.
+\end{itemize}
+
+\begin{example}
+CF4 of Celledoni, Marthinsen and Owren \cite{CelledoniMarthinsenOwren2003},
+\begin{gather*}
+ Y_2=\exp(\tfrac12hF_1)y_n,\quad Y_3=\exp(\tfrac12hF_2)y_n,\quad Y_4=\exp\big(h(F_3-\tfrac12F_1)\big)\exp(\tfrac12hF_1)y_n,\\
+ y_{n+1}=\exp\big(\tfrac h{12}(-F_1+2F_2+2F_3+3F_4)\big)\exp\big(\tfrac h{12}(3F_1+2F_2+2F_3-F_4)\big)y_n,
+\end{gather*}
+is in MIS form a method with $s=6$ stages (two auxiliary). The recursion in exact arithmetic gives order four for
+\eqref{eq:G}, \eqref{eq:B}, \eqref{eq:A} and \eqref{eq:L}, its order as a Lie group method.
+\end{example}
+
+\paragraph{Low-storage commutator-free methods.}
+Bazavov \cite{Bazavov2022} proposed commutator-free methods built on a Williamson 2N-storage Runge--Kutta method
+\cite{Williamson1980}, $\Delta Y_i=A_i\Delta Y_{i-1}+hF(Y_{i-1})$, $Y_i=Y_{i-1}+B_i\Delta Y_i$ ($A_1=0$):
+\begin{equation}\label{eq:lscf}
+ Z_i=A_iZ_{i-1}+hF_{i-1},\qquad Y_i=\exp(B_iZ_i)\,Y_{i-1},\qquad i=1,\dots,s,
+\end{equation}
+which needs storage for two quantities and one exponential per stage. In the notation of Definition~\ref{def:mis} (stages
+shifted by one) this is the telescopic method
+\[
+ \alpha_{i+1,i}=1,\qquad g\equiv0,\qquad p_{i+1,j}\equiv B_i\prod_{k=j+1}^{i}A_k\quad(j\le i),
+\]
+with the 2N-storage Runge--Kutta method as base method. The three-stage third-order method of L\"uscher for the Wilson
+flow \cite{Luescher2010} is of this form ($A=(0,-\tfrac{17}{32},-\tfrac{32}{27})$, $B=(\tfrac14,\tfrac89,\tfrac34)$).
+Bazavov proved that three-stage methods \eqref{eq:lscf} of classical order three are Lie group methods of order three,
+and conjectured that this holds for more stages and higher orders \cite{Bazavov2022,BazavovChuna2021}. With
+Theorem~\ref{thm:exactfast} the order-three part of the conjecture reduces to a single statement:
+
+\begin{corollary}\label{cor:lscf}
+A method \eqref{eq:lscf} has order three for \eqref{eq:G} if and only if its 2N-storage Runge--Kutta method has order
+three and \eqref{eq:coupling3} holds, which here reads
+\[
+ \sum_{i=1}^{s}\sum_{j\le i}p_{i+1,j}\,c_j\,\frac{c_i+c_{i+1}}2=\frac13,
+\]
+with $c_j$ the stage times of the MIS form (the frozen argument $F_j$ is taken at time $c_j$).
+\end{corollary}
+
+For random methods \eqref{eq:lscf} with $s=4$ and $s=5$ stages whose Runge--Kutta method has order three (40 methods each,
+obtained by a Newton iteration on the four classical conditions), all seven bicoloured conditions of order three hold to
+round-off; that is, \eqref{eq:coupling3} follows from the classical conditions in every case. A proof for general $s$ is
+open. At order four, the recursion gives order four for \eqref{eq:G} for the 2N-storage method RK(5,4) of Carpenter and
+Kennedy \cite{CarpenterKennedy1994} in the form \eqref{eq:lscf}, and for a random six-stage method whose Runge--Kutta
+method has order four, in agreement with the conjecture.
+
+\subsection{Explicit exponential Runge--Kutta methods}
+\label{sec:exponential}
+
+For \eqref{eq:L} only the trees in which the white vertices form $L$-chains remain. Their elementary differentials are
+$\mathbf F(t)=L^{l_1}f^{(m)}(\dots)$, products of powers of $L$ and derivatives of $f$, i.e.\ the elementary
+differentials of exponential integrators in their non-stiff expansion in powers of $hL$. For methods with $\alpha=0$,
+$g\equiv0$ and uniform fast speed $q_i\equiv c_i$, Proposition~\ref{prop:exprk} identifies the MIS method with an
+exponential Runge--Kutta method; Theorem~\ref{thm:general} restricted to these trees therefore gives the classical
+(non-stiff) order conditions of explicit exponential Runge--Kutta methods.
+
+\begin{example}
+For ETD2RK (Example~\ref{ex:exp}(b)) the recursion gives order two in all classes; its residuals
+$\eta_3(t)-1/\gamma(t)$ at order three are
+\begin{center}
+\begin{tabular}{cccccccc}
+\toprule
+$t$ & \Tbbb & \Tbbw & \Tbww & \Tbbbl & \Tbbwl & \Tbwbl & \Tbwwl\\\midrule
+residual & $\frac16$ & $0$ & $0$ & $-\frac16$ & $\frac1{12}$ & $0$ & $0$\\
+\bottomrule
+\end{tabular}
+\end{center}
+in agreement with Theorem~\ref{thm:exactfast}: the purely fast conditions and \eqref{eq:coupling3} hold, the order is
+limited by the base method (Heun's method), and the residual of \Tbbwl\ is half that of \Tbbb. For ETDRK4-B
+(Example~\ref{ex:exp}(c)) the recursion in exact rational arithmetic gives order four for \eqref{eq:L} --- the classical
+order of the method --- and order four also for \eqref{eq:A}, \eqref{eq:B} and the general problem \eqref{eq:G}. Read
+as an MIS method with quadratic coupling, ETDRK4-B is therefore a fourth-order method for $y'=F(y,y)$ with a nonlinear,
+state-dependent fast part, if the inner problems are solved exactly.
+\end{example}
+
+\paragraph{Stiff order conditions.}
+The classical conditions assume that $h\|\partial_zF\|$ is small. Hochbruck and Ostermann
+\cite{HochbruckOstermann2005,HochbruckOstermann2010} derived \emph{stiff order conditions} for exponential Runge--Kutta
+methods, which have to hold uniformly in $hL$. With $b_i=a_{s+1,i}$ and
+\[
+ \psi_j(z)=\sum_ib_i(z)\frac{c_i^{j-1}}{(j-1)!}-\varphi_j(z),\qquad
+ \psi_{j,i}(z)=\sum_ka_{ik}(z)\frac{c_k^{j-1}}{(j-1)!}-c_i^j\varphi_j(c_iz),
+\]
+the conditions up to order three read $\psi_1(hL)=0$; $\psi_2(hL)=0$, $\psi_{1,i}(hL)=0$; $\psi_3(hL)=0$,
+$\sum_ib_i(hL)J\psi_{2,i}(hL)=0$ for arbitrary bounded operators $J$, and analogous conditions at order four
+\cite{HochbruckOstermann2005}. For MIS methods with polynomial coupling they become algebraic conditions on the
+coefficients:
+
+\begin{proposition}\label{prop:stiff}
+Let $\alpha=0$, $g\equiv0$, $q_i\equiv c_i$, and define the polynomials
+\[
+ r_i^{[j]}(\tau)=\sum_{k<i}p_{ik}(\tau)\frac{c_k^{j-1}}{(j-1)!}-c_i^j\frac{\tau^{j-1}}{(j-1)!} .
+\]
+\begin{enumerate}[label=(\alph*)]
+\item $\psi_{j,i}\equiv0$ if and only if $r_i^{[j]}\equiv0$, and $\psi_j\equiv0$ if and only if $r_{s+1}^{[j]}\equiv0$.
+  In particular $\psi_{1,i}\equiv0$ is the uniform fast speed condition.
+\item A sufficient condition for $\sum_ib_i(z)J\psi_{2,i}(z)=0$ for all $J$ is that for every value $c$ of the stage times
+  \[
+   \sum_{i:\,c_i=c}p_{s+1,i}(\tau)\,r_i^{[2]}(\sigma)\equiv0\qquad\text{as a polynomial in }(\tau,\sigma).
+  \]
+\end{enumerate}
+\end{proposition}
+
+\begin{proof}
+(a) $\psi_{j,i}(z)=\int_0^1e^{(1-\tau)c_iz}r_i^{[j]}(\tau)\dd\tau$, and the map from polynomials to these functions is
+injective for $c_i\ne0$. (b) $b_i(z_1)\psi_{2,i}(z_2)=\iint e^{(1-\tau)z_1}e^{(1-\sigma)c_iz_2}p_{s+1,i}(\tau)r_i^{[2]}(\sigma)\dd\tau\dd\sigma$;
+since $J$ is arbitrary, the two arguments have to be treated as independent.
+\end{proof}
+
+For ETD2RK, $r_3^{[2]}=(1-\tau)\cdot0+\tau\cdot1-\tau=0$, so it has stiff order two. Analogous bivariate and trivariate
+polynomial identities, grouped by pairs of stage times, are sufficient for the order-four conditions.
+
+\subsection{Affine fast part}
+For \eqref{eq:B}, trees with a vertex with two or more white children drop out: 20 instead of 26 conditions at order four
+and 73 instead of 107 at order five (Table~\ref{tab:treecount}). A method constructed for \eqref{eq:B} only has to satisfy
+these. The class contains \eqref{eq:L} and is the structure of frozen fast operators that depend on the slow state.
+
+% =====================================================================
+\section{Computing the order conditions}
+\label{sec:algorithm}
+
+Theorem~\ref{thm:recursion} gives an algorithm that is independent of the special structure and works in exact rational
+or symbolic arithmetic. The trees are processed in increasing order, so that all subtree coefficients are available.
+
+\begin{center}
+\begin{minipage}{0.9\linewidth}
+\begin{tabbing}
+xx\=xx\=xx\=xx\=xx\=\kill
+\textbf{for} each tree $t=[t_1,\dots,t_m]$, ordered by $|t|$\\
+\>\textbf{for} $i=2,\dots,s+1$\\
+\>\>$\phi(\tau)\gets\sum_{j<i}g_{ij}(\tau)\eta_j(t)$\\
+\>\>\textbf{for} $j=1,\dots,i-1$\\
+\>\>\>$r(\tau)\gets1$\\
+\>\>\>\textbf{for} $k=1,\dots,m$: \ $r\gets r\cdot\zeta_i(\cdot;t_k)$ if $t_k$ is white (polynomial product), else $r\gets r\cdot\eta_j(t_k)$\\
+\>\>\>$\phi\gets\phi+p_{ij}\,r$\\
+\>\>$\zeta_i(\tau;t)\gets\sum_{j<i}\alpha_{ij}\eta_j(t)+\int_0^\tau\phi(\tilde\tau)\dd\tilde\tau$\\
+\>\>$\eta_i(t)\gets\zeta_i(1;t)$\\
+\textbf{residual:} $\eta_{s+1}(t)-1/\gamma(t)$
+\end{tabbing}
+\end{minipage}
+\end{center}
+
+The algorithm needs only the information which argument is differentiated; restricting the enumeration of trees to the
+admissible child sets of Section~\ref{sec:trees} gives the conditions of the subclasses. With symbolic coefficients the
+residuals are polynomial equations in $\alpha_{ij}$, $a_{ijk}$, $\gamma_{ijk}$, the starting point for the construction
+of new methods; with dual numbers they provide exact gradients for numerical searches. Independent implementations exist
+in Fortran, in Python, in Julia (the module \texttt{MIS} of the package \texttt{MultiRate}), and, for constant $g_{ij}$,
+in \texttt{BSeries.jl} (\texttt{MultirateInfinitesimalSplitMethod}) \cite{KetchesonRanocha2023}. They reproduce
+Table~\ref{tab:treecount}, Tables~\ref{tab:oc3} and~\ref{tab:oc4}, Theorem~\ref{thm:exactfast} (checked up to order five),
+and the orders of the methods cited in Section~\ref{sec:subclasses}.
+
+% =====================================================================
+\section{Conclusions and open questions}
+\label{sec:conclusions}
+
+The B-series over trees with bicoloured non-root vertices and polynomial coefficients give a single order theory for MIS
+methods with polynomial coupling. Restricting the trees to the problem class and the coefficients to a subclass yields
+the order conditions of Runge--Kutta methods, constant-coupling MIS methods, MRI-GARK methods, commutator-free Lie group
+methods and explicit exponential Runge--Kutta methods; for methods that restart from a previous stage the purely fast conditions are automatic and order
+three needs a single coupling condition. Open questions are:
+\begin{enumerate}
+\item \emph{Simplifying assumptions.} Is there an analogue of the stage-order assumption $C(q)$ that reduces the
+  conditions to those of the base method plus few coupling conditions? A natural candidate is the polynomial identity
+  $\sum_{j<i}p_{ij}(\tau)c_j^{k-1}=c_i^k\tau^{k-1}$, $k=1,\dots,q$ (for $\alpha=0$, $g\equiv0$), which is the strong form of
+  the stiff conditions in Proposition~\ref{prop:stiff}; as for Runge--Kutta methods it cannot hold for $i=2$, $k\ge2$.
+\item \emph{Order four in the restart class.} A proof of Proposition~\ref{prop:count}.
+\item \emph{Stiff order.} Necessity of the conditions in Proposition~\ref{prop:stiff}(b); conditions for skew-adjoint
+  (hyperbolic) fast operators, where no parabolic smoothing is available; a stiff theory for nonlinear fast parts, e.g.\
+  by B-series whose coefficients are functions of $h\partial_zF$.
+\item \emph{Inexact inner solutions.} If the inner problems are solved by $m$ steps of a Runge--Kutta method of order $q$,
+  the integration $\int_0^\tau\phi$ in the algorithm is replaced by that method, and one expects
+  $\eta^{(m)}_{s+1}(t)=\eta_{s+1}(t)+\sum_{k\ge q}e_k(t)m^{-k}$. For order $p$ with every $m$ the inner method has to
+  reproduce $\eta_{s+1}(t)$ exactly for $|t|\le p$. We conjecture that for $K=0$, $g\equiv0$ an inner method of order
+  $q\ge p$ suffices, while $K>0$ may require a higher inner (quadrature) order.
+\item \emph{Low-storage commutator-free methods.} A proof that \eqref{eq:coupling3} follows from the classical order-three
+  conditions for every 2N-storage method (Corollary~\ref{cor:lscf}), and the analogous statement at order four, which
+  would prove Bazavov's conjecture; a formal identification of Owren's free-Lie-algebra conditions with the conditions
+  of Theorem~\ref{thm:general} for the frame representation.
+\item \emph{Further subclasses.} Exponential methods with mixed arguments $\varphi_k(c_jz)$ in stage $i$ and exponential Rosenbrock
+  methods \cite{HochbruckOstermannSchweitzer2009} are MIS methods only for special coefficients, possibly with
+  $\alpha\ne0$.
+\end{enumerate}
+
+% =====================================================================
+\appendix
+\section{Order conditions of order four}
+\label{app:order4}
+
+Conditions $\sum_i\hat b_id_i(t)=1/\gamma(t)$ for the 26 trees of order four, general method of
+Definition~\ref{def:mis}. $\eta_j(u)$ and $\zeta_i(\sigma;u)$ for $|u|\le3$ are given by Theorem~\ref{thm:general} and
+Table~\ref{tab:oc3}. Column ``class'' refers to the subclass \eqref{eq:restart}: B base method, F automatically
+satisfied, C1--C4 the coupling conditions of Proposition~\ref{prop:count}, -- implied by lower order, base and C1--C4.
+
+{\renewcommand{\arraystretch}{1.5}
+\begin{longtable}{rcllc}
+\caption{Order-four conditions.}\label{tab:oc4}\\
+\toprule
+No. & $t$ & $d_i(t)$ & $1/\gamma(t)$ & class\\\midrule
+\endfirsthead
+\toprule
+No. & $t$ & $d_i(t)$ & $1/\gamma(t)$ & class\\\midrule
+\endhead
+\bottomrule
+\endfoot
+1 & \btree{[,b [,b [,b [,b]]]]} & $\sum_j P_{ij}(1)\,\eta_j(\Tbbbl)$ & $\frac1{24}$ & B\\[3pt]
+2 & \btree{[,b [,b [,b [,w]]]]} & $\sum_j P_{ij}(1)\,\eta_j(\Tbbwl)$ & $\frac1{24}$ & --\\[3pt]
+3 & \btree{[,b [,b [,b][,b]]]} & $\sum_j P_{ij}(1)\,\eta_j(\Tbbb)$ & $\frac1{12}$ & B\\[3pt]
+4 & \btree{[,b [,b [,b][,w]]]} & $\sum_j P_{ij}(1)\,\eta_j(\Tbbw)$ & $\frac1{12}$ & C4\\[3pt]
+5 & \btree{[,b [,b [,b]][,w]]} & $\sum_j \eta_j(\Tbb)\int_0^1 p_{ij}(\sigma)\,z_i(\sigma)\dd\sigma$ & $\frac1{8}$ & C3\\[3pt]
+6 & \btree{[,b [,b [,w [,b]]]]} & $\sum_j P_{ij}(1)\,\eta_j(\Tbwbl)$ & $\frac1{24}$ & --\\[3pt]
+7 & \btree{[,b [,b [,w [,w]]]]} & $\sum_j P_{ij}(1)\,\eta_j(\Tbwwl)$ & $\frac1{24}$ & --\\[3pt]
+8 & \btree{[,b [,b [,w][,w]]]} & $\sum_j P_{ij}(1)\,\eta_j(\Tbww)$ & $\frac1{12}$ & --\\[3pt]
+9 & \btree{[,b [,b [,w]][,w]]} & $\sum_j \eta_j(\Tbw)\int_0^1 p_{ij}(\sigma)\,z_i(\sigma)\dd\sigma$ & $\frac1{8}$ & --\\[3pt]
+10 & \btree{[,b [,b][,b [,b]]]} & $\sum_j P_{ij}(1)\,c_j\eta_j(\Tbb)$ & $\frac1{8}$ & B\\[3pt]
+11 & \btree{[,b [,b][,b [,w]]]} & $\sum_j P_{ij}(1)\,c_j\eta_j(\Tbw)$ & $\frac1{8}$ & --\\[3pt]
+12 & \btree{[,b [,b][,b][,b]]} & $\sum_j P_{ij}(1)\,c_j^{3}$ & $\frac1{4}$ & B\\[3pt]
+13 & \btree{[,b [,b][,b][,w]]} & $\sum_j c_j^{2}\int_0^1 p_{ij}(\sigma)\,z_i(\sigma)\dd\sigma$ & $\frac1{4}$ & C1\\[3pt]
+14 & \btree{[,b [,b][,w [,b]]]} & $\sum_j c_j\int_0^1 p_{ij}(\sigma)\,\zeta_i(\sigma;\Tbb)\dd\sigma$ & $\frac1{8}$ & --\\[3pt]
+15 & \btree{[,b [,b][,w [,w]]]} & $\sum_j c_j\int_0^1 p_{ij}(\sigma)\,\zeta_i(\sigma;\Tbw)\dd\sigma$ & $\frac1{8}$ & --\\[3pt]
+16 & \btree{[,b [,b][,w][,w]]} & $\sum_j c_j\int_0^1 p_{ij}(\sigma)\,\big(z_i(\sigma)\big)^{2}\dd\sigma$ & $\frac1{4}$ & C2\\[3pt]
+17 & \btree{[,b [,w [,b [,b]]]]} & $\int_0^1 q_i(\sigma)\,\zeta_i(\sigma;\Tbbbl)\dd\sigma$ & $\frac1{24}$ & --\\[3pt]
+18 & \btree{[,b [,w [,b [,w]]]]} & $\int_0^1 q_i(\sigma)\,\zeta_i(\sigma;\Tbbwl)\dd\sigma$ & $\frac1{24}$ & --\\[3pt]
+19 & \btree{[,b [,w [,b][,b]]]} & $\int_0^1 q_i(\sigma)\,\zeta_i(\sigma;\Tbbb)\dd\sigma$ & $\frac1{12}$ & --\\[3pt]
+20 & \btree{[,b [,w [,b][,w]]]} & $\int_0^1 q_i(\sigma)\,\zeta_i(\sigma;\Tbbw)\dd\sigma$ & $\frac1{12}$ & --\\[3pt]
+21 & \btree{[,b [,w [,w [,b]]]]} & $\int_0^1 q_i(\sigma)\,\zeta_i(\sigma;\Tbwbl)\dd\sigma$ & $\frac1{24}$ & --\\[3pt]
+22 & \btree{[,b [,w [,w [,w]]]]} & $\int_0^1 q_i(\sigma)\,\zeta_i(\sigma;\Tbwwl)\dd\sigma$ & $\frac1{24}$ & F\\[3pt]
+23 & \btree{[,b [,w [,w][,w]]]} & $\int_0^1 q_i(\sigma)\,\zeta_i(\sigma;\Tbww)\dd\sigma$ & $\frac1{12}$ & F\\[3pt]
+24 & \btree{[,b [,w][,w [,b]]]} & $\int_0^1 q_i(\sigma)\,z_i(\sigma)\zeta_i(\sigma;\Tbb)\dd\sigma$ & $\frac1{8}$ & --\\[3pt]
+25 & \btree{[,b [,w][,w [,w]]]} & $\int_0^1 q_i(\sigma)\,z_i(\sigma)\zeta_i(\sigma;\Tbw)\dd\sigma$ & $\frac1{8}$ & F\\[3pt]
+26 & \btree{[,b [,w][,w][,w]]} & $\int_0^1 q_i(\sigma)\,\big(z_i(\sigma)\big)^{3}\dd\sigma$ & $\frac1{4}$ & F\\[3pt]
+\end{longtable}}
+
+\begin{thebibliography}{99}
+\small
+\bibitem{Bazavov2022} A.~Bazavov, Commutator-free Lie group methods with minimum storage requirements and reuse of
+ exponentials, \emph{BIT Numer. Math.} (2022), arXiv:2007.04225.
+\bibitem{BazavovChuna2021} A.~Bazavov, T.~Chuna, Efficient integration of gradient flow in lattice gauge theory and
+ properties of low-storage commutator-free Lie group methods, arXiv:2101.05320 (2021).
+\bibitem{Baldauf2010} M.~Baldauf, Linear stability analysis of Runge--Kutta-based partial time-splitting schemes for the
+ Euler equations, \emph{Mon. Wea. Rev.} 138 (2010) 4475--4496.
+\bibitem{BauerKnoth2021} S.~Bauer, O.~Knoth, Extended multirate infinitesimal step methods: derivation of order
+ conditions, \emph{J. Comput. Appl. Math.} 387 (2021) 112541.
+\bibitem{BoscarinoFilbetRusso2016} S.~Boscarino, F.~Filbet, G.~Russo, High order semi-implicit schemes for time
+ dependent partial differential equations, \emph{J. Sci. Comput.} 68 (2016) 975--1001.
+\bibitem{CarpenterKennedy1994} M.\,H.~Carpenter, C.\,A.~Kennedy, Fourth-order 2N-storage Runge--Kutta schemes, NASA
+ TM-109112, 1994.
+\bibitem{CelledoniMarthinsenOwren2003} E.~Celledoni, A.~Marthinsen, B.~Owren, Commutator-free Lie group methods,
+ \emph{Future Gener. Comput. Syst.} 19 (2003) 341--352.
+\bibitem{ChinomonaReynolds2021} R.~Chinomona, D.\,R.~Reynolds, Implicit-explicit multirate infinitesimal GARK methods,
+ \emph{SIAM J. Sci. Comput.} 43 (2021) A3082--A3113.
+\bibitem{CoxMatthews2002} S.\,M.~Cox, P.\,C.~Matthews, Exponential time differencing for stiff systems, \emph{J.
+ Comput. Phys.} 176 (2002) 430--455.
+\bibitem{GiraldoKellyConstantinescu2013} F.\,X.~Giraldo, J.\,F.~Kelly, E.\,M.~Constantinescu, Implicit-explicit
+ formulations of a three-dimensional nonhydrostatic unified model of the atmosphere (NUMA), \emph{SIAM J. Sci. Comput.}
+ 35 (2013) B1162--B1194.
+\bibitem{GuntherSandu2016} M.~G\"unther, A.~Sandu, Multirate generalized additive Runge--Kutta methods, \emph{Numer.
+ Math.} 133 (2016) 497--524.
+\bibitem{HairerNorsettWanner1993} E.~Hairer, S.\,P.~N{\o}rsett, G.~Wanner, \emph{Solving Ordinary Differential
+ Equations I}, 2nd ed., Springer, 1993.
+\bibitem{HochbruckOstermann2005} M.~Hochbruck, A.~Ostermann, Explicit exponential Runge--Kutta methods for semilinear
+ parabolic problems, \emph{SIAM J. Numer. Anal.} 43 (2005) 1069--1090.
+\bibitem{HochbruckOstermann2010} M.~Hochbruck, A.~Ostermann, Exponential integrators, \emph{Acta Numer.} 19 (2010)
+ 209--286.
+\bibitem{HochbruckOstermannSchweitzer2009} M.~Hochbruck, A.~Ostermann, J.~Schweitzer, Exponential Rosenbrock-type
+ methods, \emph{SIAM J. Numer. Anal.} 47 (2009) 786--803.
+\bibitem{KetchesonRanocha2023} D.\,I.~Ketcheson, H.~Ranocha, Computing with B-series, \emph{ACM Trans. Math. Softw.} 49
+ (2023) 14.
+\bibitem{KlempSkamarockDudhia2007} J.\,B.~Klemp, W.\,C.~Skamarock, J.~Dudhia, Conservative split-explicit time
+ integration methods for the compressible nonhydrostatic equations, \emph{Mon. Wea. Rev.} 135 (2007) 2897--2913.
+\bibitem{KlempWilhelmson1978} J.\,B.~Klemp, R.\,B.~Wilhelmson, The simulation of three-dimensional convective storm
+ dynamics, \emph{J. Atmos. Sci.} 35 (1978) 1070--1096.
+\bibitem{KnothWensch2014} O.~Knoth, J.~Wensch, Generalized split-explicit Runge--Kutta methods for the compressible
+ Euler equations, \emph{Mon. Wea. Rev.} 142 (2014) 2067--2081.
+\bibitem{KnothWolke1998} O.~Knoth, R.~Wolke, Implicit-explicit Runge--Kutta methods for computing atmospheric reactive
+ flows, \emph{Appl. Numer. Math.} 28 (1998) 327--341.
+\bibitem{Krogstad2005} S.~Krogstad, Generalized integrating factor methods for stiff PDEs, \emph{J. Comput. Phys.} 203
+ (2005) 72--88.
+\bibitem{Lawson1967} J.\,D.~Lawson, Generalized Runge--Kutta processes for stable systems with large Lipschitz
+ constants, \emph{SIAM J. Numer. Anal.} 4 (1967) 372--380.
+\bibitem{Luescher2010} M.~L\"uscher, Properties and uses of the Wilson flow in lattice QCD, \emph{J. High Energy
+ Phys.} 08 (2010) 071.
+\bibitem{LuanChinomonaReynolds2020} V.\,T.~Luan, R.~Chinomona, D.\,R.~Reynolds, A new class of high-order methods for
+ multirate differential equations, \emph{SIAM J. Sci. Comput.} 42 (2020) A1245--A1268.
+\bibitem{Owren2006} B.~Owren, Order conditions for commutator-free Lie group methods, \emph{J. Phys. A} 39 (2006)
+ 5585--5599.
+\bibitem{Sandu2019} A.~Sandu, A class of multirate infinitesimal GARK methods, \emph{SIAM J. Numer. Anal.} 57 (2019)
+ 2300--2327.
+\bibitem{WenschKnothGalant2009} J.~Wensch, O.~Knoth, A.~Galant, Multirate infinitesimal step methods for atmospheric
+ flow simulation, \emph{BIT} 49 (2009) 449--473.
+\bibitem{Williamson1980} J.\,H.~Williamson, Low-storage Runge--Kutta schemes, \emph{J. Comput. Phys.} 35 (1980) 48--56.
+\bibitem{WickerSkamarock2002} L.\,J.~Wicker, W.\,C.~Skamarock, Time-splitting methods for elastic models using forward
+ time schemes, \emph{Mon. Wea. Rev.} 130 (2002) 2088--2097.
+\end{thebibliography}
+
+\end{document}
