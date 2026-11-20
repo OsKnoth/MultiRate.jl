@@ -1,0 +1,1887 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\DeclareUnicodeCharacter{03C4}{\ensuremath{\tau}}
+\usepackage[T1]{fontenc}
+\usepackage[english]{babel}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{xcolor}
+\usepackage{forest}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{longtable}
+\usepackage[margin=2.6cm]{geometry}
+\usepackage[colorlinks=true,linkcolor=blue!60!black,citecolor=green!40!black]{hyperref}
+
+\title{Multirate infinitesimal step methods with polynomial coupling:\\
+frozen formulations, relations to other method classes, and order conditions}
+\author{Oswald Knoth}
+\date{Draft, \today}
+
+% ---------------------------------------------------------------------
+\newtheorem{theorem}{Theorem}[section]
+\newtheorem{proposition}[theorem]{Proposition}
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{conjecture}[theorem]{Conjecture}
+\theoremstyle{definition}
+\newtheorem{definition}[theorem]{Definition}
+\newtheorem{example}[theorem]{Example}
+\newtheorem{question}{Question}
+\theoremstyle{remark}
+\newtheorem{remark}[theorem]{Remark}
+
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\T}{\mathcal{T}}
+\newcommand{\dd}{\,\mathrm{d}}
+\newcommand{\todo}[1]{\textcolor{red}{[\textbf{TODO:} #1]}}
+
+% Bicoloured trees -----------------------------------------------------
+\forestset{
+  b/.style={circle,draw=black,fill=black,inner sep=1.3pt},
+  w/.style={circle,draw=black,fill=white,inner sep=1.3pt},
+  bitree/.style={for tree={grow=90,s sep=3pt,l=5pt,l sep=0pt,
+                 parent anchor=center,child anchor=center,edge={thin}},
+                 baseline}
+}
+\newcommand{\btree}[1]{\begin{forest}bitree #1\end{forest}}
+% order 1
+\newcommand{\Tb}{\btree{[,b]}}
+% order 2
+\newcommand{\Tbb}{\btree{[,b [,b]]}}
+\newcommand{\Tbw}{\btree{[,b [,w]]}}
+% order 3
+\newcommand{\Tbbb}{\btree{[,b [,b][,b]]}}
+\newcommand{\Tbbw}{\btree{[,b [,b][,w]]}}
+\newcommand{\Tbww}{\btree{[,b [,w][,w]]}}
+\newcommand{\Tbbbl}{\btree{[,b [,b [,b]]]}}
+\newcommand{\Tbbwl}{\btree{[,b [,b [,w]]]}}
+\newcommand{\Tbwbl}{\btree{[,b [,w [,b]]]}}
+\newcommand{\Tbwwl}{\btree{[,b [,w [,w]]]}}
+% selected order 4
+\newcommand{\Tfourbbw}{\btree{[,b [,b][,b][,w]]}}
+\newcommand{\Tfourbww}{\btree{[,b [,b][,w][,w]]}}
+\newcommand{\Tfourbbl}{\btree{[,b [,b [,b]][,w]]}}
+\newcommand{\Tfourbbwl}{\btree{[,b [,b [,b][,w]]]}}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Multirate infinitesimal step (MIS) methods integrate a slow part of an
+ordinary differential equation with a Runge--Kutta-like outer scheme and
+the fast part by the solution of auxiliary (``infinitesimal'') initial
+value problems. They are the mathematical form of the split-explicit time
+integrators used in numerical weather prediction.
+
+We formulate MIS methods for $y'=F(y,y)$, where the first argument is
+frozen at stage values and the second argument is integrated in time.
+Both the coupling to the frozen right-hand sides and the coupling to
+previous stage increments are polynomials in the inner time. For the
+compressible Euler equations we discuss the partitioning in potential
+temperature, internal and total energy form, and two ways of freezing
+the pressure in the potential temperature formulation.
+
+Several known method classes appear as special cases: classical MIS and
+split-explicit Runge--Kutta schemes, MRI-GARK methods, a class of
+exponential Runge--Kutta methods, and commutator-free Lie group methods.
+With bicoloured B-series whose coefficients are polynomials in the inner
+time, we derive the order conditions in a Runge--Kutta-like form and give
+them explicitly up to order 4. For methods that are exact for the fast
+part we prove that order 3 requires only the base method conditions and
+one coupling condition, and we count the coupling conditions up to order
+5. We further discuss stiff order conditions, spatial discretizations
+(finite volumes, DG with the LMARS flux), the solution and cost of the
+linear inner problems, and the required accuracy of inexact inner
+solutions.
+\end{abstract}
+
+\tableofcontents
+
+% =====================================================================
+% =====================================================================
+\section{Introduction}
+\label{sec:motivation}
+
+\subsection{Motivation}
+
+Atmospheric models for numerical weather prediction (NWP) and climate,
+and many CFD codes for low-Mach-number compressible flow, solve the
+compressible Euler (or Navier--Stokes) equations. The solution contains
+processes on very different time scales:
+\begin{itemize}
+\item slow: advection by the flow (wind speeds up to $\approx100\,$m/s)
+  and the physical parameterizations;
+\item fast: sound waves ($\approx340\,$m/s) and, in high resolution,
+  gravity waves.
+\end{itemize}
+Sound waves carry almost no meteorologically relevant energy, but an
+explicit scheme has to resolve them in time. Two remedies are in use:
+\begin{itemize}
+\item (semi-)implicit treatment of the fast terms, horizontally
+  explicit/vertically implicit (HEVI) splittings, IMEX schemes
+  \cite{BoscarinoFilbetRusso2016,GiraldoKellyConstantinescu2013};
+\item \emph{split-explicit} schemes: the slow tendencies are evaluated
+  with a large step $h$ and held fixed (or interpolated) while the fast
+  terms are integrated with many small steps
+  \cite{KlempWilhelmson1978,WickerSkamarock2002,KlempSkamarockDudhia2007}.
+  The Runge--Kutta-based split-explicit scheme of Wicker and Skamarock is
+  used for example in WRF and in COSMO \cite{Baldauf2010}.
+\end{itemize}
+The \emph{multirate infinitesimal step} (MIS) methods
+\cite{KnothWolke1998,WenschKnothGalant2009,KnothWensch2014} provide the
+mathematical framework for split-explicit schemes. In the analysis, the
+fast part is assumed to be integrated exactly (``infinitesimally''). The
+analysis then yields order conditions for the outer method. In practice
+the fast part is integrated by a few small steps of a cheap explicit
+method, or partly implicitly.
+
+\subsection{Partitioning by arguments}
+
+Split-explicit schemes do not split the right-hand side into a sum of a
+slow and a fast term. Instead, \emph{slowly varying quantities are
+frozen} at the values of a previous stage, while the remaining
+dependence on the solution is integrated in time with small steps. This
+is formalized by writing the (semi-discrete) equation $y'=\mathcal F_h(y)$
+as
+\begin{equation}\label{eq:G}
+y' = F(y,y), \qquad F:\R^N\times\R^N\to\R^N,\qquad F(y,y)=\mathcal F_h(y), \tag{$\mathcal G$}
+\end{equation}
+where the \emph{first argument} contains the slow (frozen) and the
+\emph{second argument} the fast (integrated) dependence. In a method the
+first argument is set to a stage value $Y_j$ and the second argument is
+the solution $Z$ of an inner initial value problem
+$Z'=F(Y_j,Z)$. The partitioning is a modelling decision. It is not
+unique, and its quality decides how large the outer step can be.
+Throughout, the index $y$ ($z$) at a quantity means evaluation at the
+first (second) argument.
+
+\paragraph{Euler equations.}
+In two space dimensions $(x,z)$ with potential temperature $\theta$ the
+compressible Euler equations read
+\begin{equation}\label{eq:euler}
+\begin{aligned}
+ \partial_t\rho&=-\partial_x(\rho u)-\partial_z(\rho w),\\
+ \partial_t(\rho u)&=-\partial_x(\rho uu)-\partial_z(\rho wu)-\partial_x p,\\
+ \partial_t(\rho w)&=-\partial_x(\rho uw)-\partial_z(\rho ww)-\partial_z p-\rho g,\\
+ \partial_t(\rho\theta)&=-\partial_x(\rho u\theta)-\partial_z(\rho w\theta),
+\end{aligned}
+\end{equation}
+with the equation of state and the Exner pressure $\Pi$
+\begin{equation*}
+ p=p_0\Big(\frac{R_d\,\rho\theta}{p_0}\Big)^{\gamma_a},\qquad
+ \Pi=\Big(\frac p{p_0}\Big)^{R_d/c_p},\qquad
+ p=R_d\,\Pi\,\rho\theta,\qquad
+ \frac{\partial p}{\partial(\rho\theta)}=\gamma_a\frac{p}{\rho\theta}
+ =\gamma_aR_d\Pi=\frac{c^2}{\theta},
+\end{equation*}
+$\gamma_a=c_p/c_v$, $c^2=\gamma_ap/\rho$. The state is
+$y=(\rho,\rho u,\rho w,\rho\theta)$; $\mathbf v=(u,w)$ and $\theta$ are
+derived quantities. The fast (acoustic) subsystem consists of
+\begin{itemize}
+\item the mass flux divergence in the equations for $\rho$ and
+  $\rho\theta$,
+\item the pressure gradient,
+\item and the buoyancy term.
+\end{itemize}
+The advecting velocities in the momentum equations and the advected
+potential temperature change slowly. Marking these frozen quantities in
+\textcolor{red}{red}, the partitioned system is
+\begin{equation}\label{eq:eulerred}
+\begin{aligned}
+ \partial_t\rho&=-\partial_x(\rho u)-\partial_z(\rho w),\\
+ \partial_t(\rho u)&=\textcolor{red}{-\partial_x(\rho uu)-\partial_z(\rho wu)}-\partial_x p,\\
+ \partial_t(\rho w)&=\textcolor{red}{-\partial_x(\rho uw)-\partial_z(\rho ww)}-\partial_z p-\rho g,\\
+ \partial_t(\rho\theta)&=-\partial_x(\rho u\textcolor{red}{\theta})-\partial_z(\rho w\textcolor{red}{\theta}).
+\end{aligned}
+\end{equation}
+Red quantities are evaluated at the first argument $y$, all others at
+the second argument $z$. The mass flux in the $\rho\theta$ equation is
+fast, the transported $\theta$ is frozen:
+$-\nabla\cdot\big((\rho\mathbf v)_z\theta_y\big)$. The pressure
+gradient still has to be partitioned. Since $p$ is a nonlinear function
+of $\rho\theta$, there are several possibilities (Section~\ref{sec:frozen}).
+
+\paragraph{Problem classes.}
+Important special cases of \eqref{eq:G} are
+\begin{align}
+ &\text{affine in the fast argument:} && F(y,z)=f(y)+\mathfrak B\big(w(y)\big)z, \tag{$\mathcal B$}\label{eq:B}\\
+ &\text{additive splitting:} && F(y,z)=f(y)+g(z), \tag{$\mathcal A$}\label{eq:A}\\
+ &\text{constant linear fast part:}   && F(y,z)=f(y)+Lz, \tag{$\mathcal L$}\label{eq:L}\\
+ &\text{frame representation:} && F(y,z)=\textstyle\sum_{k=1}^K f_k(y)\,E_k(z). \tag{$\mathcal F$}\label{eq:F}
+\end{align}
+In \eqref{eq:B} the linear operator $\mathfrak B(w)$ depends linearly on
+a set of frozen coefficient fields $w=w(y)$. This is the structure of
+the frozen Euler equations (Section~\ref{sec:bilinear}).
+Every \eqref{eq:G} system can be written as a partitioned system by
+doubling the unknowns, $u'=F(u,v)$, $v'=F(u,v)$, with $u(0)=v(0)$. Hence
+partitioned (P-)series apply. Since both components are equal, the
+colour of the root plays no role (Section~\ref{sec:trees}).
+
+\subsection{Other energy variables: a proposal for the partitioning}
+\label{sec:energy}
+
+Many CFD codes, and some atmospheric models, use internal or total
+energy instead of $\rho\theta$. The same principle applies: transported
+specific quantities and advecting velocities are frozen, mass fluxes and
+the pressure are fast. We propose the following partitionings; in the
+rest of the paper we use the potential temperature formulation
+\eqref{eq:eulerred}, as WRF and COSMO do.
+
+\paragraph{Internal energy.}
+With $\rho e$, $p=(\gamma_a-1)\rho e$ and the enthalpy $h=e+p/\rho$, the
+energy equation $\partial_t(\rho e)=-\nabla\cdot(\rho e\mathbf v)-p\nabla\cdot\mathbf v$
+is written as $-\nabla\cdot(\rho\mathbf v\,h)+\mathbf v\cdot\nabla p$
+and partitioned as
+\begin{equation*}
+ \partial_t(\rho e)=-\nabla\cdot\big((\rho\mathbf v)_z\,\textcolor{red}{h}\big)
+   +\textcolor{red}{\mathbf v}\cdot\nabla p_z,
+ \qquad p_z=(\gamma_a-1)(\rho e)_z .
+\end{equation*}
+\begin{itemize}
+\item The pressure is linear in the state, so no freezing of the
+  equation of state is needed in the momentum equations.
+\item The fast system has $c_f^2=(\gamma_a-1)h=\gamma_ap/\rho=c^2$, the
+  full sound speed.
+\item $F(y,y)$ is the original right-hand side. The term
+  $\mathbf v\cdot\nabla p$ is non-conservative.
+\end{itemize}
+
+\paragraph{Total energy.}
+With $\rho E=\rho e+\tfrac12\rho|\mathbf v|^2$, the total enthalpy
+$H=E+p/\rho$ and $p=(\gamma_a-1)(\rho E-\tfrac12\rho|\mathbf v|^2)$:
+\begin{gather*}
+ \partial_t(\rho E)=-\nabla\cdot\big((\rho\mathbf v)_z\,\textcolor{red}{H}\big)-g(\rho w)_z,\\
+ p_z=(\gamma_a-1)\big((\rho E)_z-\tfrac12\textcolor{red}{\mathbf v}\cdot(\rho\mathbf v)_z\big).
+\end{gather*}
+\begin{itemize}
+\item The pressure is bilinear in the frozen velocity and the fast
+  momentum.
+\item $F(y,y)$ is the original right-hand side, and the formulation is
+  conservative.
+\item The fast sound speed is $c_f^2=(\gamma_a-1)H$. It equals $c^2$ for
+  $\mathbf v=0$ and exceeds it by $(\gamma_a-1)|\mathbf v|^2/2$ otherwise.
+\end{itemize}
+
+In both energy formulations the pressure is linear or bilinear in the
+conserved variables, so its partitioning is unambiguous. Both lead to the
+structure \eqref{eq:B}. In the potential temperature formulation, $p$ is
+a nonlinear function of $\rho\theta$. This leads to the options of
+Section~\ref{sec:frozen}.
+
+\subsection{Outline}
+
+\begin{itemize}
+\item Section~\ref{sec:frozen}: partitioning of the pressure and the
+  bilinear structure.
+\item Sections~\ref{sec:methods}--\ref{sec:exponential}: the MIS methods
+  with polynomial coupling, their relation to other method classes, the
+  B-series, and the order conditions, explicitly up to order 4.
+\item Section~\ref{sec:discretization}: spatial discretizations (finite
+  volumes, DG with LMARS).
+\item Section~\ref{sec:inner}: the solution of the inner problems and
+  their cost.
+\item Section~\ref{sec:nonexact}: inexact inner solutions.
+\end{itemize}
+
+\section{Frozen formulations of the compressible Euler equations}
+\label{sec:frozen}
+
+\subsection{Frozen terms common to all options}
+
+As in \eqref{eq:eulerred}:
+\begin{itemize}
+\item the mass equation and the buoyancy $-\rho g$ are taken in the fast
+  argument;
+\item in the $\rho\theta$ equation the mass flux is fast and $\theta$ is
+  frozen;
+\item momentum advection is frozen completely or, as a variant, written
+  as $-\nabla\cdot\big((\rho\mathbf v)_z\otimes\mathbf v_y\big)$.
+\end{itemize}
+The options differ in the treatment of the pressure.
+
+\subsection{Option A: differentiate the pressure, freeze $\partial p/\partial(\rho\theta)$}
+
+The pressure gradient is written by the chain rule as
+$\nabla p=\frac{\partial p}{\partial(\rho\theta)}\nabla(\rho\theta)$ and
+the coefficient is frozen:
+\begin{equation*}
+ -\nabla p\ \leadsto\ -a(y)\,\nabla(\rho\theta)_z,\qquad
+ a=\frac{\partial p}{\partial(\rho\theta)}=\frac{c^2}{\theta}.
+\end{equation*}
+This is the linearized form of the original notes. The fast system
+carries the full sound speed $c$, and the frozen coefficient carries no
+acoustic information.
+
+On the continuous level $F_A(y,y)$ is the original right-hand side. On
+the discrete level, however,
+$a(y)\nabla_h(\rho\theta)\ne\nabla_hp(y)$ (the difference is of the size
+of the truncation error). In particular, a discretely hydrostatically
+balanced state, $\partial_{z,h}p=-\rho g$, is \emph{not} a steady state of
+$F_A(y,y)$. This is a known source of spurious circulations over steep
+terrain. Remedies are a reference-state formulation
+($p=\bar p(z)+p'$, linearizing only $p'$) or the following consistent
+variant.
+
+\paragraph{Option A$'$: consistent linearization about the frozen state.}
+Let $\mathfrak A(y)$ be the linear operator obtained by freezing as in
+Option~A (fast mass flux, frozen $\theta$, frozen $a$). Define
+\begin{equation}\label{eq:optionAprime}
+ F_{A'}(y,z)=\mathcal F_h(y)+\mathfrak A(y)\,(z-y).
+\end{equation}
+Then $F_{A'}(y,y)=\mathcal F_h(y)$ exactly: the original discretization
+and its discrete balances are preserved. Moreover $\partial_zF_{A'}=\mathfrak A(y)$,
+and the remaining slow part is
+\begin{equation*}
+ \partial_yF_{A'}(y,y)=\mathcal F_h'(y)-\mathfrak A(y).
+\end{equation*}
+In the pressure term this difference is
+$-\nabla_h(a\,\delta)+a\nabla_h\delta=-\delta\,\nabla_ha+O(\Delta x)$.
+It involves only the gradient of the background coefficient, a term of
+size $c^2/(\theta H)$ with scale height $H$, comparable to buoyancy
+frequencies and thus slow. The construction is the
+MIS analogue of linearizing the acoustic step about the current large
+time step state as in \cite{KlempSkamarockDudhia2007}, and of
+Rosenbrock-type linearizations. Since $\mathfrak A(y)$ is evaluated at
+every stage, it is not a $W$-method.
+
+\subsection{Option B: split $p=\frac{p}{\rho\theta}\cdot\rho\theta$, freeze the first factor}
+
+Write $p=\pi\cdot\rho\theta$ with $\pi=p/(\rho\theta)=R_d\Pi$ and freeze
+$\pi$:
+\begin{equation*}
+ -\nabla p\ \leadsto\ -\nabla\big(\pi(y)\,(\rho\theta)_z\big).
+\end{equation*}
+\begin{itemize}
+\item $F_B(y,y)=\mathcal F_h(y)$ holds exactly on the discrete level, for
+  any discretization of the gradient, since $\pi_y(\rho\theta)_y=p(y)$
+  cellwise. Discrete hydrostatic balance is preserved, and no extra
+  defect term as in \eqref{eq:optionAprime} is needed.
+\item The fast part sees only
+  $\partial_z(\pi\,\rho\theta)=\pi=c^2/(\gamma_a\theta)$. Hence the fast
+  system has the reduced sound speed $c/\sqrt{\gamma_a}\approx0.85\,c$.
+\item Since $\partial\pi/\partial(\rho\theta)=(\gamma_a-1)\pi/(\rho\theta)$,
+  the slow part contains the remaining fraction
+  $(\gamma_a-1)/\gamma_a\approx0.29$ of the acoustic coupling
+  $\nabla(a\,\delta\rho\theta)$. The outer (explicit) method therefore
+  sees an acoustic component. It is not clear a priori whether this
+  restricts the large step $h$, because the fast and slow
+  parts of one wave equation interact. This has to be checked with the
+  linear stability function of a split acoustic test problem
+  (Section~\ref{sec:open}).
+\end{itemize}
+
+\subsection{Comparison}
+
+\begin{center}
+\begin{tabular}{lccc}
+\toprule
+ & A & A$'$ & B\\
+\midrule
+$F(y,y)=\mathcal F_h(y)$ (discrete) & no & yes & yes\\
+discrete hydrostatic balance preserved & no$^{*}$ & yes & yes\\
+sound speed in fast part & $c$ & $c$ & $c/\sqrt{\gamma_a}$\\
+acoustic coupling in slow part & none & none ($-\delta\nabla_h a$) & $(\gamma_a-1)/\gamma_a$\\
+frozen fields per stage & $\theta$, $a$ & $\theta$, $a$, $\mathfrak A(Y_j)Y_j$ & $\theta$, $\pi$\\
+inner-step operator & \multicolumn{3}{c}{same bilinear structure \eqref{eq:B}}\\
+\bottomrule
+\end{tabular}
+
+\smallskip
+{\small $^*$ unless a hydrostatic reference state is subtracted.}
+\end{center}
+
+\subsection{Bilinear structure and summation of the frozen terms}
+\label{sec:bilinear}
+
+In all three options the frozen right-hand side is affine in $z$, and
+the operator acting on $z$ depends \emph{linearly} on frozen coefficient
+fields $w(y)$:
+\begin{equation}\label{eq:bilinear}
+ F(y,z)=f(y)+\mathfrak B_0z+\mathfrak B_1\big(w(y)\big)z ,
+\end{equation}
+with
+\begin{itemize}
+\item $\mathfrak B_0$: the $w$-independent linear terms (mass flux
+  divergence, buoyancy);
+\item $(w,z)\mapsto\mathfrak B_1(w)z$: bilinear. Examples are
+  $\theta_y(\rho\mathbf v)_z$, $a_y\nabla(\rho\theta)_z$,
+  $\nabla(\pi_y(\rho\theta)_z)$, and $(\rho\mathbf v)_z\otimes\mathbf v_y$
+  in the variant.
+\end{itemize}
+For each option:
+\begin{itemize}
+\item Option A: $w=(\theta,a)$ and $f(y)$ is the frozen momentum
+  advection.
+\item Option B: $w=(\theta,\pi)$ and $f(y)$ is the frozen momentum
+  advection.
+\item Option A$'$: $f(y)=\mathcal F_h(y)-\mathfrak B_0y-\mathfrak B_1(w(y))y$.
+\end{itemize}
+
+\begin{lemma}[summation of frozen terms]\label{lem:summation}
+For \eqref{eq:bilinear} and any polynomials $p_{ij}$,
+\begin{gather*}
+ \sum_{j<i}p_{ij}(\tau)F(Y_j,z)
+ =\sum_{j<i}p_{ij}(\tau)f(Y_j)+q_i(\tau)\mathfrak B_0z
+  +\mathfrak B_1\big(W_i(\tau)\big)z,\\
+ W_i(\tau)=\sum_{k=0}^{K}\tau^kW_{ik},\qquad W_{ik}=\sum_{j<i}a_{ijk}\,w(Y_j),
+\end{gather*}
+with $q_i=\sum_jp_{ij}$.
+\end{lemma}
+
+Thus each inner step needs \emph{one} application of the bilinear
+operator, independent of the number of stages $j<i$ that are coupled.
+This holds also for polynomial coupling: the $K+1$ combined fields
+$W_{ik}$ are formed once per stage, and $W_i(\tau)$ is formed at each
+inner step with $K$ axpy operations. Without the bilinear structure the
+naive evaluation of $\sum_jp_{ij}F(Y_j,Z)$ costs $i-1$ full evaluations
+per inner step. For $K=0$ the combination is simply a weighted average
+of the frozen fields, e.g.\
+$\bar\theta_i=\sum_j\beta_{ij}\theta(Y_j)$, which is how split-explicit
+codes are usually written.
+
+\begin{remark}[consequences for the order conditions]
+Since $\partial_z^2F=0$, all elementary differentials with a vertex that
+has two or more white children vanish. Table~\ref{tab:treecount} lists
+the number of remaining trees: at order 4 there are 20 instead of 26, at
+order 5 there are 73 instead of 107. A method constructed for
+\eqref{eq:B} only has to satisfy these conditions. Note that
+\eqref{eq:B} contains \eqref{eq:L} and the linearized frame
+representation \eqref{eq:F}.
+\end{remark}
+
+% =====================================================================
+\section{MIS methods with polynomial coupling}
+\label{sec:methods}
+
+Throughout, $\tau\in[0,1]$ denotes the normalized time of the inner
+problems.
+
+\subsection{Definition}
+
+\begin{definition}[MIS method with polynomial coupling]\label{def:mis}
+Let $s\ge1$ and for $2\le i\le s+1$, $1\le j<i$ let $\alpha_{ij}\in\R$
+and polynomials
+\begin{equation*}
+ p_{ij}(\tau)=\sum_{k=0}^{K}a_{ijk}\,\tau^k,\qquad
+ g_{ij}(\tau)=\sum_{k=0}^{K}\gamma_{ijk}\,\tau^k
+\end{equation*}
+be given. One step $y_n\mapsto y_{n+1}$ is defined by $Y_1=y_n$ and for
+$i=2,\dots,s+1$
+\begin{align}
+ Z_i(0) &= y_n+\sum_{j=1}^{i-1}\alpha_{ij}\,(Y_j-y_n), \label{eq:mis1}\\
+ Z_i'(\tau) &= \sum_{j=1}^{i-1}g_{ij}(\tau)\,(Y_j-y_n)
+   + h\sum_{j=1}^{i-1}p_{ij}(\tau)\,F\big(Y_j,Z_i(\tau)\big),
+   \qquad \tau\in[0,1], \label{eq:mis2}\\
+ Y_i &= Z_i(1), \label{eq:mis3}
+\end{align}
+and $y_{n+1}=Y_{s+1}$. We call $K$ the \emph{coupling degree}; $K=0$ is
+\emph{constant coupling}. Constant $g_{ij}\equiv\gamma_{ij}$ gives the
+generalized split-explicit methods of \cite{KnothWensch2014}.
+\end{definition}
+
+In the additive case \eqref{eq:A} the fast part is integrated with the
+``speed'' $q_i(\tau):=\sum_jp_{ij}(\tau)$, i.e.\ over the fast time
+$Q_i(1)$, $Q_i(\tau):=\int_0^\tau q_i$. We call
+\begin{equation}\label{eq:internalconsistency}
+ q_i(\tau)\equiv d_i \ \text{(constant)},\qquad\text{i.e.}\quad
+ \sum_j a_{ij0}=d_i,\quad \sum_ja_{ijk}=0\ (k\ge1),
+\end{equation}
+\emph{uniform fast speed}. It is satisfied by all classical methods
+below. Note that uniform fast speed does not make the inner problem
+autonomous: the frozen coefficients $W_i(\tau)$ of
+Lemma~\ref{lem:summation} still depend on $\tau$.
+
+\begin{remark}
+The coefficients used in \texttt{BSeries.jl}
+(\texttt{MultirateInfinitesimalSplitMethod(A, D, G, c)}) correspond to
+$A_{ij}=p_{ij}$ (polynomial matrix of size $(s+1)\times s$),
+$D_{ij}=\alpha_{ij}$, and constant $G_{ij}=\gamma_{ij}$; the
+implementation \cite{KetchesonRanocha2023} follows the algorithm of
+Section~\ref{sec:algorithm}. Polynomial $g_{ij}$ require a one-line
+change there (multiply by the polynomial before integrating).
+\todo{cross-check conventions against the Fortran code
+\texttt{MISBI\_Mod.f90}.}
+\end{remark}
+
+\subsection{Stage times and the base method}
+
+Let $P_{ij}:=\int_0^1p_{ij}$ and $\Gamma_{ij}:=\int_0^1g_{ij}$. The
+\emph{stage times} $c_i$ are defined by the method applied to $y'=1$:
+\begin{equation}\label{eq:ci}
+ c_1=0,\qquad c_i=\sum_{j<i}(\alpha_{ij}+\Gamma_{ij})\,c_j+\sum_{j<i}P_{ij}.
+\end{equation}
+If $F$ does not depend on its second argument, the inner problems are
+pure quadratures and
+$Y_i-y_n=\sum_j(\alpha_{ij}+\Gamma_{ij})(Y_j-y_n)+h\sum_jP_{ij}F(Y_j)$.
+With the strictly lower triangular $(s+1)\times(s+1)$ matrices
+$\bar A=(\alpha_{ij}+\Gamma_{ij})$ and $\bar P=(P_{ij})$ this is an
+explicit Runge--Kutta method, the \emph{base method}, with
+\begin{equation}\label{eq:basemethod}
+ \begin{pmatrix}A^{RK}\\ b^{RK\,T}\end{pmatrix}=(I-\bar A)^{-1}\bar P .
+\end{equation}
+Consequently the conditions of all trees with only black vertices
+(Section~\ref{sec:trees}) are exactly the order conditions of the base
+method. The polynomial shape of $p_{ij}$ and $g_{ij}$ enters only the
+trees with white vertices.
+
+\subsection{Role of the polynomial coefficients}
+\label{sec:polygamma}
+
+Both kinds of coupling enter the inner problem as polynomials in $\tau$.
+\begin{itemize}
+\item \emph{$p_{ij}(\tau)$: frozen slow information.} The inner problem
+  sees a time-dependent combination of the frozen right-hand sides, e.g.\
+  a linear interpolation in time between stages (Example~\ref{ex:etd}).
+  With $K=0$ the slow tendency is constant over the inner integration,
+  as in classical split-explicit schemes.
+\item \emph{$g_{ij}(\tau)$: increments of previous stages.} $Y_j-y_n$
+  contains the fast evolution over $[0,c_jh]$, not only frozen slow
+  information.
+\item \emph{Separation of roles.} The shape of $p_{ij}$ and $g_{ij}$
+  enters only the trees with white vertices; the base method sees only
+  $\int_0^1p_{ij}$ and $\int_0^1g_{ij}$.
+\item \emph{Cost.} Both terms are free in the implementation. Together
+  they form a forcing $r_i(\tau)=\sum_{k=0}^K\tau^kR_{ik}$ with
+  $R_{ik}=\sum_j\big(a_{ijk}f(Y_j)+\tfrac1h\gamma_{ijk}(Y_j-y_n)\big)$,
+  $K+1$ vectors per stage (Section~\ref{sec:inner}).
+\item \emph{Caution: $g_{ij}\ne0$ and stiffness.} For a stiff fast part,
+  $Y_j-y_n$ is not $O(h)$. For $y'=Ly$ it equals $(e^{c_jhL}-I)y_n$,
+  which is bounded but $O(1)$ for fast modes. The $g_{ij}$-terms then
+  enter the stability function, generate extra stiff order conditions,
+  and destroy the automatic exactness for the pure fast problem
+  (Theorem~\ref{thm:exactfast}).
+\end{itemize}
+A natural strategy is therefore to construct first methods with
+$g_{ij}\equiv0$ and $\alpha$ of the ``restart'' type of
+Theorem~\ref{thm:exactfast}. The polynomial $g_{ij}$ (and general
+$\alpha$) then serve as additional free parameters for stability
+optimization, as the constant $\gamma_{ij}$ did in \cite{KnothWensch2014}.
+
+\subsection{Classical methods as special cases}
+\label{sec:specialcases}
+
+\paragraph{Classical MIS methods.}
+In \cite{WenschKnothGalant2009} the inner problem is posed on
+$[0,d_ih]$ with constant coefficients $\beta_{ij}$ and
+$d_i=\sum_j\beta_{ij}$. After rescaling the inner time to
+$\tau\in[0,1]$ this is Definition~\ref{def:mis} with $K=0$,
+$p_{ij}\equiv\beta_{ij}$, uniform fast speed $d_i$. The generalized
+split-explicit methods of \cite{KnothWensch2014} use the additional
+$\gamma_{ij}$ terms.
+
+\paragraph{Split-explicit Runge--Kutta (Wicker--Skamarock).}
+The RK3 scheme of \cite{WickerSkamarock2002} integrates every stage from
+$y_n$ with the slow tendency of the previous stage held fixed:
+$\alpha=0$, $g_{ij}\equiv0$, $c=(0,\tfrac13,\tfrac12,1)$,
+$p_{i,i-1}\equiv c_i$, all other $p_{ij}=0$. It is of order 3 only for
+linear problems; this is visible in the order conditions (the base method
+is a three-stage RK with only a subdiagonal).
+
+\paragraph{Telescopic (MRI-GARK type) methods.}
+If $\alpha_{i,i-1}=1$ and all other $\alpha_{ij}=0$, $g=0$, then
+$Z_i(0)=Y_{i-1}$ and the stages form a chain of inner integrations over
+consecutive fast time intervals of length $d_i=c_i-c_{i-1}$. With
+polynomial $p_{ij}$ these are the explicit multirate infinitesimal GARK
+methods of Sandu \cite{Sandu2019} (in the additive setting); the uniform
+fast speed \eqref{eq:internalconsistency} corresponds to its internal
+consistency conditions. \todo{check correspondence of the coefficients
+$\gamma_{ij}^{\{k\}}$ in \cite{Sandu2019} with $a_{ijk}$, including the
+$1/k!$ or $1/h^k$ normalisation.} Related classes are the multirate
+exponential RK (MERK) methods \cite{LuanChinomonaReynolds2020} and the
+IMEX-MRI-GARK methods \cite{ChinomonaReynolds2021}.
+
+\paragraph{Exponential Runge--Kutta methods.}
+See Section~\ref{sec:exponential}: for the linear fast part \eqref{eq:L}
+the inner problems can be solved by variation of constants, and MIS
+methods with $\alpha=0$, $g_{ij}\equiv0$ and uniform fast speed $d_i=c_i$ are
+exactly the exponential RK methods whose coefficients are combinations of
+$\varphi_k(c_ihL)$.
+
+\paragraph{Commutator-free Lie group methods.}
+For the frame representation \eqref{eq:F}, $F(Y_j,\cdot)$ is the vector
+field with coefficients frozen at $Y_j$. The exact flow over the time
+$h\beta$ of the frozen field $\sum_j\beta_jF(Y_j,\cdot)$ is the
+exponential used in commutator-free Lie group methods
+\cite{CelledoniMarthinsenOwren2003,Owren2006}. A commutator-free method
+that composes several such exponentials per stage is a telescopic MIS
+method with constant coupling, where one stage of the Lie group method
+corresponds to several MIS stages. With polynomial coupling one gets
+``commutator-free methods with time-dependent frozen fields''.
+\todo{work out the exact correspondence; do Owren's order conditions
+coincide with ours restricted to \eqref{eq:F}?}
+
+\paragraph{Semi-implicit / IMEX schemes.}
+Schemes of the form \cite{BoscarinoFilbetRusso2016}
+\begin{equation*}
+ Y_i=y_n+\sum_{j<i}\hat a_{ij}k_j,\quad \tilde Z_i=y_n+\sum_{j<i}a_{ij}k_j,\quad
+ k_i=hF\big(Y_i,\tilde Z_i+a_{ii}k_i\big),\quad y_{n+1}=y_n+\sum_ib_ik_i
+\end{equation*}
+also freeze the first argument and treat the second implicitly. They can
+be read as MIS-type methods in which the inner problem is replaced by a
+single implicit (DIRK) step: a case of \emph{non-exact} inner solution
+(Section~\ref{sec:nonexact}).
+
+\paragraph{Methods not contained.}
+Integrating-factor (Lawson) methods \cite{Lawson1967} use
+$e^{(c_i-c_j)hL}f(Y_j)$, i.e.\ the slow tendency is transported by the
+fast flow. In MIS form this would require an impulsive forcing at
+$\tau=c_j/c_i$, which is not polynomial. Such terms can at most be
+generated through the initial value mixing $\alpha_{ij}$.
+
+\begin{question}
+Characterize the exponential integrators (Lawson, exponential RK with
+mixed arguments $\varphi_k(c_jhL)$ in stage $i$, exponential Rosenbrock
+methods \cite{HochbruckOstermannSchweitzer2009} with $L=\partial_y\mathcal
+F(y_n)$) that are MIS methods in the sense of Definition~\ref{def:mis},
+possibly with $\alpha\neq0$.
+\end{question}
+
+% =====================================================================
+% =====================================================================
+\section{Bicoloured trees and B-series}
+\label{sec:trees}
+
+\subsection{Trees and elementary differentials}
+
+Let $\T$ be the set of rooted trees whose \emph{non-root} vertices are
+coloured black (\,\Tb\,) or white. The colour of a vertex tells which
+argument of the $F$ at the \emph{parent} vertex is differentiated:
+black means the first (slow, frozen) argument, white the second (fast)
+argument. Every tree is $t=[t_1,\dots,t_m]$, where the subtrees $t_k$
+carry the colour $\kappa(t_k)\in\{\mathrm b,\mathrm w\}$ of their roots.
+The \emph{elementary differentials} for \eqref{eq:G} are
+\begin{equation*}
+ \mathbf F(\bullet)=F(y,y),\qquad
+ \mathbf F([t_1,\dots,t_m])
+ =\partial_{\kappa(t_1)}\cdots\partial_{\kappa(t_m)}F(y,y)
+  \big[\mathbf F(t_1),\dots,\mathbf F(t_m)\big],
+\end{equation*}
+with $\partial_{\mathrm b}=\partial_y$, $\partial_{\mathrm w}=\partial_z$.
+Order $|t|$, symmetry $\sigma(t)$ (automorphisms preserving colours) and
+density $\gamma(t)=|t|\prod_k\gamma(t_k)$ are defined as usual. Since
+$y'=F(y,y)$, the exact solution is
+\begin{equation*}
+ y(t_n+h)=y_n+\sum_{t\in\T}\frac{h^{|t|}}{\sigma(t)\gamma(t)}\mathbf F(t)(y_n),
+\end{equation*}
+independent of the colours. The numbers of trees of order $1,\dots,6$
+are $1,2,7,26,107,458$ (half the number of fully bicoloured trees). For
+order $\le3$:
+\begin{center}
+\begin{tabular}{ccccccccccc}
+\toprule
+$t$ & \Tb & \Tbb & \Tbw & \Tbbb & \Tbbw & \Tbww & \Tbbbl & \Tbbwl & \Tbwbl & \Tbwwl\\
+\midrule
+$\gamma(t)$ & 1 & 2 & 2 & 3 & 3 & 3 & 6 & 6 & 6 & 6\\
+$\sigma(t)$ & 1 & 1 & 1 & 2 & 1 & 2 & 1 & 1 & 1 & 1\\
+\bottomrule
+\end{tabular}
+\end{center}
+(the root is drawn black; its colour is irrelevant).
+
+For the special cases the set of relevant trees shrinks:
+\begin{itemize}
+\item \eqref{eq:B}: $\partial_z^2F=0$, so a vertex has at most one
+  white child (any number of black children).
+\item \eqref{eq:A}: $\partial_y\partial_zF=0$, so all children of a
+  vertex have the same colour.
+\item \eqref{eq:L}: in addition $\partial_z^2F=0$. A vertex has either
+  only black children or exactly one white child, so white vertices form
+  ``$L$-chains''. These are the trees of exponential integrators.
+\item Trees with only black vertices give the base method
+  \eqref{eq:basemethod}. Trees with only white non-root vertices give the
+  pure fast problem $y'=g(y)$.
+\end{itemize}
+
+\begin{table}[ht]
+\centering
+\caption{Number of trees (non-root vertices bicoloured, root colour
+irrelevant) per order for the problem classes of
+Section~\ref{sec:motivation}, i.e.\ number of order conditions at
+each order. Computed by direct enumeration.}
+\label{tab:treecount}
+\begin{tabular}{lrrrrrrr}
+\toprule
+order & 1 & 2 & 3 & 4 & 5 & 6 & 7\\\midrule
+general \eqref{eq:G} & 1 & 2 & 7 & 26 & 107 & 458 & 2058\\
+affine in $z$ \eqref{eq:B} & 1 & 2 & 6 & 20 & 73 & 278 & 1106\\
+additive \eqref{eq:A} & 1 & 2 & 6 & 18 & 60 & 204 & 734\\
+constant linear \eqref{eq:L} & 1 & 2 & 5 & 13 & 37 & 108 & 332\\
+classical RK (black only) & 1 & 1 & 2 & 4 & 9 & 20 & 48\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{B-series with polynomial coefficients}
+
+Write the stage values and the inner solutions as B-series
+\begin{equation*}
+ Y_i=B(\eta_i,y_n),\qquad Z_i(\tau)=B\big(\zeta_i(\tau),y_n\big),
+ \qquad B(a,y)=a(\emptyset)y+\sum_{t\in\T}\frac{h^{|t|}a(t)}{\sigma(t)}\mathbf F(t)(y),
+\end{equation*}
+with $\eta_i(\emptyset)=\zeta_i(\tau;\emptyset)=1$. The coefficients
+$\zeta_i(\tau;t)$ are polynomials in $\tau$.
+
+\begin{theorem}\label{thm:recursion}
+The coefficients of the method of Definition~\ref{def:mis} satisfy, for
+$t=[t_1,\dots,t_m]$, $2\le i\le s+1$, $\eta_1(t)=0$,
+\begin{align*}
+ \zeta_i(0;t) &= \sum_{j<i}\alpha_{ij}\,\eta_j(t),\\
+ \frac{\dd}{\dd\tau}\zeta_i(\tau;t)
+  &= \sum_{j<i}g_{ij}(\tau)\,\eta_j(t)
+   + \sum_{j<i}p_{ij}(\tau)\prod_{k=1}^m
+     \begin{cases}\eta_j(t_k), & \kappa(t_k)=\mathrm b,\\
+                  \zeta_i(\tau;t_k), & \kappa(t_k)=\mathrm w,\end{cases}\\
+ \eta_i(t) &= \zeta_i(1;t).
+\end{align*}
+The method has order $p$ if and only if $\eta_{s+1}(t)=1/\gamma(t)$ for
+all $t\in\T$ with $|t|\le p$ (for generic $F$).
+\end{theorem}
+
+\begin{proof}[Sketch]
+Insert the B-series of $Y_j$ and $Z_i(\tau)$ into $hF(Y_j,Z_i(\tau))$
+and expand in a Taylor series in both arguments. The coefficient of
+$\mathbf F([t_1,\dots,t_m])$ is the product of the coefficients of the
+subtrees, taken from the series of the argument that is differentiated.
+This is the standard P-series composition \cite{HairerNorsettWanner1993}.
+Integrate in $\tau$ and use \eqref{eq:mis1}, \eqref{eq:mis3}.
+\end{proof}
+
+Since $\zeta_i(\tau;t)$ is a polynomial, the recursion is exact
+rational arithmetic on polynomials. The degree in $\tau$ grows at most
+like $\deg\zeta_i(\cdot;t)\le |t|(K+1)$.
+
+% =====================================================================
+\section{Order conditions}
+\label{sec:orderconditions}
+
+\subsection{Notation and general form}
+
+For the coefficients of Definition~\ref{def:mis} define the polynomials
+\begin{equation*}
+ P_{ij}(\tau)=\int_0^\tau p_{ij},\qquad G_{ij}(\tau)=\int_0^\tau g_{ij},\qquad
+ q_i=\sum_{j<i}p_{ij},\qquad Q_i=\sum_{j<i}P_{ij},
+\end{equation*}
+the strictly lower triangular $(s+1)\times(s+1)$ matrices
+$\bar A=\big(\alpha_{ij}+G_{ij}(1)\big)$ and $\bar P=\big(P_{ij}(1)\big)$,
+and
+\begin{equation*}
+ \Lambda=(I-\bar A)^{-1},\qquad \hat b^T=e_{s+1}^T\Lambda,\qquad
+ \mathfrak A=\Lambda\bar P .
+\end{equation*}
+The stage times are $c=\Lambda\big(Q_i(1)\big)_i$ (cf.\ \eqref{eq:ci}),
+and the \emph{inner time} of stage $i$ is the polynomial
+\begin{equation*}
+ z_i(\tau):=\zeta_i(\tau;\bullet)=\sum_{j<i}\big(\alpha_{ij}+G_{ij}(\tau)\big)c_j+Q_i(\tau),
+ \qquad z_i(0)=\sum_j\alpha_{ij}c_j,\quad z_i(1)=c_i .
+\end{equation*}
+$\mathfrak A$ is the coefficient matrix of the base method
+\eqref{eq:basemethod}: its rows $2,\dots,s$ are the stage coefficients,
+its last row is $b^{RK\,T}$.
+
+\begin{theorem}[general form of the order conditions]\label{thm:general}
+For $t=[t_1,\dots,t_m]$ let
+\begin{equation}\label{eq:dit}
+ d_i(t)=\sum_{j<i}\int_0^1p_{ij}(\sigma)
+   \prod_{k:\,\kappa(t_k)=\mathrm b}\eta_j(t_k)
+   \prod_{k:\,\kappa(t_k)=\mathrm w}\zeta_i(\sigma;t_k)\dd\sigma .
+\end{equation}
+Then
+\begin{equation*}
+ \eta(t)=\Lambda\,d(t),\qquad
+ \zeta_i(\tau;t)=\sum_{j<i}\big(\alpha_{ij}+G_{ij}(\tau)\big)\eta_j(t)
+   +\sum_{j<i}\int_0^\tau p_{ij}(\sigma)\prod\cdots\dd\sigma,
+\end{equation*}
+with the same products as in \eqref{eq:dit}. The method has order $p$ if
+and only if
+\begin{equation}\label{eq:oc}
+ \hat b^Td(t)=\sum_{i=2}^{s+1}\hat b_i\,d_i(t)=\frac1{\gamma(t)}
+ \qquad\text{for all }t\in\T,\ |t|\le p .
+\end{equation}
+\end{theorem}
+
+\begin{proof}
+Integrating the recursion of Theorem~\ref{thm:recursion} from $0$ to $1$
+gives $\eta_i(t)=\sum_j\bar A_{ij}\eta_j(t)+d_i(t)$, i.e.\
+$(I-\bar A)\eta(t)=d(t)$. The formula for $\zeta_i$ is the integral from
+$0$ to $\tau$.
+\end{proof}
+
+The structure is that of Runge--Kutta conditions $b^T\Phi(t)=1/\gamma(t)$:
+\begin{itemize}
+\item $\hat b$ plays the role of the weights;
+\item $d_i(t)$ is a ``stage increment'' that integrates the product of
+  the subtree coefficients against the coupling polynomials;
+\item black subtrees contribute stage values $\eta_j$ of the
+  \emph{coupled} stage $j$;
+\item white subtrees contribute the \emph{inner} coefficients
+  $\zeta_i(\sigma;\cdot)$ of the \emph{current} stage $i$, evaluated
+  along the inner time.
+\end{itemize}
+Since all quantities are polynomials, every integral is evaluated
+exactly with $\int_0^1\sigma^k\dd\sigma=1/(k+1)$. Every condition is
+therefore a polynomial equation in $\alpha_{ij}$, $a_{ijk}$,
+$\gamma_{ijk}$.
+
+\subsection{Explicit conditions up to order 3}
+
+Table~\ref{tab:oc3} lists $d_i(t)$ for all ten trees of order $\le3$; the
+conditions are $\hat b^Td(t)=1/\gamma(t)$. The auxiliary stage
+quantities are
+\begin{align*}
+ \eta(\Tbb)&=\Lambda\Big(\sum_jP_{ij}(1)c_j\Big)_i=\mathfrak Ac, &
+ \eta(\Tbw)&=\Lambda\Big(\int_0^1q_iz_i\Big)_i,\\
+ \zeta_i(\sigma;\Tbb)&=\sum_j\big(\alpha_{ij}+G_{ij}(\sigma)\big)\eta_j(\Tbb)+\sum_jP_{ij}(\sigma)c_j, &
+ \zeta_i(\sigma;\Tbw)&=\sum_j\big(\alpha_{ij}+G_{ij}(\sigma)\big)\eta_j(\Tbw)+\int_0^\sigma q_iz_i .
+\end{align*}
+
+\begin{table}[ht]
+\centering
+\caption{Order conditions $\sum_i\hat b_id_i(t)=1/\gamma(t)$ up to
+order 3 for the general method of Definition~\ref{def:mis}. Trees are
+drawn with the root at the bottom (root colour irrelevant). Column ``class'' refers
+to Theorem~\ref{thm:exactfast}: B = base method condition, F =
+automatically satisfied, C = coupling condition, -- = implied.}
+\label{tab:oc3}
+\renewcommand{\arraystretch}{1.6}
+\begin{tabular}{rcllc}
+\toprule
+order & $t$ & $d_i(t)$ & $1/\gamma(t)$ & class\\\midrule
+1 & \Tb & $Q_i(1)$ & $1$ & B\\\midrule
+2 & \Tbb & $\sum_jP_{ij}(1)\,c_j$ & $\frac12$ & B\\
+  & \Tbw & $\int_0^1q_i(\sigma)\,z_i(\sigma)\dd\sigma$ & $\frac12$ & F\\\midrule
+3 & \Tbbb & $\sum_jP_{ij}(1)\,c_j^2$ & $\frac13$ & B\\
+  & \Tbbw & $\sum_jc_j\int_0^1p_{ij}(\sigma)\,z_i(\sigma)\dd\sigma$ & $\frac13$ & C\\
+  & \Tbww & $\int_0^1q_i(\sigma)\,z_i(\sigma)^2\dd\sigma$ & $\frac13$ & F\\
+  & \Tbbbl & $\sum_jP_{ij}(1)\,\eta_j(\Tbb)$ & $\frac16$ & B\\
+  & \Tbbwl & $\sum_jP_{ij}(1)\,\eta_j(\Tbw)$ & $\frac16$ & --\\
+  & \Tbwbl & $\int_0^1q_i(\sigma)\,\zeta_i(\sigma;\Tbb)\dd\sigma$ & $\frac16$ & --\\
+  & \Tbwwl & $\int_0^1q_i(\sigma)\,\zeta_i(\sigma;\Tbw)\dd\sigma$ & $\frac16$ & F\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The order 4 conditions (26 trees) are listed in
+Appendix~\ref{app:order4}. They were generated from \eqref{eq:dit}. All
+formulas of Table~\ref{tab:oc3} were checked against the recursion of
+Theorem~\ref{thm:recursion} for random methods with general $\alpha$,
+$g_{ij}$ and $K=2$ (Section~\ref{sec:algorithm}).
+
+\subsection{Special variants and their order condition theorems}
+\label{sec:specialtheorems}
+
+\paragraph{Base method.}
+If $F$ does not depend on $z$, only black trees remain and
+\eqref{eq:oc} reduces to the Runge--Kutta conditions of $\mathfrak A$:
+
+\begin{proposition}\label{prop:base}
+For trees with only black vertices, $\eta(t)$ is the Runge--Kutta
+elementary weight of the base method $\mathfrak A=\Lambda\bar P$. In
+particular, order $p$ of the MIS method implies order $p$ of the base
+method.
+\end{proposition}
+
+\paragraph{Methods that are exact for the fast part.}
+The most important subclass consists of methods whose inner problems
+start at a previous stage and contain no $(Y_j-y_n)$ terms:
+\begin{equation}\label{eq:restart}
+ g_{ij}\equiv0,\qquad Z_i(0)=Y_{k(i)}\ \text{for some }k(i)<i
+ \quad(\text{i.e.\ row $i$ of $\alpha$ is $e_{k(i)}^T$, or $0$ if $k(i)=1$}).
+\end{equation}
+It contains:
+\begin{itemize}
+\item the classical MIS methods with $Z_i(0)=y_n$;
+\item the telescopic methods with $Z_i(0)=Y_{i-1}$, in particular
+  MRI-GARK \cite{Sandu2019};
+\item the exponential RK methods of Section~\ref{sec:exponential};
+\item arbitrary polynomial coupling $p_{ij}$ (uniform fast speed is
+  \emph{not} required).
+\end{itemize}
+Under \eqref{eq:restart}:
+\begin{itemize}
+\item $\Lambda$ has a simple structure, $\eta_i=\eta_{k(i)}+d_i$;
+\item hence $\hat b_i=1$ for the stages on the \emph{chain}
+  $s+1\to k(s+1)\to k(k(s+1))\to\dots\to1$, and $\hat b_i=0$ otherwise;
+\item the inner time is $z_i(\sigma)=c_{k(i)}+Q_i(\sigma)$.
+\end{itemize}
+
+\begin{theorem}\label{thm:exactfast}
+Assume \eqref{eq:restart} and $c_{s+1}=1$.
+\begin{enumerate}[label=(\alph*)]
+\item For every tree $u$ whose non-root vertices are all white,
+  $\eta_i(u)=c_i^{|u|}/\gamma(u)$ and
+  $\zeta_i(\sigma;u)=z_i(\sigma)^{|u|}/\gamma(u)$. In particular all
+  pure fast conditions (class F) are satisfied.
+\item For all stages
+  \begin{equation*}
+   \eta_i(\Tbbwl)=\tfrac12\,\eta_i(\Tbbb),\qquad
+   \eta_i(\Tbbw)+\eta_i(\Tbwbl)=c_i\,\eta_i(\Tbb).
+  \end{equation*}
+\item The method has order 3 if and only if the base method $\mathfrak A$
+  has order 3 and the single coupling condition
+  \begin{equation}\label{eq:coupling3}
+   \sum_{i\in\text{chain}}\ \sum_{j<i}c_j\int_0^1p_{ij}(\sigma)\big(c_{k(i)}+Q_i(\sigma)\big)\dd\sigma=\frac13
+  \end{equation}
+  holds.
+\end{enumerate}
+\end{theorem}
+
+\begin{proof}
+(a) For $F(y,z)=g(z)$ the inner problem is $Z_i'=hq_i(\tau)g(Z_i)$,
+$Z_i(0)=Y_{k(i)}$. This is the flow of $g$ reparametrized in time; hence
+$Z_i(\sigma)$ is the exact flow over the time $h(c_{k(i)}+Q_i(\sigma))=hz_i(\sigma)$,
+provided $Y_{k(i)}$ is the exact flow over $hc_{k(i)}$. Induction over
+$i$ gives the claim for $\zeta$ and $\eta$. The coefficients of the
+exact flow over time $hc$ are $c^{|u|}/\gamma(u)$.
+
+(b) By (a), $\eta_j(\Tbw)=c_j^2/2$, so
+$d_i(\Tbbwl)=\tfrac12d_i(\Tbbb)$. For the second identity, by (a) and
+integration by parts with $Q_i'=q_i$, $P_{ij}'=p_{ij}$:
+\begin{align*}
+ d_i(\Tbbw)+d_i(\Tbwbl)
+ &=\sum_jc_j\int_0^1p_{ij}\big(c_{k}+Q_i\big)
+  +\int_0^1q_i\Big(\eta_{k}(\Tbb)+\sum_jP_{ij}c_j\Big)\\
+ &=c_k\sum_jP_{ij}(1)c_j+\sum_jc_j\big[P_{ij}Q_i\big]_0^1+Q_i(1)\eta_k(\Tbb)\\
+ &=c_i\big(\eta_i(\Tbb)-\eta_k(\Tbb)\big)+(c_i-c_k)\eta_k(\Tbb)
+  =c_i\eta_i(\Tbb)-c_k\eta_k(\Tbb),
+\end{align*}
+with $k=k(i)$, $c_i=c_k+Q_i(1)$ and
+$\eta_i(\Tbb)=\eta_k(\Tbb)+\sum_jP_{ij}(1)c_j$. Since
+$\eta_i=\eta_k+d_i$, induction over $i$ gives the identity.
+
+(c) By (a) the conditions for \Tbw, \Tbww, \Tbwwl\ hold. By (b),
+$\eta_{s+1}(\Tbbwl)=\tfrac16\iff\eta_{s+1}(\Tbbb)=\tfrac13$, and, given
+$\eta_{s+1}(\Tbb)=\tfrac12$,
+$\eta_{s+1}(\Tbwbl)=\tfrac16\iff\eta_{s+1}(\Tbbw)=\tfrac13$, which is
+\eqref{eq:coupling3}. The remaining conditions \Tb, \Tbb, \Tbbb, \Tbbbl\
+are those of the base method.
+\end{proof}
+
+\begin{proposition}[computational]\label{prop:count}
+Under \eqref{eq:restart}, the number of coupling conditions that are
+independent of the base method conditions and of the lower order
+conditions is
+\begin{center}
+\begin{tabular}{lcccc}
+\toprule
+order & 2 & 3 & 4 & 5\\\midrule
+all trees & 2 & 7 & 26 & 107\\
+base method (black trees) & 1 & 2 & 4 & 9\\
+coupling conditions, class \eqref{eq:restart} & 0 & 1 & 4 & 16\\
+coupling conditions, general $\alpha$, $g_{ij}$ & 1 & 5 & 22 & 89\\
+\bottomrule
+\end{tabular}
+\end{center}
+At order 4 a possible choice of the four coupling conditions is
+(with $\hat b_i=1$ on the chain, $k=k(i)$)
+\begin{align*}
+ &\Tfourbbw: && \sum_{i}\hat b_i\sum_jc_j^2\int_0^1p_{ij}(\sigma)\,z_i(\sigma)\dd\sigma=\tfrac14, &
+ &\Tfourbww: && \sum_{i}\hat b_i\sum_jc_j\int_0^1p_{ij}(\sigma)\,z_i(\sigma)^2\dd\sigma=\tfrac14,\\
+ &\Tfourbbl: && \sum_{i}\hat b_i\sum_j\eta_j(\Tbb)\int_0^1p_{ij}(\sigma)\,z_i(\sigma)\dd\sigma=\tfrac18, &
+ &\Tfourbbwl: && \sum_{i}\hat b_i\sum_jP_{ij}(1)\,\eta_j(\Tbbw)=\tfrac1{12},
+\end{align*}
+with $z_i(\sigma)=c_{k}+Q_i(\sigma)$ and
+$\eta_j(\Tbbw)=\sum_{l\in\text{chain}(j)}\sum_rc_r\int_0^1p_{lr}z_l$.
+All other mixed trees of order 4 are implied (class -- in
+Table~\ref{tab:oc4}).
+\end{proposition}
+
+The counts were obtained as ranks of the stage-wise coefficient vectors
+of many random methods. The ranks were computed exactly modulo a large
+prime, with the products of lower-order coefficients included as
+admissible relations. For orders 2 and 3 they agree with
+Theorem~\ref{thm:exactfast}. A proof of the order 4 statement in the
+style of Theorem~\ref{thm:exactfast}(b) is open.
+
+\paragraph{Remarks on known results.}
+\begin{itemize}
+\item \emph{MRI-GARK.} Sandu \cite{Sandu2019} derived order conditions
+  for MRI-GARK methods (telescopic, polynomial coupling, additive
+  splitting) via GARK theory: the conditions of the slow base method plus
+  coupling conditions, under ``internal consistency'' (uniform fast
+  speed). Theorem~\ref{thm:exactfast} shows that for exact inner
+  solutions uniform fast speed is not needed for the order. It remains
+  relevant for the inner integrator, since $q_i<0$ would mean integrating
+  the fast part backwards in time. As a check, our implementation gives
+  order 3 for MRI-GARK-ERK33 and order 4 for MRI-GARK-ERK45a (coefficients
+  from \texttt{MISBI\_Mod.f90}). \todo{compare the number of coupling
+  conditions with \cite{Sandu2019}.}
+\item \emph{Classical MIS and generalized split-explicit methods.} For
+  constant coupling the conditions up to order 3 are given in
+  \cite{WenschKnothGalant2009,KnothWensch2014} and extended in
+  \cite{BauerKnoth2021}; Table~\ref{tab:oc3} reduces to them for $K=0$.
+  \todo{check notation correspondence.}
+\item \emph{Additive splitting \eqref{eq:A}.} Only trees in which all
+  children of a vertex have the same colour occur
+  (Table~\ref{tab:treecount}). These are the GARK conditions
+  \cite{GuntherSandu2016} of the equivalent additive method.
+\item \emph{Constant linear fast part \eqref{eq:L}.} Only trees whose
+  white vertices form chains occur. These are the classical (non-stiff)
+  conditions of exponential RK methods; the stiff conditions are treated
+  in Section~\ref{sec:exponential}.
+\item \emph{Frame representation \eqref{eq:F}.} The conditions for
+  commutator-free Lie group methods \cite{Owren2006} should arise from
+  \eqref{eq:oc} restricted to the trees of \eqref{eq:F}.
+  \todo{verify.}
+\item \emph{Affine fast part \eqref{eq:B}.} Trees with a vertex with two
+  or more white children drop out (20 instead of 26 at order 4).
+\end{itemize}
+
+\begin{question}
+Is there a simplifying assumption, analogous to the stage order
+condition $C(q)$ of RK methods, that reduces the conditions of
+Theorem~\ref{thm:recursion} to those of the base method plus a small
+number of coupling conditions? A natural candidate is the polynomial
+identity
+\begin{equation}\label{eq:Cq}
+ \sum_{j<i}p_{ij}(\tau)\,c_j^{k-1}=c_i^{k}\,\tau^{k-1},\qquad k=1,\dots,q,
+\end{equation}
+(for $\alpha=0$, $g_{ij}\equiv0$), which appears again as the strong form of the
+stiff order conditions in Section~\ref{sec:exponential}. For explicit
+methods \eqref{eq:Cq} cannot hold for $i=2$ and $k\ge2$, as for RK
+methods.
+\end{question}
+
+\section{Computing the order conditions}
+\label{sec:algorithm}
+
+\subsection{Algorithm}
+
+Theorem~\ref{thm:recursion} gives an algorithm that is independent of the
+special structure and works with exact rational (or symbolic)
+arithmetic. The trees are processed in increasing order, so all subtree
+coefficients are available.
+
+\begin{center}
+\begin{minipage}{0.9\linewidth}
+\begin{tabbing}
+xx\=xx\=xx\=xx\=xx\=\kill
+\textbf{for} each tree $t=[t_1,\dots,t_m]$, ordered by $|t|$\\
+\>\textbf{for} $i=2,\dots,s+1$\\
+\>\>$\phi(\tau)\gets\sum_{j<i}g_{ij}(\tau)\eta_j(t)$\\
+\>\>\textbf{for} $j=1,\dots,i-1$\\
+\>\>\>$r(\tau)\gets1$\\
+\>\>\>\textbf{for} $k=1,\dots,m$: \ $r\gets r\cdot\zeta_i(\cdot;t_k)$ if
+       $t_k$ white (polynomial product), else $r\gets r\cdot\eta_j(t_k)$\\
+\>\>\>$\phi\gets\phi+p_{ij}\,r$\\
+\>\>$\zeta_i(\tau;t)\gets\sum_{j<i}\alpha_{ij}\eta_j(t)+\int_0^\tau\phi(\tilde\tau)\dd\tilde\tau$\\
+\>\>$\eta_i(t)\gets\zeta_i(1;t)$\\
+\textbf{residual:} $\eta_{s+1}(t)-1/\gamma(t)$
+\end{tabbing}
+\end{minipage}
+\end{center}
+
+Remarks:
+\begin{itemize}
+\item This is implemented in the Fortran program (repository
+  \texttt{OsKnoth/B-Series}) up to order 4 and in \texttt{bseries} for
+  \texttt{MultirateInfinitesimalSplitMethod} in \texttt{BSeries.jl}
+  \cite{KetchesonRanocha2023} for arbitrary order.
+\item With symbolic coefficients (SymPy, SymEngine, Symbolics via the
+  extensions of \texttt{BSeries.jl}) the residuals are polynomial
+  equations in $a_{ijk},\alpha_{ij},\gamma_{ijk}$. These can be printed as
+  \LaTeX\ tables and are the starting point for constructing new methods.
+\item The algorithm needs only the structure ``which argument is
+  differentiated''. Restricting to the trees of \eqref{eq:A} or
+  \eqref{eq:L} gives the conditions for those classes.
+\end{itemize}
+
+\subsection{Example (sketch, \texttt{BSeries.jl})}
+
+{\small
+\begin{verbatim}
+using BSeries, RootedTrees, Polynomials
+P(v) = Polynomial{Rational{Int}, :τ}(v)
+# ETD2RK (Cox--Matthews) as MIS method with linear-in-time coupling
+A = [P([0])     P([0]);
+     P([1])     P([0]);
+     P([1, -1]) P([0, 1])]          # p_ij(τ), size (s+1) x s
+D = zeros(Rational{Int}, 3, 2)      # alpha
+G = zeros(Rational{Int}, 3, 2)      # gamma
+c = [0, 1]
+mis = MultirateInfinitesimalSplitMethod(A, D, G, c)
+series = bseries(mis, 4)
+for (t, v) in series
+    RootedTrees.order(t) == 0 && continue
+    res = v - 1 // RootedTrees.density(t)
+    iszero(res) || println(t, "  residual = ", res)
+end
+\end{verbatim}
+}
+\noindent The same computation with the Python reference implementation
+(see below) gives order 2. The residuals
+$\eta_{s+1}(t)-1/\gamma(t)$ of order 3 are
+\begin{center}
+\begin{tabular}{cccccccc}
+\toprule
+$t$ & \Tbbb & \Tbbw & \Tbww & \Tbbbl & \Tbbwl & \Tbwbl & \Tbwwl\\\midrule
+residual & $\frac16$ & $0$ & $0$ & $-\frac16$ & $\frac1{12}$ & $0$ & $0$\\
+\bottomrule
+\end{tabular}
+\end{center}
+In accordance with Theorem~\ref{thm:exactfast}:
+\begin{itemize}
+\item the pure fast conditions and the coupling condition
+  \eqref{eq:coupling3} hold;
+\item the order is limited by the base method, which is Heun's method
+  ($b=(\frac12,\frac12)$, $a_{21}=1$);
+\item the residual of \Tbbwl\ is half that of \Tbbb.
+\end{itemize}
+
+\paragraph{Python reference implementation.}
+For checking the formulas of this paper we wrote a short, independent
+implementation of Theorem~\ref{thm:recursion} in exact rational
+arithmetic (\texttt{misbseries.py}). It covers general $\alpha$,
+polynomial $g_{ij}$ and $p_{ij}$, and arbitrary order. It reproduces:
+\begin{itemize}
+\item order 3 for MRI-GARK-ERK33 and order 4 for MRI-GARK-ERK45a;
+\item Tables~\ref{tab:oc3} and \ref{tab:oc4};
+\item Theorem~\ref{thm:exactfast} (checked up to order 5);
+\item the counts of Proposition~\ref{prop:count} and
+  Table~\ref{tab:treecount}.
+\end{itemize}
+
+\subsection{Planned computations (order conditions only)}
+
+\begin{enumerate}
+\item Cross-check of the Fortran program and \texttt{BSeries.jl} for all
+  methods in \texttt{MISBI\_Mod.f90} up to order 4; extension to order 5.
+\item Tests of Proposition~\ref{prop:exprk} (exponential RK methods from
+  the literature); proof of Proposition~\ref{prop:count} at order 4.
+\item Symbolic conditions for small families (e.g.\ $s=2,3$, $K\le2$)
+  for \eqref{eq:G}, \eqref{eq:A}, \eqref{eq:L}. Count of independent
+  conditions per order and class.
+\item The order conditions with non-exact inner solution
+  (Section~\ref{sec:nonexact}).
+\item The conditions restricted to the affine class \eqref{eq:B}
+  (Table~\ref{tab:treecount}); polynomial $g_{ij}$ in the recursion.
+\end{enumerate}
+
+\section{Linear fast part: exponential integrators and stiff order conditions}
+\label{sec:exponential}
+
+\subsection{Closed form of the stages}
+
+For \eqref{eq:L} with $\alpha=0$, $g_{ij}\equiv0$ and uniform fast speed $q_i\equiv
+c_i$ the inner problem
+$Z_i'=h\sum_jp_{ij}(\tau)f(Y_j)+hc_iLZ_i$, $Z_i(0)=y_n$, is solved by
+variation of constants. With
+\begin{equation*}
+ \varphi_{k+1}(z)=\int_0^1e^{(1-\tau)z}\frac{\tau^k}{k!}\dd\tau,\qquad k\ge0,
+\end{equation*}
+one obtains
+\begin{equation}\label{eq:exprk}
+ Y_i=e^{c_ihL}y_n+h\sum_{j<i}a_{ij}(hL)f(Y_j),\qquad
+ a_{ij}(z)=\int_0^1e^{(1-\tau)c_iz}p_{ij}(\tau)\dd\tau
+ =\sum_{k=0}^{K_i}k!\,a_{ijk}\,\varphi_{k+1}(c_iz).
+\end{equation}
+
+\begin{proposition}\label{prop:exprk}
+An exponential RK method
+$Y_i=e^{c_ihL}y_n+h\sum_ja_{ij}(hL)f(Y_j)$, $y_{n+1}=Y_{s+1}$, $c_{s+1}=1$,
+is an MIS method with polynomial coupling ($\alpha=0$, $g_{ij}\equiv0$) if and only
+if every $a_{ij}(z)$ is a linear combination of $\varphi_k(c_iz)$,
+$k\ge1$, and $\sum_ja_{ij}(z)=c_i\varphi_1(c_iz)$.
+\end{proposition}
+
+\begin{proof}
+By \eqref{eq:exprk}, using the linear independence of
+$\varphi_1(cz),\varphi_2(cz),\dots$ for fixed $c\neq0$. The condition
+$\sum_ja_{ij}=c_i\varphi_1(c_iz)$ is equivalent to
+$q_i(\tau)=\sum_jp_{ij}(\tau)\equiv c_i$.
+\end{proof}
+
+Hence such methods, applied to \eqref{eq:G} instead of \eqref{eq:L},
+are a natural nonlinear generalization of exponential RK methods, in
+which the exponential is replaced by the flow of the fast part with
+frozen slow argument.
+
+\begin{example}\label{ex:etd}
+\begin{enumerate}[label=(\alph*)]
+\item Exponential Euler, $y_{n+1}=e^{hL}y_n+h\varphi_1(hL)f(y_n)$:
+  $s=1$, $p_{21}=1$. In MIS form this is the ``frozen tendency''
+  step.
+\item ETD2RK of Cox and Matthews \cite{CoxMatthews2002}: $c_2=1$,
+  $a_{21}=\varphi_1$, $b_1=\varphi_1-\varphi_2$, $b_2=\varphi_2$. In MIS
+  form
+  \begin{equation*}
+   p_{21}=1,\qquad p_{31}(\tau)=1-\tau,\qquad p_{32}(\tau)=\tau:
+  \end{equation*}
+  the slow tendency is \emph{linearly interpolated in time} between the
+  two stages, which is the simplest genuinely polynomial MIS method.
+\item The two-stage family of \cite{HochbruckOstermann2005} with
+  $a_{21}=c_2\varphi_1(c_2z)$, $b_1=\varphi_1-\varphi_2/c_2$,
+  $b_2=\varphi_2/c_2$: $p_{21}=c_2$, $p_{31}=1-\tau/c_2$,
+  $p_{32}=\tau/c_2$.
+\end{enumerate}
+\end{example}
+
+Without uniform fast speed the closed form remains available:
+\begin{equation*}
+Y_i=e^{Q_i(1)hL}y_n+h\sum_j\int_0^1e^{(Q_i(1)-Q_i(\tau))hL}p_{ij}(\tau)\dd\tau\,f(Y_j).
+\end{equation*}
+The weights are then no longer combinations of $\varphi$-functions. With
+$\alpha\neq0$ (in particular telescopic methods) products
+$e^{d_iz}\varphi_k(c_jz)$ appear, i.e.\ exponential RK methods with mixed
+arguments.
+
+\subsection{Stiff order conditions}
+
+The classical order conditions assume that $h\|\partial_zF\|$ is small.
+In NWP this is not the case: $hL$ has large eigenvalues (on or near the
+imaginary axis for acoustic waves). For exponential RK methods,
+Hochbruck and Ostermann \cite{HochbruckOstermann2005,HochbruckOstermann2010}
+derived \emph{stiff order conditions}, which must hold uniformly in $hL$.
+With
+\begin{equation*}
+ \psi_j(z)=\sum_ib_i(z)\frac{c_i^{j-1}}{(j-1)!}-\varphi_j(z),\qquad
+ \psi_{j,i}(z)=\sum_ka_{ik}(z)\frac{c_k^{j-1}}{(j-1)!}-c_i^j\varphi_j(c_iz),
+\end{equation*}
+($b_i=a_{s+1,i}$) the conditions up to order 4 read
+\begin{center}
+\begin{tabular}{cl}
+\toprule
+order & condition\\\midrule
+1 & $\psi_1(hL)=0$\\
+2 & $\psi_2(hL)=0$, \quad $\psi_{1,i}(hL)=0$\\
+3 & $\psi_3(hL)=0$, \quad $\sum_ib_i(hL)J\psi_{2,i}(hL)=0$\\
+4 & $\psi_4(hL)=0$, \quad $\sum_ib_i(hL)J\psi_{3,i}(hL)=0$,\\
+  & $\sum_ib_i(hL)J\sum_ka_{ik}(hL)J\psi_{2,k}(hL)=0$, \quad
+    $\sum_ib_i(hL)c_iK\psi_{2,i}(hL)=0$\\
+\bottomrule
+\end{tabular}
+\end{center}
+where $J,K$ are arbitrary bounded operators. \todo{check table against
+\cite{HochbruckOstermann2005}.}
+
+For MIS methods with polynomial coupling all these conditions become
+\emph{algebraic} conditions on the coefficients $a_{ijk}$:
+
+\begin{proposition}\label{prop:stiff}
+Let $\alpha=0$, $g_{ij}\equiv0$, $q_i\equiv c_i$, and define the polynomials
+\begin{equation*}
+ r_i^{[j]}(\tau)=\sum_{k<i}p_{ik}(\tau)\frac{c_k^{j-1}}{(j-1)!}
+   -c_i^j\frac{\tau^{j-1}}{(j-1)!} .
+\end{equation*}
+\begin{enumerate}[label=(\alph*)]
+\item $\psi_{j,i}\equiv0 \iff r_i^{[j]}\equiv0$, and
+  $\psi_j\equiv0\iff r_{s+1}^{[j]}\equiv0$. In particular $\psi_{1,i}=0$
+  is the uniform fast speed condition.
+\item A sufficient condition for $\sum_ib_i(z)J\psi_{2,i}(z)=0$ for all
+  $J$ is that for every value $c$ of the stage times
+  \begin{equation*}
+   \sum_{i:\,c_i=c}p_{s+1,i}(\tau)\,r_i^{[2]}(\sigma)\equiv0
+   \qquad\text{as a polynomial in }(\tau,\sigma).
+  \end{equation*}
+  Analogous bivariate (resp.\ trivariate, grouped by pairs
+  $(c_i,c_k)$) polynomial identities are sufficient for the order 4
+  conditions.
+\end{enumerate}
+\end{proposition}
+
+\begin{proof}[Sketch]
+(a) $\psi_{j,i}(z)=\int_0^1e^{(1-\tau)c_iz}r_i^{[j]}(\tau)\dd\tau$,
+and the map from polynomials to these functions is injective for
+$c_i\neq0$. (b) $b_i(z_1)\psi_{2,i}(z_2)
+=\iint e^{(1-\tau)z_1}e^{(1-\sigma)c_iz_2}p_{s+1,i}(\tau)r_i^{[2]}(\sigma)\dd\tau\dd\sigma$;
+since $J$ is arbitrary, the two arguments must be treated as independent.
+\end{proof}
+
+Example: for ETD2RK, $r_3^{[2]}=(1-\tau)\cdot0+\tau\cdot1-\tau=0$,
+so it has stiff order 2.
+
+\begin{question}
+Are the sufficient conditions of Proposition~\ref{prop:stiff}(b) also
+necessary, i.e.\ are the functions $\varphi_k(cz)$ for different $c$ and
+$k$ linearly independent in the required sense? How many stages and which
+coupling degree are needed for stiff order 3 and 4? (For exponential RK,
+stiff order 4 needs five stages \cite{HochbruckOstermann2005}.)
+\end{question}
+
+\begin{question}
+The theory of \cite{HochbruckOstermann2005} is formulated for parabolic
+problems (analytic semigroups), where parabolic smoothing allows weakened
+conditions. Acoustic operators are skew-adjoint (or nearly so), with
+$\|e^{tL}\|\le1$ but no smoothing. Which conditions are needed in the
+hyperbolic case? Is there an analogue of stiff order conditions for the
+nonlinear fast part \eqref{eq:G}, e.g.\ with B-series whose coefficients
+are functions of $h\partial_zF$ (resummation of the $L$-chains)?
+\end{question}
+
+% =====================================================================
+\section{Spatial discretizations}
+\label{sec:discretization}
+
+The freezing of Section~\ref{sec:frozen} is applied to the
+semi-discrete equations. We discuss two standard discretization types.
+
+\subsection{Finite volumes with high-order advection}
+
+Typical NWP dynamical cores (WRF, COSMO, ICON-like) use a staggered
+Arakawa C-grid with face-normal momenta. In one direction, with cell
+index $i$ and face mass fluxes $M_{i+1/2}=(\rho u)_{i+1/2}$:
+\begin{align*}
+ \dot\rho_i&=-\tfrac1{\Delta x}\big(M_{i+1/2}-M_{i-1/2}\big),\\
+ \dot{(\rho\theta)}_i&=-\tfrac1{\Delta x}\big(M_{i+1/2}\,\hat\theta_{i+1/2}-M_{i-1/2}\,\hat\theta_{i-1/2}\big),\\
+ \dot M_{i+1/2}&=\mathrm{Adv}_{i+1/2}(y)-\tfrac1{\Delta x}\big(p_{i+1}-p_i\big)+\dots
+\end{align*}
+\begin{itemize}
+\item The face value $\hat\theta_{i+1/2}=\mathcal R(\theta;\operatorname{sign}u_{i+1/2})$
+  is a high-order upwind-biased reconstruction: 3rd/5th-order linear
+  upwind \cite{WickerSkamarock2002} or WENO \cite{JiangShu1996}. It is
+  the expensive, nonlinear part.
+\item In the frozen form $\hat\theta$ (including the upwind direction and
+  the nonlinear WENO weights) is computed once per stage from $Y_j$; the
+  mass fluxes $M$ are fast. The inner $\rho\theta$ equation is then a
+  first-order flux-form operator with prescribed face values, and
+  $\sum_jp_{ij}(\tau)\hat\theta_j$ is a face field.
+\item Option A gives
+  $-a_{i+1/2}(y)\big((\rho\theta)_{i+1}-(\rho\theta)_i\big)/\Delta x$
+  with $a$ averaged to faces. Option B gives
+  $-\big(\pi_{i+1}(\rho\theta)_{i+1}-\pi_i(\rho\theta)_i\big)/\Delta x$
+  with cell values $\pi$.
+\item In the vertical, the acoustic and buoyancy terms are usually
+  treated implicitly in the inner problem (HEVI); each column is then a
+  tridiagonal solve.
+\item Terrain-following coordinates add metric terms, which are linear in
+  the fast variables and do not change the structure.
+\end{itemize}
+
+A useful property: if $\theta\equiv\theta_0$ is constant, then
+$\hat\theta_j\equiv\theta_0$ for all $j$ and
+$\sum_jp_{ij}(\tau)\hat\theta_j=q_i(\tau)\theta_0$. The inner $\rho\theta$
+equation is then $\theta_0$ times the inner mass equation, so constant
+$\theta$ is preserved exactly (tracer--mass consistency) for every
+method and every inner integrator that treats both equations alike.
+
+\subsection{Discontinuous Galerkin methods}
+
+Nodal DG methods on Legendre--Gauss--Lobatto nodes with the
+summation-by-parts property and split-form (flux differencing) volume
+terms \cite{GassnerWintersKopriva2016} are increasingly used in
+atmospheric dynamical cores \cite{GiraldoKellyConstantinescu2013}. In
+one element and one direction:
+\begin{equation*}
+ \dot{\mathbf q}_l=-\sum_m2D_{lm}\,\mathbf f^\#(\mathbf q_l,\mathbf q_m)
+ -\frac{\delta_{l\in\partial}}{\omega_l}\big(\mathbf f^*(\mathbf q^-,\mathbf q^+)-\mathbf f(\mathbf q_l)\big),
+\end{equation*}
+with a two-point volume flux $\mathbf f^\#$ (e.g.\ kinetic-energy- or
+entropy-conserving) and a numerical surface flux $\mathbf f^*$.
+\begin{itemize}
+\item \emph{Volume terms.} The two-point fluxes are products of
+  arithmetic means, e.g.\ for $\rho\theta$:
+  $\{\!\{\rho u\}\!\}\{\!\{\theta\}\!\}$ or
+  $\{\!\{\rho\}\!\}\{\!\{u\}\!\}\{\!\{\theta\}\!\}$. Freezing all factors
+  except one fast factor makes them bilinear. Since the mean is linear,
+  $\sum_jp_{ij}\{\!\{\theta_j\}\!\}_{lm}=\{\!\{\sum_jp_{ij}\theta_j\}\!\}_{lm}$.
+  Hence only nodal combined fields $W_{ik}$ have to be stored, not
+  pairwise quantities. Option B gives $\{\!\{\pi_y(\rho\theta)_z\}\!\}$.
+\item \emph{Surface terms.} As numerical flux we use the low Mach
+  number approximate Riemann solver LMARS \cite{Chen2013}, which is
+  common in atmospheric models. See the paragraph below.
+\item \emph{Expensive nonlinear parts avoided in the inner steps:} the
+  equation of state at every node, and the logarithmic means of
+  entropy-conserving fluxes. Flux differencing still costs
+  $O(N^{d+1})$ per element, but with a few multiplications per pair
+  instead of a full nonlinear flux evaluation.
+\item Entropy stability or kinetic-energy preservation of the full split
+  form is in general \emph{not} inherited by the frozen operator. Whether
+  a frozen split form with a discrete energy estimate for the linear
+  acoustic subsystem exists is an open question.
+\end{itemize}
+
+\paragraph{The LMARS flux and its frozen form.}
+We follow Chen et al.\ \cite{Chen2013}. Their model uses the same
+prognostic variables as \eqref{eq:euler} (with the scaled potential
+temperature density $Q=\rho\theta/p_0^{\kappa}$, $\kappa=R_d/c_p$). Let
+$\mathbf q^\pm$ be the reconstructed states on both sides of an interface
+(in \cite{Chen2013} by a conservative five-point interpolation), with
+normal velocity $u^\pm$ and pressure $p^\pm$. Let $\bar\rho\bar c$ be
+the acoustic impedance, evaluated with a locally constant sound speed
+$\bar c$ (low Mach number assumption). LMARS defines
+\begin{equation*}
+ u^*=\tfrac12(u^-+u^+)-\frac{\beta}{2\bar\rho\bar c}(p^+-p^-),\qquad
+ p^*=\tfrac12(p^-+p^+)-\frac{\beta\,\bar\rho\bar c}{2}(u^+-u^-),
+\end{equation*}
+with $\beta=1$ in the standard form and $\beta\le1$ in the tuned, less
+diffusive form of \cite{Chen2013}. The flux is
+$\mathbf f^*=u^*\,\mathbf q^{\mathrm{up}}+p^*\mathbf n$ with the upwind
+state $\mathbf q^{\mathrm{up}}=\mathbf q^-$ if $u^*>0$ and $\mathbf q^+$
+otherwise. For the vertical direction \cite{Chen2013} also give a
+Lagrangian version with impedance $C=\sqrt{\gamma_a\rho p}$. The dissipation acts only on pressure and
+velocity jumps and is scaled by the acoustic impedance. Advected
+quantities ($\theta$, tracers) are only upwinded with $u^*$ and not
+diffused with the sound speed. A Rusanov flux, in contrast, damps all
+jumps with $\lambda\approx|u|+c$, which is far too diffusive for advected
+quantities at low Mach number.
+
+The structure of LMARS matches the splitting: the acoustic part
+($u^*$, $p^*$) is fast, while the upwind selection is a slow, frozen
+decision. A frozen form, consistent at $z=y$, is
+\begin{align*}
+ u^*_z&=\tfrac12\Big(\frac{(\rho u)^-_z}{\rho^-_y}+\frac{(\rho u)^+_z}{\rho^+_y}\Big)
+       -\frac{\beta\,(p^+_z-p^-_z)}{2(\bar\rho\bar c)_y},\\
+ p^*_z&=\tfrac12(p^-_z+p^+_z)-\frac{\beta\,(\bar\rho\bar c)_y}{2}
+       \Big(\frac{(\rho u)^+_z}{\rho^+_y}-\frac{(\rho u)^-_z}{\rho^-_y}\Big),\\
+ \text{mass flux}&=\rho^{\mathrm{up}}_y\,u^*_z,\qquad
+ \rho\theta\text{ flux}=(\rho\theta)^{\mathrm{up}}_y\,u^*_z,\\
+ \text{momentum flux}&=\textcolor{red}{u^*(\rho\mathbf v)^{\mathrm{up}}}(y)+p^*_z\mathbf n,
+\end{align*}
+with
+\begin{itemize}
+\item the upwind side determined by the sign of $u^*$ at the frozen
+  state, and $\bar\rho\bar c$, $1/\rho^\pm$ frozen;
+\item $p_z=\pi_y(\rho\theta)_z$ in Option B, or
+  $p_z=p_y+a_y\big((\rho\theta)_z-(\rho\theta)_y\big)$ in Option A$'$.
+\end{itemize}
+Every term is a frozen coefficient times a fast variable, so the flux is
+affine in $z$. Combinations $\sum_jp_{ij}(\tau)(\cdot)_{Y_j}$ of the
+frozen face coefficients can be formed once per stage, as in
+Lemma~\ref{lem:summation}. With $z=y$ the original LMARS flux is
+recovered exactly. The same frozen LMARS flux can also be used in finite
+volume schemes, where it replaces the centred pressure gradient and mass
+flux of the C-grid formulation.
+
+% =====================================================================
+\section{The inner problems: structure, solution, and cost}
+\label{sec:inner}
+
+\subsection{Structure}
+
+With Lemma~\ref{lem:summation} the inner problem of stage $i$ for a
+frozen system of the form \eqref{eq:bilinear} is the linear
+non-autonomous ODE
+\begin{equation}\label{eq:innerlinear}
+ Z_i'(\tau)=h\Big(r_i(\tau)+\mathcal B_i(\tau)Z_i\Big),\qquad
+ \mathcal B_i(\tau)=q_i(\tau)\mathfrak B_0+\mathfrak B_1\big(W_i(\tau)\big),
+ \qquad\tau\in[0,1],
+\end{equation}
+where $r_i$, $W_i$ (and $q_i$) are polynomials of degree $K$. Special
+cases:
+\begin{itemize}
+\item $K=0$ (constant coupling): \eqref{eq:innerlinear} is autonomous
+  with constant forcing.
+\item \eqref{eq:L}: $\mathcal B_i(\tau)=q_i(\tau)L$. All operators
+  commute, and the solution is given by $\varphi$-functions
+  (Section~\ref{sec:exponential}).
+\item $K\ge1$ with genuinely state-dependent $\mathfrak B_1$: the operators
+  $\mathcal B_i(\tau)$ at different times do not commute.
+\end{itemize}
+
+\subsection{Overview of solution methods}
+
+\paragraph{(a) Explicit small steps.} This is the standard in NWP:
+$m_i$ steps of size $1/m_i$ in $\tau$ (i.e.\ $c_ih/m_i$ physically) with
+\begin{itemize}
+\item a forward--backward scheme \cite{Mesinger1977}: momentum forward,
+  then $\rho,\rho\theta$ with the new momentum;
+\item or a low-stage RK scheme;
+\item usually combined with vertically implicit (off-centred
+  Crank--Nicolson) treatment of the vertical acoustic and buoyancy terms
+  (HEVI), and with divergence damping \cite{KlempSkamarockDudhia2007,Baldauf2010}.
+\end{itemize}
+The cost is one application of $\mathcal B_i$ per small step (plus
+column solves). For the order analysis the inner method enters as in
+Section~\ref{sec:nonexact}. For a linear non-autonomous problem with
+polynomial coefficients, the inner RK method needs only the order
+conditions for linear time-dependent problems. These lie between the
+linear autonomous conditions ($b^TA^{k-1}\mathbb 1=1/k!$) and the full
+nonlinear set.
+
+\paragraph{(b) Exponential / Krylov methods (autonomous case).}
+For $K=0$, or with $\mathcal B_i$ frozen over a substep, the exact
+solution is
+\begin{equation*}
+ Z_i(1)=e^{h\mathcal B_i}Z_i(0)+\sum_{k=0}^Kk!\,h\,\varphi_{k+1}(h\mathcal B_i)\,R_{ik}.
+\end{equation*}
+\begin{itemize}
+\item All terms can be obtained from one action of the exponential of an
+  augmented matrix of dimension $N+K+1$
+  \cite{Sidje1998,AlMohyHigham2011}.
+\item Possible algorithms: Krylov (Arnoldi) methods \cite{NiesenWright2012,GaudreaultRainwaterTokman2018},
+  polynomial interpolation at Leja points \cite{CaliariKandolfOstermannRainer2014},
+  or Chebyshev expansions.
+\item For (nearly) skew-adjoint acoustic operators the spectrum lies on
+  the imaginary axis. A Chebyshev expansion then needs about
+  $\rho(h\mathcal B_i)$ matrix--vector products, i.e.\ about the number
+  of explicit small steps at CFL number one. It integrates exactly up to
+  a tolerance, without CFL safety factor and without numerical damping.
+\item Chebyshev and Leja methods need only spectral bounds, no inner
+  products, and hence no global communication. Krylov methods need
+  global reductions in every iteration, a drawback on parallel machines.
+\end{itemize}
+
+\paragraph{(c) Magnus-type methods (non-autonomous case).}
+For $K\ge1$ the solution operator of \eqref{eq:innerlinear} can be
+approximated by
+\begin{itemize}
+\item Magnus integrators \cite{BlanesCasasOteoRos2009}, e.g.\ the fourth
+  order scheme with Gauss points $\tau_{1,2}$,
+  \begin{equation*}
+  Z_i(1)\approx e^{\Omega}Z_i(0),\qquad
+  \Omega=\tfrac h2\big(\mathcal B_i(\tau_1)+\mathcal B_i(\tau_2)\big)+\tfrac{\sqrt3h^2}{12}\big[\mathcal B_i(\tau_2),\mathcal B_i(\tau_1)\big]
+  \end{equation*}
+  (for the homogeneous part; the forcing is added by augmentation);
+\item or commutator-free Magnus integrators
+  \cite{BlanesMoan2006,AlvermannFehske2011}, products of exponentials of
+  linear combinations $\sum_l\beta_l\mathcal B_i(\tau_l)$.
+\end{itemize}
+Because $\mathfrak B_1$ is linear in $w$, a linear combination
+$\sum_l\beta_l\mathfrak B_1(W_i(\tau_l))=\mathfrak B_1(\sum_l\beta_lW_i(\tau_l))$
+is again a single bilinear operator, so each exponential costs the same
+as in the autonomous case. A commutator-free Magnus scheme for the inner
+problem is therefore itself a sequence of MIS substages with constant
+coupling. Analysing this refinement within Definition~\ref{def:mis} is
+an interesting consistency check.
+
+\paragraph{(d) Implicit inner steps.}
+The inner problems are linear, so one or a few implicit steps
+(Crank--Nicolson, DIRK) need only linear solves with
+$I-\delta h\mathcal B_i$. With a single implicit step per stage, MIS
+methods become semi-implicit / IMEX schemes of the form
+\cite{BoscarinoFilbetRusso2016} (Section~\ref{sec:specialcases}). With
+implicit treatment only in the vertical they are HEVI schemes. The
+linear operator changes in every stage, so the preconditioner (or
+factorization) has to be updated per stage, not per inner step.
+
+\begin{center}
+\begin{tabular}{p{3.2cm}p{3.3cm}p{3.6cm}p{3.6cm}}
+\toprule
+inner solver & accuracy & cost per stage & remarks\\\midrule
+explicit small steps & order $q$, CFL-limited & $m_i$ applications of $\mathcal B_i$ & local communication only; damping needed\\
+Chebyshev / Leja & tolerance & $\approx\rho(h\mathcal B_i)$ applications & no inner products; autonomous case\\
+Krylov & tolerance & few $\times$ Krylov dim. & global reductions\\
+(CF-)Magnus & order 4--6 & several exponentials & non-autonomous, $K\ge1$\\
+implicit (HEVI) & order 1--2 & linear solves & no CFL limit in vertical\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{How much cheaper is the frozen linearized system?}
+\label{sec:cost}
+
+Let $C_F$ be the cost of one evaluation of the full semi-discrete
+right-hand side $\mathcal F_h$, and $C_B$ the cost of one inner-step
+application of \eqref{eq:innerlinear}, i.e.\ of $\mathcal B_i(\tau)Z$
+plus forming $W_i(\tau)$ and $r_i(\tau)$. Per large step there are $s$
+stage evaluations of $f$ and of the frozen fields $w$ (cost $\approx sC_F$)
+and in total $M=\sum_im_i$ inner steps. Then:
+\begin{align*}
+ \text{single-rate explicit with the fast step:} &\quad \approx M\,C_F,\\
+ \text{MIS, naive } \textstyle\sum_jp_{ij}F(Y_j,Z): &\quad \approx sC_F+\sum_i(i-1)m_i\,C_F,\\
+ \text{MIS, bilinear (Lemma~\ref{lem:summation}):} &\quad \approx sC_F+M\,C_B .
+\end{align*}
+For $M\gg s$ the gain over a single-rate explicit scheme is
+$\approx C_F/C_B$, and the gain over the naive evaluation grows with
+the number of coupled stages.
+
+\paragraph{What is saved in $C_B$.}
+Per cell and inner step the frozen system avoids:
+\begin{itemize}
+\item the equation of state (a \texttt{pow} per cell; frozen $a$ or $\pi$
+  instead);
+\item the high-order reconstructions of $u,w,\theta$ (WENO5: candidate
+  stencils, smoothness indicators and nonlinear weights, of the order of
+  $50$--$100$ flops per face and variable), replaced by a multiplication
+  with the frozen face value;
+\item momentum advection (frozen completely, part of $r_i$);
+\item physics and diffusion (part of $r_i$);
+\item in DG: the nonlinear two-point fluxes (logarithmic means), the
+  nodal equation of state, and the impedance, upwind decision and
+  velocities in the LMARS flux.
+\end{itemize}
+What remains is mass flux divergence, pressure gradient, buoyancy,
+$K$ axpy for $W_i(\tau)$, the forcing $r_i(\tau)$ and, with HEVI,
+tridiagonal column solves.
+
+\paragraph{Rough estimate (2D, FV, WENO5).}
+These are counts under stated assumptions, to be replaced by
+measurements.
+\begin{itemize}
+\item Full right-hand side: about 6 reconstructions per cell (3
+  variables, 2 directions) at 50--100 flops, plus fluxes, divergence and
+  equation of state, in total $C_F\approx400$--$700$ flops per cell.
+\item Frozen system: about $25$ flops per cell plus $\approx6(K+1)$ for
+  forming $W_i(\tau)$ and $r_i(\tau)$, so $C_B\approx30$--$50$ flops per
+  cell.
+\item The flop ratio is $C_F/C_B\approx10$--$20$.
+\end{itemize}
+The picture is different for \emph{memory traffic}. The frozen step
+reads the state and, additionally, $K+1$ copies of the frozen
+coefficient fields ($\hat\theta$ on all faces, $a$ or $\pi$) and of the
+forcing. This is comparable to or larger than the traffic of the full
+right-hand side. On bandwidth-limited hardware (GPUs) the realistic gain
+is therefore smaller, perhaps a factor $2$--$5$.
+\todo{measure; consider recomputing $W_i(\tau)$ on the fly vs.\ storing.}
+
+\paragraph{Communication.}
+The inner operator has stencil width one (second-order centred pressure
+gradient and divergence). WENO5 needs width three. Halo exchanges in the
+inner loop are therefore narrower (less volume), although equally
+frequent (same latency).
+
+\paragraph{Options A, A$'$, B.}
+The inner-step cost is the same for all three options. Option A$'$
+needs per stage in addition the vector $\mathfrak A(Y_j)Y_j$, one extra
+bilinear evaluation per stage, which is negligible against $M\,C_B$.
+
+\section{Non-exact solution of the inner problems}
+\label{sec:nonexact}
+
+Section~\ref{sec:inner} lists the practical inner solvers. Here we ask
+what accuracy they must have.
+
+In practice the inner problems \eqref{eq:mis2} are solved by $m$ steps of
+an explicit RK method $(A^f,b^f,c^f)$ of order $q$ with step
+$\delta=1/m$ in $\tau$. Then the whole scheme is again a (generalized
+additive / partitioned) RK method, and the same trees apply.
+
+\paragraph{Computing the conditions.}
+In the algorithm of Section~\ref{sec:algorithm} the exact integration
+$\int_0^\tau\phi$ is replaced by $m$ steps of the inner RK method
+applied to the triangular system for $\{\zeta_i(\cdot;u)\}_{u\le t}$.
+This yields coefficients $\eta^{(m)}_{s+1}(t)$ for every $m$. Because
+the inner equations are polynomial in $\tau$ and in the lower
+coefficients, one expects an asymptotic expansion
+\begin{equation*}
+ \eta^{(m)}_{s+1}(t)=\eta_{s+1}(t)+\sum_{k\ge q}e_k(t)\,m^{-k},
+\end{equation*}
+with $e_k(t)=0$ for trees without white vertices (no inner
+integration is needed for the black-only part when $\gamma$-terms and the
+polynomial forcing are integrated exactly).
+
+\paragraph{How good does the inner solution have to be?}
+\begin{itemize}
+\item \emph{Asymptotic view, $m$ fixed, $h\to0$.} An error term
+  $e_k(t)m^{-k}h^{|t|}$ in the local error of a tree of order $|t|\le p$
+  reduces the global order to $|t|-1$. Hence for order $p$ with every
+  $m$ the inner method must reproduce $\eta_{s+1}(t)$ \emph{exactly}
+  for all trees with $|t|\le p$. This is a finite set of algebraic
+  conditions on $(A^f,b^f,c^f)$ that depends on the outer method and on
+  the coupling degree $K$.
+\item \emph{Conjecture.} For constant coupling ($K=0$), $g_{ij}\equiv0$, an
+  inner RK method of order $q\ge p$ preserves order $p$ for every
+  $m\ge1$. For $K>0$ the inner forcing is a polynomial of degree $K$ in
+  $\tau$ and the inner method additionally has to integrate
+  $\tau^K$-weighted terms correctly, so a higher inner order (or
+  quadrature order) may be required. \todo{test computationally with the
+  modified algorithm.}
+\item \emph{NWP regime.} In practice the fast step $h/m$ is fixed by the
+  acoustic CFL condition, so $(h/m)\|\partial_zF\|=O(1)$ and the inner
+  integration is \emph{not} in its asymptotic regime. The fast acoustic
+  modes are unresolved anyway. Accuracy is needed for the slow modes,
+  which interact with the inner solver only through trees with white
+  vertices. For the fast modes, stability (and possibly damping, e.g.\
+  divergence damping, forward--backward schemes) is what matters.
+\end{itemize}
+
+\begin{question}
+Find conditions on the inner method that guarantee order $p$ of the
+slow component (trees with black root and at least one black vertex)
+while only requiring stability for the fast modes. Can this be expressed
+with the linear stability function
+$R(z_s,z_f;m)$ of the test equation $y'=\lambda_sy+\lambda_fy$,
+$F(y,z)=\lambda_sy+\lambda_fz$, for $z_f$ on the imaginary axis?
+\end{question}
+
+% =====================================================================
+\section{Open questions and next steps}
+\label{sec:open}
+
+\begin{enumerate}
+\item \textbf{Relations.} Precise embedding of MRI-GARK, MERK,
+  commutator-free Lie group methods and exponential RK methods with mixed
+  arguments into Definition~\ref{def:mis}; consequences for the order
+  conditions (do the known conditions of these classes coincide with
+  ours restricted to the respective trees?).
+\item \textbf{Closed forms.} Closed-form conditions up to order 4 for
+  the polynomial class; a simplifying assumption of stage order type
+  \eqref{eq:Cq}; counting independent conditions.
+\item \textbf{Stiff order.} Necessity in Proposition~\ref{prop:stiff};
+  hyperbolic (skew-adjoint) fast operators; a nonlinear stiff theory
+  for \eqref{eq:G}.
+\item \textbf{Inner solution.} Order conditions with finite $m$; the
+  conjecture of Section~\ref{sec:nonexact}; error expansion in $m^{-1}$.
+\item \textbf{Pressure options.} Linear stability of Options A$'$ and B
+  for a split acoustic--gravity test problem: does the residual acoustic
+  fraction $(\gamma_a-1)/\gamma_a$ in the slow part of Option B restrict
+  the large step? Is the term $-\delta\nabla_ha$ of Option A$'$ harmless?
+\item \textbf{Polynomial $g_{ij}$.} Benefit of polynomial $g_{ij}$
+  (Section~\ref{sec:polygamma}) for stability; additional stiff conditions.
+\item \textbf{Discretizations.} A frozen split-form DG operator with an
+  energy estimate for the acoustic subsystem; measured values of
+  $C_F/C_B$ for FV--WENO and DG on CPUs and GPUs.
+\item \textbf{Construction.} Methods of order 4 and 5 with polynomial
+  coupling, with additional criteria (error constants, linear
+  stability for $z_f\in i\R$, uniform fast speed, $c_i$ monotone so
+  that the inner integration runs forward in time).
+\end{enumerate}
+
+% =====================================================================
+% =====================================================================
+\appendix
+\section{Order conditions of order 4}
+\label{app:order4}
+
+Conditions $\sum_i\hat b_id_i(t)=1/\gamma(t)$ for the 26 trees of order
+4, general method of Definition~\ref{def:mis}. Notation as in
+Section~\ref{sec:orderconditions}; $\eta_j(u)$ and $\zeta_i(\sigma;u)$
+for $|u|\le3$ are given by Theorem~\ref{thm:general} and
+Table~\ref{tab:oc3}. Column ``class'' refers to the subclass
+\eqref{eq:restart}: B = base method, F = automatically satisfied, C1--C4
+= the coupling conditions of Proposition~\ref{prop:count}, -- = implied
+by lower order, base and C1--C4.
+
+{\renewcommand{\arraystretch}{1.5}
+\begin{longtable}{rcllc}
+\caption{Order 4 conditions.}\label{tab:oc4}\\
+\toprule
+No. & $t$ & $d_i(t)$ & $1/\gamma(t)$ & class\\\midrule
+\endfirsthead
+\toprule
+No. & $t$ & $d_i(t)$ & $1/\gamma(t)$ & class\\\midrule
+\endhead
+\bottomrule
+\endfoot
+1 & \btree{[,b [,b [,b [,b]]]]} & $\sum_j P_{ij}(1)\,\eta_j(\Tbbbl)$ & $\frac1{24}$ & B\\[3pt]
+2 & \btree{[,b [,b [,b [,w]]]]} & $\sum_j P_{ij}(1)\,\eta_j(\Tbbwl)$ & $\frac1{24}$ & --\\[3pt]
+3 & \btree{[,b [,b [,b][,b]]]} & $\sum_j P_{ij}(1)\,\eta_j(\Tbbb)$ & $\frac1{12}$ & B\\[3pt]
+4 & \btree{[,b [,b [,b][,w]]]} & $\sum_j P_{ij}(1)\,\eta_j(\Tbbw)$ & $\frac1{12}$ & C4\\[3pt]
+5 & \btree{[,b [,b [,b]][,w]]} & $\sum_j \eta_j(\Tbb)\int_0^1 p_{ij}(\sigma)\,z_i(\sigma)\dd\sigma$ & $\frac1{8}$ & C3\\[3pt]
+6 & \btree{[,b [,b [,w [,b]]]]} & $\sum_j P_{ij}(1)\,\eta_j(\Tbwbl)$ & $\frac1{24}$ & --\\[3pt]
+7 & \btree{[,b [,b [,w [,w]]]]} & $\sum_j P_{ij}(1)\,\eta_j(\Tbwwl)$ & $\frac1{24}$ & --\\[3pt]
+8 & \btree{[,b [,b [,w][,w]]]} & $\sum_j P_{ij}(1)\,\eta_j(\Tbww)$ & $\frac1{12}$ & --\\[3pt]
+9 & \btree{[,b [,b [,w]][,w]]} & $\sum_j \eta_j(\Tbw)\int_0^1 p_{ij}(\sigma)\,z_i(\sigma)\dd\sigma$ & $\frac1{8}$ & --\\[3pt]
+10 & \btree{[,b [,b][,b [,b]]]} & $\sum_j P_{ij}(1)\,c_j\eta_j(\Tbb)$ & $\frac1{8}$ & B\\[3pt]
+11 & \btree{[,b [,b][,b [,w]]]} & $\sum_j P_{ij}(1)\,c_j\eta_j(\Tbw)$ & $\frac1{8}$ & --\\[3pt]
+12 & \btree{[,b [,b][,b][,b]]} & $\sum_j P_{ij}(1)\,c_j^{3}$ & $\frac1{4}$ & B\\[3pt]
+13 & \btree{[,b [,b][,b][,w]]} & $\sum_j c_j^{2}\int_0^1 p_{ij}(\sigma)\,z_i(\sigma)\dd\sigma$ & $\frac1{4}$ & C1\\[3pt]
+14 & \btree{[,b [,b][,w [,b]]]} & $\sum_j c_j\int_0^1 p_{ij}(\sigma)\,\zeta_i(\sigma;\Tbb)\dd\sigma$ & $\frac1{8}$ & --\\[3pt]
+15 & \btree{[,b [,b][,w [,w]]]} & $\sum_j c_j\int_0^1 p_{ij}(\sigma)\,\zeta_i(\sigma;\Tbw)\dd\sigma$ & $\frac1{8}$ & --\\[3pt]
+16 & \btree{[,b [,b][,w][,w]]} & $\sum_j c_j\int_0^1 p_{ij}(\sigma)\,\big(z_i(\sigma)\big)^{2}\dd\sigma$ & $\frac1{4}$ & C2\\[3pt]
+17 & \btree{[,b [,w [,b [,b]]]]} & $\int_0^1 q_i(\sigma)\,\zeta_i(\sigma;\Tbbbl)\dd\sigma$ & $\frac1{24}$ & --\\[3pt]
+18 & \btree{[,b [,w [,b [,w]]]]} & $\int_0^1 q_i(\sigma)\,\zeta_i(\sigma;\Tbbwl)\dd\sigma$ & $\frac1{24}$ & --\\[3pt]
+19 & \btree{[,b [,w [,b][,b]]]} & $\int_0^1 q_i(\sigma)\,\zeta_i(\sigma;\Tbbb)\dd\sigma$ & $\frac1{12}$ & --\\[3pt]
+20 & \btree{[,b [,w [,b][,w]]]} & $\int_0^1 q_i(\sigma)\,\zeta_i(\sigma;\Tbbw)\dd\sigma$ & $\frac1{12}$ & --\\[3pt]
+21 & \btree{[,b [,w [,w [,b]]]]} & $\int_0^1 q_i(\sigma)\,\zeta_i(\sigma;\Tbwbl)\dd\sigma$ & $\frac1{24}$ & --\\[3pt]
+22 & \btree{[,b [,w [,w [,w]]]]} & $\int_0^1 q_i(\sigma)\,\zeta_i(\sigma;\Tbwwl)\dd\sigma$ & $\frac1{24}$ & F\\[3pt]
+23 & \btree{[,b [,w [,w][,w]]]} & $\int_0^1 q_i(\sigma)\,\zeta_i(\sigma;\Tbww)\dd\sigma$ & $\frac1{12}$ & F\\[3pt]
+24 & \btree{[,b [,w][,w [,b]]]} & $\int_0^1 q_i(\sigma)\,z_i(\sigma)\zeta_i(\sigma;\Tbb)\dd\sigma$ & $\frac1{8}$ & --\\[3pt]
+25 & \btree{[,b [,w][,w [,w]]]} & $\int_0^1 q_i(\sigma)\,z_i(\sigma)\zeta_i(\sigma;\Tbw)\dd\sigma$ & $\frac1{8}$ & F\\[3pt]
+26 & \btree{[,b [,w][,w][,w]]} & $\int_0^1 q_i(\sigma)\,\big(z_i(\sigma)\big)^{3}\dd\sigma$ & $\frac1{4}$ & F\\[3pt]
+\end{longtable}}
+
+\begin{thebibliography}{99}
+\small
+\bibitem{AlMohyHigham2011} A.\,H.~Al-Mohy, N.\,J.~Higham, Computing the
+ action of the matrix exponential, with an application to exponential
+ integrators, \emph{SIAM J. Sci. Comput.} 33 (2011) 488--511.
+\bibitem{AlvermannFehske2011} A.~Alvermann, H.~Fehske, High-order
+ commutator-free exponential time-propagation of driven quantum systems,
+ \emph{J. Comput. Phys.} 230 (2011) 5930--5956.
+\bibitem{Baldauf2010} M.~Baldauf, Linear stability analysis of
+ Runge--Kutta-based partial time-splitting schemes for the Euler
+ equations, \emph{Mon. Wea. Rev.} 138 (2010) 4475--4496.
+\bibitem{BlanesCasasOteoRos2009} S.~Blanes, F.~Casas, J.\,A.~Oteo,
+ J.~Ros, The Magnus expansion and some of its applications, \emph{Phys.
+ Rep.} 470 (2009) 151--238.
+\bibitem{BlanesMoan2006} S.~Blanes, P.\,C.~Moan, Fourth- and sixth-order
+ commutator-free Magnus integrators for linear and non-linear dynamical
+ systems, \emph{Appl. Numer. Math.} 56 (2006) 1519--1537.
+\bibitem{CaliariKandolfOstermannRainer2014} M.~Caliari, P.~Kandolf,
+ A.~Ostermann, S.~Rainer, Comparison of software for computing the action
+ of the matrix exponential, \emph{BIT} 54 (2014) 113--128.
+\bibitem{GassnerWintersKopriva2016} G.\,J.~Gassner, A.\,R.~Winters,
+ D.\,A.~Kopriva, Split form nodal discontinuous Galerkin schemes with
+ summation-by-parts property for the compressible Euler equations,
+ \emph{J. Comput. Phys.} 327 (2016) 39--66.
+\bibitem{GaudreaultRainwaterTokman2018} S.~Gaudreault, G.~Rainwater,
+ M.~Tokman, KIOPS: a fast adaptive Krylov subspace solver for exponential
+ integrators, \emph{J. Comput. Phys.} 372 (2018) 236--255.
+\bibitem{GiraldoKellyConstantinescu2013} F.\,X.~Giraldo, J.\,F.~Kelly,
+ E.\,M.~Constantinescu, Implicit-explicit formulations of a
+ three-dimensional nonhydrostatic unified model of the atmosphere (NUMA),
+ \emph{SIAM J. Sci. Comput.} 35 (2013) B1162--B1194.
+\bibitem{JiangShu1996} G.-S.~Jiang, C.-W.~Shu, Efficient implementation
+ of weighted ENO schemes, \emph{J. Comput. Phys.} 126 (1996) 202--228.
+\bibitem{KlempSkamarockDudhia2007} J.\,B.~Klemp, W.\,C.~Skamarock,
+ J.~Dudhia, Conservative split-explicit time integration methods for the
+ compressible nonhydrostatic equations, \emph{Mon. Wea. Rev.} 135 (2007)
+ 2897--2913.
+\bibitem{Mesinger1977} F.~Mesinger, Forward-backward scheme, and its use
+ in a limited area model, \emph{Contrib. Atmos. Phys.} 50 (1977) 200--210.
+\bibitem{NiesenWright2012} J.~Niesen, W.\,M.~Wright, Algorithm 919: a
+ Krylov subspace algorithm for evaluating the $\varphi$-functions appearing
+ in exponential integrators, \emph{ACM Trans. Math. Softw.} 38 (2012) 22.
+\bibitem{Sidje1998} R.\,B.~Sidje, Expokit: a software package for
+ computing matrix exponentials, \emph{ACM Trans. Math. Softw.} 24 (1998)
+ 130--156.
+\bibitem{BauerKnoth2021} S.~Bauer, O.~Knoth,
+ Extended multirate infinitesimal step methods: derivation of order
+ conditions, \emph{J. Comput. Appl. Math.} 387 (2021) 112541.
+ \todo{verify}
+\bibitem{BoscarinoFilbetRusso2016} S.~Boscarino, F.~Filbet, G.~Russo,
+ High order semi-implicit schemes for time dependent partial differential
+ equations, \emph{J. Sci. Comput.} 68 (2016) 975--1001.
+\bibitem{Butcher2016} J.\,C.~Butcher, \emph{Numerical Methods for
+ Ordinary Differential Equations}, 3rd ed., Wiley, 2016.
+\bibitem{CelledoniMarthinsenOwren2003} E.~Celledoni, A.~Marthinsen,
+ B.~Owren, Commutator-free Lie group methods, \emph{Future Gener. Comput.
+ Syst.} 19 (2003) 341--352.
+\bibitem{Chen2013} X.~Chen, N.~Andronova, B.~van Leer, J.\,E.~Penner,
+ J.\,P.~Boyd, C.~Jablonowski, S.-J.~Lin, A control-volume model of the
+ compressible Euler equations with a vertical Lagrangian coordinate,
+ \emph{Mon. Wea. Rev.} 141 (2013) 2526--2544, doi:10.1175/MWR-D-12-00129.1.
+\bibitem{ChinomonaReynolds2021} R.~Chinomona, D.\,R.~Reynolds,
+ Implicit-explicit multirate infinitesimal GARK methods, \emph{SIAM J.
+ Sci. Comput.} 43 (2021) A3082--A3113.
+\bibitem{CoxMatthews2002} S.\,M.~Cox, P.\,C.~Matthews, Exponential time
+ differencing for stiff systems, \emph{J. Comput. Phys.} 176 (2002)
+ 430--455.
+\bibitem{GuntherSandu2016} M.~G\"unther, A.~Sandu, Multirate generalized
+ additive Runge--Kutta methods, \emph{Numer. Math.} 133 (2016) 497--524.
+\bibitem{HairerNorsettWanner1993} E.~Hairer, S.\,P.~N{\o}rsett,
+ G.~Wanner, \emph{Solving Ordinary Differential Equations I}, 2nd ed.,
+ Springer, 1993.
+\bibitem{HochbruckOstermann2005} M.~Hochbruck, A.~Ostermann, Explicit
+ exponential Runge--Kutta methods for semilinear parabolic problems,
+ \emph{SIAM J. Numer. Anal.} 43 (2005) 1069--1090.
+\bibitem{HochbruckOstermann2010} M.~Hochbruck, A.~Ostermann, Exponential
+ integrators, \emph{Acta Numer.} 19 (2010) 209--286.
+\bibitem{HochbruckOstermannSchweitzer2009} M.~Hochbruck, A.~Ostermann,
+ J.~Schweitzer, Exponential Rosenbrock-type methods, \emph{SIAM J. Numer.
+ Anal.} 47 (2009) 786--803.
+\bibitem{KetchesonRanocha2023} D.\,I.~Ketcheson, H.~Ranocha, Computing
+ with B-series, \emph{ACM Trans. Math. Softw.} 49 (2023) 14.
+\bibitem{KlempWilhelmson1978} J.\,B.~Klemp, R.\,B.~Wilhelmson, The
+ simulation of three-dimensional convective storm dynamics, \emph{J.
+ Atmos. Sci.} 35 (1978) 1070--1096.
+\bibitem{KnothWensch2014} O.~Knoth, J.~Wensch, Generalized split-explicit
+ Runge--Kutta methods for the compressible Euler equations, \emph{Mon.
+ Wea. Rev.} 142 (2014) 2067--2081.
+\bibitem{KnothWolke1998} O.~Knoth, R.~Wolke, Implicit-explicit
+ Runge--Kutta methods for computing atmospheric reactive flows,
+ \emph{Appl. Numer. Math.} 28 (1998) 327--341.
+\bibitem{Lawson1967} J.\,D.~Lawson, Generalized Runge--Kutta processes
+ for stable systems with large Lipschitz constants, \emph{SIAM J. Numer.
+ Anal.} 4 (1967) 372--380.
+\bibitem{LuanChinomonaReynolds2020} V.\,T.~Luan, R.~Chinomona,
+ D.\,R.~Reynolds, A new class of high-order methods for multirate
+ differential equations, \emph{SIAM J. Sci. Comput.} 42 (2020)
+ A1245--A1268.
+\bibitem{Owren2006} B.~Owren, Order conditions for commutator-free Lie
+ group methods, \emph{J. Phys. A} 39 (2006) 5585--5599.
+\bibitem{Sandu2019} A.~Sandu, A class of multirate infinitesimal GARK
+ methods, \emph{SIAM J. Numer. Anal.} 57 (2019) 2300--2327.
+\bibitem{SchlegelKnothArnoldWolke2009} M.~Schlegel, O.~Knoth, M.~Arnold,
+ R.~Wolke, Multirate Runge--Kutta schemes for advection equations,
+ \emph{J. Comput. Appl. Math.} 226 (2009) 345--357.
+\bibitem{WenschKnothGalant2009} J.~Wensch, O.~Knoth, A.~Galant, Multirate
+ infinitesimal step methods for atmospheric flow simulation, \emph{BIT}
+ 49 (2009) 449--473.
+\bibitem{WickerSkamarock2002} L.\,J.~Wicker, W.\,C.~Skamarock,
+ Time-splitting methods for elastic models using forward time schemes,
+ \emph{Mon. Wea. Rev.} 130 (2002) 2088--2097.
+\end{thebibliography}
+\noindent\todo{verify all bibliographic data.}
+
+\end{document}
+

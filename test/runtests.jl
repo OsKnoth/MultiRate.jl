@@ -1521,4 +1521,34 @@ end
     @test maximum(abs.(bn - be)) < 0.05 * maximum(abs.(be))
 end
 
+@testset "MIS: polynomial coupling, order conditions, 1D acoustic-advection test" begin
+    MM = MultiRate.MIS
+    @test MM.tree_count(5) == [1, 2, 7, 26, 107]
+    @test MM.tree_count(5; class = :B) == [1, 2, 6, 20, 73]
+    @test MM.tree_count(5; class = :A) == [1, 2, 6, 18, 60]
+    @test MM.tree_count(5; class = :L) == [1, 2, 5, 13, 37]
+    ts = MM.trees(3); r = MM.residuals(MM.etd2rk(), 3; ts)          # table of the note, ETD2RK
+    @test [r[k] for k in eachindex(ts) if ts[k].n == 3] == [1//6, 0, 0, -1//6, 0, 1//12, 0]
+    m54 = MM.PolyMIS(TS.mis_tableau(:MIS54))
+    @test MM.order(m54) == 2 && MM.order(m54; class = :A) == 4
+    @test MM.order(MM.PolyMIS(TS.mis_tableau(:MISF53))) == 3
+    @test MM.stage_times(m54)[end] ≈ 1
+    A, b = MM.base_method(m54); @test sum(b) ≈ 1 && b' * sum(A; dims = 2)[:] ≈ 1 / 2
+    S, L = MM.fv_symbols(1.7)                                       # same step matrix as LinearAnalysis
+    R1 = MM.amplification(m54, 1.3 .* S, 6.0 .* L)
+    R2 = MultiRate.LinearAnalysis.step_matrix(MultiRate.LinearAnalysis.kw_mode(1.7; C_sound = 6.0, C_adv = 1.3), 1.0,
+                                              TS.mis_tableau(:MIS54); fast = :exact)
+    @test maximum(abs, eigvals(R1)) ≈ maximum(abs, eigvals(R2)) rtol = 1e-10
+    S, L = MM.dg_symbols(0.05; P = 3)                               # consistent semi-discretization
+    @test minimum(abs.(eigvals(L) .- 0.0125im)) < 1e-8 && minimum(abs.(eigvals(S) .+ 0.0125im)) < 1e-8
+    S, L = MM.dg_symbols(1.1; P = 3, flux = :central)              # substeps converge (Verlet: 2nd order)
+    Re = MM.amplification(m54, 0.8S, 3L)
+    e = [opnorm(MM.amplification(m54, 0.8S, 3L; inner = (:verlet, n)) - Re) for n in (20, 40)]
+    @test 3.5 < e[1] / e[2] < 4.5
+    e2 = MM.etd2rk(Float64); Re = MM.amplification(e2, 0.8S, 3L)     # polynomial forcing, RK4 substeps
+    e = [opnorm(MM.amplification(e2, 0.8S, 3L; inner = (:rk4, n)) - Re) for n in (20, 40)]
+    @test e[1] / e[2] > 14
+    @test MM.adv_limit(m54, MM.symbols(:fv); Csound = 0, θs = range(0, π, length = 32)) ≈ 2.05 atol = 0.01
+end
+
 end
