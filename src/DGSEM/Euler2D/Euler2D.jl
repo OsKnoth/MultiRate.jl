@@ -59,7 +59,7 @@ import ..TimeStepping: rhs_nonlinear!, fast_operator, fast_apply!, fast_rhs_ther
                        interface_update!, fast_rhs_horizontal!, vertical_apply!, vertical_factor, vertical_solve!,
                        fast_rhs_hthermo!, fast_rhs_hmomentum!, frozen_ncoef, frozen_data!, frozen_fast!,
                        frozen_stage_begin!, frozen_step_end!, frozen_vertical_rhs!, frozen_vertical_implicit!,
-                       frozen_vertical_solve!, frozen_vertical_step!, frozen_hthermo!, frozen_hmomentum!, frozen_hthermo_reeval, frozen_hflow!
+                       frozen_vertical_solve!, frozen_vertical_step!, frozen_hthermo!, frozen_hmomentum!, frozen_hthermo_reeval, frozen_hmomentum_selfcoupled, frozen_momentum_rows!, frozen_hflow!
 
 export Mesh2D, Euler2DModel, HDGFast2D, with_sponge, output_fields, field_section, open_vtkhdf, write_vtkhdf!, plot_fields,
        rhs_nonlinear, rhs_nonlinear!, fast_operator, fast_matrix, sound_speed_max, dss,

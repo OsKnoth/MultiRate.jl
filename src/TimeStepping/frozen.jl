@@ -42,6 +42,14 @@ frozen_hmomentum!(out, model, C, z, F, h) = frozen_fast!(out, model, C, z, :hmom
 pressure jump in the LMARS mass flux); the combined :cs loop then evaluates :hthermo anew after the column
 solve instead of reusing E (which would be explicit Euler at a½, first order). Default false (FV)."""
 frozen_hthermo_reeval(model) = false
+"""true if the horizontal momentum part depends on the momenta themselves (DG: the LMARS term [m_n] of the
+ξ-faces; with vsplit = :contravariant_momentum also the η-face terms on Ũ). The :cs/:csfb loops then add the
+explicit vertical force (1-β)h L₁a to the momenta after the horizontal momentum step, so that the latter acts on
+bⁿ as in (eq:CS) and not on bⁿ + (1-β)h L₁a (needed for the well-balanced step). Default false (FV: the momentum
+rows depend only on the thermodynamic rows; same result either way)."""
+frozen_hmomentum_selfcoupled(model) = false
+"""out = y on the momentum rows, 0 on the thermodynamic rows (models with `frozen_hmomentum_selfcoupled`)."""
+function frozen_momentum_rows! end
 """
     frozen_hflow!(z, model, C, F, flow, c, zsrc, w)
 
@@ -177,10 +185,13 @@ function frozen_fast_solve!(Z, model, C, F, dt, nsteps, k; method::Symbol = :ver
             β = (1 + offcenter) / 2
             frozen_fast!(k, model, C, Z, :hthermo, F)                 # a½ (and h/2 of the W forcing, sponge)
             frozen_vertical_rhs!(y, model, C, Z, h / 2, (1 - β) * h)  # K₁b on a (h/2), L₁a on b ((1-β)h)
+            late = frozen_hmomentum_selfcoupled(model)                # L₁a on b after the momentum step
+            late && (frozen_momentum_rows!(tmp[6], model, y); @. y -= tmp[6])
             @. Z += (h / 2) * k + y
             damp && first && (tmp[2] .= Z)                            # no extrapolation in the first step
             first = false
             momentum!(:hmomentum, h); @. Z += h * k                   # U⁺ = U + h L₀ã½ + h f_U
+            late && (@. Z += tmp[6])
             frozen_hthermo!(k, model, C, Z, F, β * h); @. Z += (h / 2) * k   # explicit part of a⁺
             frozen_vertical_implicit!(Z, model, C, h / 2, β * h, k, y)       # (a⁺, b⁺): column solve
         elseif base == :wrf
@@ -280,33 +291,42 @@ function _cs_loop!(Z, model, C, F, h, N, k, tmp, damp, ε, momentum!; halfsteps:
     y, E, P = tmp[1], tmp[4], tmp[5]
     β = (1 + ε) / 2
     reeval = frozen_hthermo_reeval(model)
+    # self-coupled horizontal momentum part: the explicit vertical force yb = (1-β)h L₁a on b is added after the
+    # horizontal momentum step (`frozen_hmomentum_selfcoupled`); otherwise before it, as part of y
+    late = frozen_hmomentum_selfcoupled(model)
+    late && length(tmp) < 6 && error(":cs/:csfb with a self-coupled horizontal momentum part need 6 work vectors (tmp)")
+    yb = late ? tmp[6] : y
     if !halfsteps
-        frozen_vertical_rhs!(y, model, C, Z, 0.0, (1 - β) * h)    # (1-β)h L₁a⁰ on b
-        @. Z += y
+        frozen_vertical_rhs!(yb, model, C, Z, 0.0, (1 - β) * h)   # (1-β)h L₁a⁰ on b
+        late || (@. Z += yb)
         for n in 1:N
             momentum!(:hmomentum, h); @. Z += h * k               # U⁺ = U + h L₀ã + h f_U
+            late && (@. Z += yb)
             frozen_hthermo!(E, model, C, Z, F, β * h)             # E at (a, b⁺)
             @. Z += h * E
             frozen_vertical_implicit!(Z, model, C, h, β * h, k, y)   # a⁺ = .. - h K₁b⁺, b⁺ = .. + βh L₁a⁺
             if n < N
-                frozen_vertical_rhs!(y, model, C, Z, 0.0, (1 - β) * h)   # (1-β)h L₁a⁺ of the next b⁺
-                @. Z += y
+                frozen_vertical_rhs!(yb, model, C, Z, 0.0, (1 - β) * h)   # (1-β)h L₁a⁺ of the next b⁺
+                late || (@. Z += yb)
             end
         end
         return Z
     end
     frozen_fast!(k, model, C, Z, :hthermo, F)
     frozen_vertical_rhs!(y, model, C, Z, h / 2, (1 - β) * h)
+    late && (frozen_momentum_rows!(yb, model, y); @. y -= yb)
     @. Z += (h / 2) * k + y
     damp && (tmp[2] .= Z)                                     # no extrapolation in the first step
     for n in 1:N
         momentum!(:hmomentum, h); @. Z += h * k               # U⁺ = U + h L₀ã½ + h f_U
+        late && (@. Z += yb)                                  # + (1-β)h L₁a on b
         frozen_hthermo!(E, model, C, Z, F, β * h)             # E at (a½, b⁺)
         has_p = frozen_phase!(P, model, C, Z)                 # P(a½)
         @. Z += (h / 2) * E
         frozen_vertical_implicit!(Z, model, C, h / 2, β * h, k, y)   # (a⁺, b⁺)
         if n < N                                              # half step after the solve
             frozen_vertical_rhs!(y, model, C, Z, h / 2, (1 - β) * h)
+            late && (frozen_momentum_rows!(yb, model, y); @. y -= yb)
             if reeval
                 frozen_fast!(k, model, C, Z, :hthermo, F)     # E(a⁺, b⁺)
                 @. Z += (h / 2) * k + y

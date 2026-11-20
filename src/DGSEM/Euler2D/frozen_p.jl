@@ -25,7 +25,7 @@
 # horizontal mass flux of a⁺ is evaluated), :vertical = η part (no forcing); :thermo, :momentum, :all
 # as in the base model.
 
-using SparseArrays: sparse, SparseMatrixCSC, spzeros, findnz, nzrange, rowvals, nonzeros
+using SparseArrays: sparse, SparseMatrixCSC, spzeros, findnz, nzrange, rowvals, nonzeros, nnz
 using LinearAlgebra: lu, lu!, ldiv!, mul!, Diagonal, I, diag
 
 """Stage data: the coefficients C of the stage (`frozen_stage_begin!`), the operator assembled as sparse
@@ -53,6 +53,20 @@ mutable struct DGVertical
     Jv0::SparseMatrixCSC{Float64,Int}
     P::SparseMatrixCSC{Float64,Int}                     # nodal transform (m_x, m_z) -> (Ũ, W̃) = (Jξ·m, Jη·m), identity elsewhere
     Pinv::SparseMatrixCSC{Float64,Int}
+    mfactors::Dict{Float64,Any}                         # LU of I - w J_v^{bb} (momentum block) per w, this stage
+    cmap::SparseMatrixCSC{Float64,Int}                  # :contravariant_momentum: J_v0.nzval -> J_v.nzval (fixed linear map)
+    hA::SparseMatrixCSC{Float64,Int}                    #   J_h.nzval = hA J_h0.nzval + hB J_v0.nzval
+    hB::SparseMatrixCSC{Float64,Int}
+    mmat::SparseMatrixCSC{Float64,Int}                  # I - w J_v^{bb} (pattern fixed), positions of J_v^{bb} in J_v.nzval
+    mpos::Vector{Int}
+    mlus::Dict{Float64,Any}                             # its LU objects across stages (symbolic reuse)
+    isth::BitVector                                     # thermodynamic row (ρ, Θ, p, ρq_v, ρq_c)?
+    Jht::SparseMatrixCSC{Float64,Int}                   # J_h restricted to the thermodynamic rows, J_h and J_v to the momentum rows
+    Jhm::SparseMatrixCSC{Float64,Int}                   # (same size, the other rows empty; refilled per stage from the positions)
+    Jvm::SparseMatrixCSC{Float64,Int}
+    pht::Vector{Int}
+    phm::Vector{Int}
+    pvm::Vector{Int}
 end
 
 """
@@ -146,7 +160,10 @@ function _dgp_build(base, pvar, lmars, vsplit, vsolver, hpredict, hybrid, aux, c
                                       Dict{Tuple{Float64,Float64},Any}(), Dict{Tuple{Float64,Float64},Any}(), zeros(nq), zeros(nq),
                                       zeros(nq), Vector{Int}[], Matrix{Int}[], Matrix{Int}[], Int[], spzeros(nq, nq),
                                       Dict{Float64,Tuple{SparseMatrixCSC{Float64,Int},SparseMatrixCSC{Float64,Int}}}(),
-                                      spzeros(nq, nq), spzeros(nq, nq), _dgp_contra(base, nq, vsplit)...),
+                                      spzeros(nq, nq), spzeros(nq, nq), _dgp_contra(base, nq, vsplit)...,
+                                      Dict{Float64,Any}(), spzeros(0, 0), spzeros(0, 0), spzeros(0, 0), spzeros(0, 0), Int[],
+                                      Dict{Float64,Any}(), _dgp_isth(base, nq, nqp), spzeros(0, 0), spzeros(0, 0), spzeros(0, 0),
+                                      Int[], Int[], Int[]),
                            hybrid, lmars, vsplit, mhat, vsolver, hpredict, aux, cols, ph..., nqp)
 end
 
@@ -171,14 +188,58 @@ function _dgp_contra(base, nq, vsplit)
     return P, Pinv
 end
 
-"""Vertical operator of vsplit = :contravariant_momentum: P⁻¹ Π(P J P⁻¹) P, Π dropping every entry with row or column Ũ."""
-function _dgp_contra_vertical(m::DGPressureModel, v::DGVertical, J)
-    nqb, np2 = m.base.nq, m.base.mesh.np^2
-    isU(k) = k <= nqb && mod1(cld(k, np2), NV) == 2
-    Is, Js, Vs = findnz(v.P * J * v.Pinv)
-    keep = [!(isU(Is[t]) || isU(Js[t])) for t in eachindex(Is)]
-    Jt = sparse(Is[keep], Js[keep], Vs[keep], size(J)...)
-    return v.Pinv * Jt * v.P
+"""Position of entry (i, j) in A.nzval (0: not in the pattern)."""
+@inline function _nzpos(A::SparseMatrixCSC, i, j)
+    r = A.colptr[j]:A.colptr[j+1]-1
+    t = searchsortedfirst(view(A.rowval, r), i)
+    return t <= length(r) && A.rowval[r[t]] == i ? r[t] : 0
+end
+
+"""Pattern (values zero) of the matrix with the entries (I, J), and the map of the triplets (I[k], J[k], T[k], V[k]) as a
+sparse matrix: out.nzval = map * in.nzval with out_{I[k] J[k]} += V[k] in_{T[k]}."""
+function _dgp_linmap(I_, J_, T_, V_, n, nin)
+    A = sparse(I_, J_, ones(length(I_)), n, n); fill!(A.nzval, 0.0)
+    return A, sparse([_nzpos(A, I_[k], J_[k]) for k in eachindex(I_)], T_, V_, nnz(A), nin)
+end
+
+"""Vertical operator of vsplit = :contravariant_momentum: P⁻¹ Π(P J P⁻¹) P, Π dropping every entry with row or column Ũ.
+P is node-local (2 × 2 on the momenta), so with the pattern of J fixed this is a fixed linear map of J.nzval, built at
+the first stage (v.cmap; for the main model also J_h = J_h0 + J_v0 - J_v as hA, hB); later stages only multiply."""
+function _dgp_contra_vertical!(m::DGPressureModel, v::DGVertical, Jv0, Jh0 = nothing)
+    if size(v.cmap, 2) != nnz(Jv0)
+        nqb, np2, n = m.base.nq, m.base.mesh.np^2, size(Jv0, 1)
+        isU(k) = k <= nqb && mod1(cld(k, np2), NV) == 2
+        P, Pi = v.P, v.Pinv; PT = sparse(transpose(P)); PiT = sparse(transpose(Pi))
+        rP, vP, rPi, vPi, rPT, vPT, rPiT, vPiT = rowvals(P), nonzeros(P), rowvals(Pi), nonzeros(Pi), rowvals(PT), nonzeros(PT),
+                                                 rowvals(PiT), nonzeros(PiT)
+        I_, J_, T_, V_ = Int[], Int[], Int[], Float64[]
+        rv = rowvals(Jv0)
+        for j in 1:n, t in nzrange(Jv0, j)
+            i = rv[t]
+            for q1 in nzrange(P, i), q2 in nzrange(PiT, j)          # (P J P⁻¹)_{rs} ∋ P_ri J_ij P⁻¹_js
+                r, s = rP[q1], rPiT[q2]
+                (isU(r) || isU(s)) && continue
+                c = vP[q1] * vPiT[q2]
+                for q3 in nzrange(Pi, r), q4 in nzrange(PT, s)      # (P⁻¹ Jt P)_{r2 s2} ∋ P⁻¹_{r2 r} Jt_rs P_{s s2}
+                    push!(I_, rPi[q3]); push!(J_, rPT[q4]); push!(T_, t); push!(V_, vPi[q3] * c * vPT[q4])
+                end
+            end
+        end
+        v.Jv, v.cmap = _dgp_linmap(I_, J_, T_, V_, n, nnz(Jv0))
+        if Jh0 !== nothing                                          # J_h = J_h0 + J_v0 - J_v on the union pattern
+            Ih, Jh_, _ = findnz(Jh0); I0, J0, _ = findnz(Jv0); I1, J1, _ = findnz(v.Jv)
+            v.Jh = sparse(vcat(Ih, I0, I1), vcat(Jh_, J0, J1), ones(length(Ih) + length(I0) + length(I1)), n, n)
+            fill!(v.Jh.nzval, 0.0)
+            emb(Is, Js) = sparse([_nzpos(v.Jh, Is[k], Js[k]) for k in eachindex(Is)], 1:length(Is), 1.0, nnz(v.Jh), length(Is))
+            v.hA = emb(Ih, Jh_)
+            v.hB = emb(I0, J0) - emb(I1, J1) * v.cmap
+        end
+    end
+    mul!(v.Jv.nzval, v.cmap, Jv0.nzval)
+    if Jh0 !== nothing
+        mul!(v.Jh.nzval, v.hA, Jh0.nzval); mul!(v.Jh.nzval, v.hB, Jv0.nzval, 1.0, 1.0)
+    end
+    return v.Jv
 end
 
 """Node columns (ex, i) for the condensed column solve: the element unknowns (ρ, m_x, m_z, Θ, p at the np nodes of the
@@ -559,8 +620,33 @@ function _dgp_part_terms!(emit, m::DGPressureModel, C, which::Symbol)
     return nothing
 end
 
-@inline _dgp_isthermo(m::DGPressureModel, k) = k > m.base.nq ? k <= m.nqp :
-                                                 mod1(cld(k, m.base.mesh.np^2), NV) in (1, 4)
+@inline _dgp_isthermo(m::DGPressureModel, k) = @inbounds m.vert.isth[k]
+"""Thermodynamic rows of the state (ρ, Θ of the base, p, ρq_v, ρq_c; not m_x, m_z, M̂)."""
+_dgp_isth(base, nq, nqp) = BitVector([k > base.nq ? k <= nqp : mod1(cld(k, base.mesh.np^2), NV) in (1, 4) for k in 1:nq])
+
+"""Rows of A selected by `rows` (same size, other rows empty) and the positions of its entries in A.nzval."""
+function _dgp_rows(A::SparseMatrixCSC, rows::BitVector)
+    Is, Js, _ = findnz(A)
+    sel = [t for t in eachindex(Is) if rows[Is[t]]]
+    B = sparse(Is[sel], Js[sel], ones(length(sel)), size(A)...)
+    nnz(B) == length(sel) || error("_dgp_rows: pattern")
+    B.nzval .= A.nzval[sel]
+    return B, sel
+end
+"""Refill the row blocks J_h^T, J_h^M, J_v^M of the stage (patterns once)."""
+function _dgp_rowblocks!(v::DGVertical)
+    if length(v.pht) + length(v.phm) != nnz(v.Jh) || size(v.Jvm, 1) != size(v.Jv, 1)
+        v.Jht, v.pht = _dgp_rows(v.Jh, v.isth)
+        v.Jhm, v.phm = _dgp_rows(v.Jh, .!v.isth)
+        v.Jvm, v.pvm = _dgp_rows(v.Jv, .!v.isth)
+    else
+        nh, nv = v.Jh.nzval, v.Jv.nzval
+        @inbounds for (k, t) in enumerate(v.pht); v.Jht.nzval[k] = nh[t]; end
+        @inbounds for (k, t) in enumerate(v.phm); v.Jhm.nzval[k] = nh[t]; end
+        @inbounds for (k, t) in enumerate(v.pvm); v.Jvm.nzval[k] = nv[t]; end
+    end
+    return nothing
+end
 
 """Fast part F_f(C, z) + F on the rows of `part`: :all, :thermo (ρ, Θ, p), :momentum (m_x, m_z),
 :hthermo (horizontal thermodynamic rows and their forcing, sponge), :hmomentum (horizontal momentum
@@ -573,8 +659,10 @@ function frozen_fast!(out, m::DGPressureModel, C, z, part::Symbol, F)
     if v.valid && C === v.C                        # stage matrices
         if dirs == (1, 2)
             mul!(out, v.Jh, z); mul!(out, v.Jv, z, 1.0, 1.0)
+        elseif dirs == (1,)                         # only the rows that are kept
+            mul!(out, part === :hthermo ? v.Jht : part === :hmomentum ? v.Jhm : v.Jh, z)
         else
-            mul!(out, dirs == (1,) ? v.Jh : v.Jv, z)
+            mul!(out, v.Jv, z)
         end
     else
         fill!(out, 0.0)
@@ -640,8 +728,7 @@ function frozen_stage_begin!(m::DGPressureModel, C, z)
     if m.vsplit === :contravariant_momentum
         v.Jh0 = _dgp_matrix!(v.Jh0, v.hmap, m, C, :h)
         v.Jv0 = _dgp_matrix!(v.Jv0, v.vmap, m, C, :v)
-        v.Jv = _dgp_contra_vertical(m, v, v.Jv0)
-        v.Jh = v.Jh0 + v.Jv0 - v.Jv
+        _dgp_contra_vertical!(m, v, v.Jv0, v.Jh0)                 # J_v, J_h
     else
         v.Jh = _dgp_matrix!(v.Jh, v.hmap, m, C, :h)
         v.Jv = _dgp_matrix!(v.Jv, v.vmap, m, C, :v)
@@ -650,14 +737,15 @@ function frozen_stage_begin!(m::DGPressureModel, C, z)
         a = m.aux.vert
         if m.vsplit === :contravariant_momentum
             a.Jv0 = _dgp_matrix!(a.Jv0, a.vmap, m.aux, C, :v)
-            a.Jv = _dgp_contra_vertical(m, a, a.Jv0)
+            _dgp_contra_vertical!(m, a, a.Jv0)
         else
             a.Jv = _dgp_matrix!(a.Jv, a.vmap, m.aux, C, :v)
         end
     end
+    _dgp_rowblocks!(v)
     v.valid = true
-    empty!(v.factors)
-    _dgp_dissipation!(m)                               # blocks of D₀ (once)
+    empty!(v.factors); empty!(v.mfactors)
+    _dgp_dissipation!(m)                              # blocks of D₀ (once)
     empty!(v.flows)
     return nothing
 end
@@ -844,13 +932,22 @@ end
 # On terrain the η part acts on m_x (metric term z_x ∂η p, gravity, wall LMARS), and the ξ part depends on
 # m_x (horizontal divergence; LMARS dissipation of the ξ-faces). Evaluated with the momenta before the
 # column solve, both lag by βh L₁a⁺ and the small step drops to first order (docs/frozen_dg). Hence
-#   :hthermo of a⁺ (`frozen_hthermo!`, w = βh): at b̂ = b + w (J_v z)_b (the implicit vertical force at the
-#       current state; the remaining lag w J_v(z⁺ - z) = O(h²) keeps the order, as the FV metric predictor),
-#   :hmomentum of b⁺ (`frozen_hmomentum!`): at the midpoint predictor b + h/2 (J_h z)_b (the ξ-face
-#       dissipation b←b is then a second-order midpoint step instead of explicit Euler).
+#   :hthermo of a⁺ (`frozen_hthermo!`, w = βh): at b̂ = b + w (I - w J_v^{bb})⁻¹ (J_v z)_b, the momenta of the column
+#       solve with the thermodynamic rows frozen at the current state (J_v^{bb} the momentum block, the vertical
+#       LMARS term [m_n] of p*, local to the face node pairs). The remaining lag O(h²) keeps the order, as the FV
+#       metric predictor. Well balanced: at a discrete rest state (J z + F = 0, b = 0) the momenta after the
+#       horizontal momentum step are b = -w (J_v z)_b|_{b=0}, so b̂ = 0 and the column solve returns the rest state
+#       (the explicit predictor b + w (J_v z)_b leaves w² J_v^{bb} (J_v z)_b, and the step drifts on terrain),
+#   :hmomentum of b⁺ (`frozen_hmomentum!`, hpredict): at the midpoint predictor b + h/2 (J z + F)_b with the whole
+#       force (the ξ-face dissipation b←b is then a second-order midpoint step instead of explicit Euler; zero at rest).
+# Both act on bⁿ: the explicit vertical force (1-β)h L₁a is added to b after the horizontal momentum step
+# (`frozen_hmomentum_selfcoupled`), since the ξ-face p* (and with :contravariant_momentum the η-face terms on Ũ)
+# depend on b. With these the :cs/:csfb step keeps a discrete rest state (N = 0, e.g. the isothermal atmosphere with
+# the gravity mean :waruszewski or the constant-θ one with :artiano) on terrain to round-off.
 # Forcing and sponge are evaluated at z.
 
 frozen_hthermo_reeval(m::DGPressureModel) = true   # LMARS: the ξ-face mass flux depends on [p]
+frozen_hmomentum_selfcoupled(m::DGPressureModel) = true   # LMARS: the ξ-face p* depends on [m_n]
 
 """Momentum rows of y ← z + c (src)_b (thermodynamic rows of z unchanged)."""
 function _dgp_predict!(y, m::DGPressureModel, z, c, src)
@@ -860,10 +957,48 @@ function _dgp_predict!(y, m::DGPressureModel, z, c, src)
     return y
 end
 
+"""LU of I - w J_v^{bb}: the momentum block of J_v (momentum rows and columns; on the η-faces and walls the LMARS
+term [m_n] of p*, so block diagonal over the face node pairs), identity on the thermodynamic rows."""
+function _dgp_mfactor(m::DGPressureModel, w)
+    v = m.vert
+    get!(v.mfactors, Float64(w)) do
+        if size(v.mmat, 1) != m.nq                      # pattern of I - w J_bb and the positions of J_bb in J_v.nzval (once)
+            Is, Js, _ = findnz(v.Jv)
+            keep = [!_dgp_isthermo(m, Is[t]) && !_dgp_isthermo(m, Js[t]) for t in eachindex(Is)]
+            v.mmat = sparse(vcat(Is[keep], 1:m.nq), vcat(Js[keep], 1:m.nq), ones(count(keep) + m.nq), m.nq, m.nq)
+            v.mpos = zeros(Int, nnz(v.mmat))
+            rv = rowvals(v.mmat)
+            for j in 1:m.nq, q in nzrange(v.mmat, j)
+                i = rv[q]
+                (_dgp_isthermo(m, i) || _dgp_isthermo(m, j)) || (v.mpos[q] = _nzpos(v.Jv, i, j))
+            end
+        end
+        A = v.mmat; nz = nonzeros(A); rv = rowvals(A); jv = nonzeros(v.Jv)
+        @inbounds for j in 1:m.nq, q in nzrange(A, j)
+            nz[q] = (rv[q] == j ? 1.0 : 0.0) - (v.mpos[q] > 0 ? w * jv[v.mpos[q]] : 0.0)
+        end
+        haskey(v.mlus, w) ? (try lu!(v.mlus[w], A) catch; lu(A) end) : (v.mlus[w] = lu(A))
+    end
+end
+
+"""out = (J_v z)_b: the vertical part on the momentum rows, zero on the thermodynamic rows."""
+function _dgp_vmom!(out, m::DGPressureModel, C, z)
+    v = m.vert
+    if v.valid && C === v.C
+        mul!(out, v.Jvm, z)
+    else
+        frozen_fast!(out, m, C, z, :vertical, out)
+        @inbounds for k in eachindex(out); v.isth[k] && (out[k] = 0.0); end
+    end
+    return out
+end
+frozen_momentum_rows!(out, m::DGPressureModel, y) = (@inbounds for k in eachindex(out); out[k] = m.vert.isth[k] ? 0.0 : y[k]; end; out)
+
 function frozen_hthermo!(out, m::DGPressureModel, C, z, F, w)
     w == 0 && return frozen_fast!(out, m, C, z, :hthermo, F)
     v = m.vert
-    frozen_fast!(v.zv, m, C, z, :vertical, F)
+    _dgp_vmom!(v.zs, m, C, z)                          # (J_v z)_b, zero on the thermodynamic rows
+    ldiv!(v.zv, _dgp_mfactor(m, w), v.zs)              # (I - w J_bb)⁻¹ (J_v z)_b: well balanced (see above)
     _dgp_predict!(v.zp, m, z, w, v.zv)
     frozen_fast!(out, m, C, v.zp, :hthermo, F)
     b = m.base
@@ -877,6 +1012,8 @@ function frozen_hmomentum!(out, m::DGPressureModel, C, z, F, h)
     m.hpredict || return frozen_fast!(out, m, C, z, :hmomentum, F)    # D_M^x M⁰ explicit (docs/fast_2d, S2)
     v = m.vert
     frozen_fast!(v.zv, m, C, z, :hmomentum, F)
+    _dgp_vmom!(v.zs, m, C, z)                          # with the vertical force: b⁰ + h/2 (J z + F)_b (= 0 at rest)
+    v.zv .+= v.zs
     _dgp_predict!(v.zp, m, z, h / 2, v.zv)
     return frozen_fast!(out, m, C, v.zp, :hmomentum, F)
 end
@@ -902,95 +1039,136 @@ end
 #   M̂ = G Z:  (I - Σ_K G_K W_K) M̂ = Σ_K G_K y_K   (tridiagonal over the Nez - 1 η-faces of the column).
 # Since the element rows with M̂ = s m_f equal the LMARS operator, the result is that of the sparse LU.
 const _TriLU = LinearAlgebra.LU{Float64,LinearAlgebra.Tridiagonal{Float64,Vector{Float64}},Vector{Int}}
+#
+# Storage: element K of a column touches only its two η-faces f = K-1 (bottom, local 1) and f = K (top, local 2), so
+# W_K is n × 2 and G_K is 2 × n, and E_K⁻¹ is kept as a dense inverse (n = 5np dry, 7np moist). All blocks of all
+# columns lie in contiguous arrays, and the solve is plain loops (no small BLAS calls): per element one n × n
+# product and two n × 2 products, per column one tridiagonal solve (LU with pivoting).
 struct HDGColumnFactor
-    cols::Vector{Tuple{Vector{Vector{Int}},Vector{Int}}}
-    E::Vector{Vector{LinearAlgebra.LU{Float64,Matrix{Float64},Vector{Int}}}}
-    W::Vector{Vector{Matrix{Float64}}}
-    G::Vector{Vector{Matrix{Float64}}}
-    S::Vector{_TriLU}                                   # LU of the tridiagonal interface system
-    yk::Vector{Float64}
+    n::Int                                              # unknowns per element block
+    nK::Int                                             # elements per column (Nez)
+    idx::Matrix{Int}                                    # (n, nK·ncol): global unknown of each block row
+    Einv::Array{Float64,3}                              # (n, n, nK·ncol)
+    W::Array{Float64,3}                                 # (n, 2, nK·ncol)
+    G::Array{Float64,3}                                 # (2, n, nK·ncol), rows divided by the M̂ diagonal
+    S::Vector{_TriLU}                                   # LU of the tridiagonal interface system per column
+    yk::Vector{Float64}                                 # work: one column
     r::Vector{Float64}
 end
 
 function _hdg_factor(m::DGPressureModel, ct, cw)
     Jx = m.aux.vert.Jv
     nqp = m.nqp
-    # owners: element unknown k -> (column, element, local index), η-face M̂ -> (column, face)
-    oc = zeros(Int, nqp); oK = zeros(Int, nqp); ot = zeros(Int, nqp)
-    fc = zeros(Int, size(Jx, 1)); ff = zeros(Int, size(Jx, 1))
-    for (c, (idx, F)) in enumerate(m.cols)
-        for (K, id) in enumerate(idx), (t, k) in enumerate(id); oc[k] = c; oK[k] = K; ot[k] = t; end
+    ncol = length(m.cols); nK = length(m.cols[1][1]); n = length(m.cols[1][1][1])
+    idx = zeros(Int, n, nK * ncol)
+    oc = zeros(Int, nqp); ob = zeros(Int, nqp); ot = zeros(Int, nqp)     # element unknown -> (column, block, local)
+    fc = zeros(Int, size(Jx, 1)); ff = zeros(Int, size(Jx, 1))             # M̂ -> (column, face)
+    for (c, (ids, F)) in enumerate(m.cols)
+        length(ids) == nK || error("vsolver = :hdg: columns of different length")
+        for (K, id) in enumerate(ids)
+            length(id) == n || error("vsolver = :hdg: element blocks of different size")
+            bk = (c - 1) * nK + K
+            for (t, k) in enumerate(id); oc[k] = c; ob[k] = bk; ot[k] = t; idx[t, bk] = k; end
+        end
         for (f, k) in enumerate(F); fc[k] = c; ff[k] = f; end
     end
-    A = [[zeros(length(id), length(id)) for id in idx] for (idx, F) in m.cols]       # J_ee
-    B = [[zeros(length(id), length(F)) for id in idx] for (idx, F) in m.cols]        # J_eM
-    G = [[zeros(length(F), length(id)) for id in idx] for (idx, F) in m.cols]        # M̂ rows, element columns
-    dF = [zeros(length(F)) for (idx, F) in m.cols]                                    # minus the M̂ diagonal
+    A = zeros(n, n, nK * ncol)                         # J_ee
+    W = zeros(n, 2, nK * ncol)                         # J_eM (then W_K)
+    G = zeros(2, n, nK * ncol)                         # constraint rows of the two faces of the element
+    dF = zeros(max(nK - 1, 1), ncol)                   # minus the M̂ diagonal
     rv, nz = rowvals(Jx), nonzeros(Jx)
     @inbounds for j in 1:size(Jx, 2), q in nzrange(Jx, j)
         r, v = rv[q], nz[q]
         v == 0 && continue
         if r <= nqp
-            c, K, t = oc[r], oK[r], ot[r]
+            c, bk, t = oc[r], ob[r], ot[r]
+            K = bk - (c - 1) * nK
             if j <= nqp
-                (oc[j] == c && oK[j] == K) || error("vsolver = :hdg: element rows couple to another element")
-                A[c][K][t, ot[j]] += v
+                ob[j] == bk || error("vsolver = :hdg: element rows couple to another element")
+                A[t, ot[j], bk] += v
             else
                 fc[j] == c || error("vsolver = :hdg: element row couples to a face of another column")
-                B[c][K][t, ff[j]] += v
+                l = ff[j] - K + 2                      # f = K-1 -> 1, f = K -> 2
+                1 <= l <= 2 || error("vsolver = :hdg: element row couples to a face not its own")
+                W[t, l, bk] += v
             end
         elseif fc[r] > 0
             c, f = fc[r], ff[r]
             if j <= nqp
                 oc[j] == c || error("vsolver = :hdg: constraint couples to another column")
-                G[c][oK[j]][f, ot[j]] += v
+                bk = ob[j]; K = bk - (c - 1) * nK
+                l = f - K + 2
+                1 <= l <= 2 || error("vsolver = :hdg: constraint couples to an element not adjacent")
+                G[l, ot[j], bk] += v
             elseif j == r
-                dF[c][f] = -v
+                dF[f, c] = -v
             else
                 error("vsolver = :hdg: constraint couples two faces")
             end
         end
     end
-    Es = Vector{LinearAlgebra.LU{Float64,Matrix{Float64},Vector{Int}}}[]; Ws = Vector{Matrix{Float64}}[]; Ss = _TriLU[]
-    nmax = 0
-    for (c, (idx, F)) in enumerate(m.cols)
-        nf = length(F)
-        S = Matrix{Float64}(I, max(nf, 1), max(nf, 1))
-        EK = LinearAlgebra.LU{Float64,Matrix{Float64},Vector{Int}}[]; WK = Matrix{Float64}[]
-        for (K, id) in enumerate(idx)
-            Δ = [_dgp_isthermo(m, r) ? ct : cw for r in id]
-            Ak = A[c][K]; Ak .*= -Δ; for t in axes(Ak, 1); Ak[t, t] += 1; end
-            E = lu!(Ak)
-            W = B[c][K]; W .*= Δ; ldiv!(E, W)
-            G[c][K] ./= dF[c]
-            nf > 0 && (S .-= G[c][K] * W)
-            push!(EK, E); push!(WK, W)
-            nmax += length(id)
+    nf = nK - 1
+    dl = zeros(max(nf - 1, 1), ncol); d = ones(max(nf, 1), ncol); du = zeros(max(nf - 1, 1), ncol)
+    Δ = zeros(n)
+    Einv = zeros(n, n, nK * ncol)
+    for c in 1:ncol, K in 1:nK
+        bk = (c - 1) * nK + K
+        for t in 1:n; Δ[t] = _dgp_isthermo(m, idx[t, bk]) ? ct : cw; end
+        Ak = view(A, :, :, bk)
+        Ak .*= -Δ
+        for t in 1:n; Ak[t, t] += 1; end
+        Ei = inv(lu!(Matrix(Ak)))                      # E_K⁻¹ (small, dense)
+        Einv[:, :, bk] .= Ei
+        Wk = view(W, :, :, bk)
+        Wk .= Ei * (Δ .* Wk)                           # W_K = E_K⁻¹ Δ_K J_eM
+        Gk = view(G, :, :, bk)
+        K > 1 && (Gk[1, :] ./= dF[K-1, c])
+        K < nK && (Gk[2, :] ./= dF[K, c])
+        # S = I - Σ_K G_K W_K on the faces (K-1, K)
+        GW = Gk * Wk
+        if K > 1
+            d[K-1, c] -= GW[1, 1]
+            K < nK && (du[K-1, c] -= GW[1, 2])
         end
-        push!(Es, EK); push!(Ws, WK); push!(Ss, lu!(LinearAlgebra.Tridiagonal(S)))
+        if K < nK
+            d[K, c] -= GW[2, 2]
+            K > 1 && (dl[K-1, c] -= GW[2, 1])
+        end
     end
-    nyk = maximum(cl -> sum(length, cl[1]), m.cols)
-    return HDGColumnFactor(m.cols, Es, Ws, G, Ss, zeros(nyk), zeros(max(1, maximum(cl -> length(cl[2]), m.cols))))
+    S = nf == 0 ? _TriLU[] : [lu!(LinearAlgebra.Tridiagonal(dl[1:nf-1, c], d[1:nf, c], du[1:nf-1, c])) for c in 1:ncol]
+    return HDGColumnFactor(n, nK, idx, Einv, W, G, S, zeros(n * nK), zeros(max(nf, 1)))
 end
 
 function LinearAlgebra.ldiv!(y::AbstractVector, F::HDGColumnFactor, R::AbstractVector)
-    @inbounds for (c, (idx, Fc)) in enumerate(F.cols)
-        nf = length(Fc); r = view(F.r, 1:nf); fill!(r, 0.0)
-        o = 0
-        for (K, id) in enumerate(idx)
-            yK = view(F.yk, o+1:o+length(id))
-            for (t, k) in enumerate(id); yK[t] = R[k]; end
-            ldiv!(F.E[c][K], yK)
-            nf > 0 && mul!(r, F.G[c][K], yK, 1.0, 1.0)
-            o += length(id)
+    n, nK = F.n, F.nK
+    nf = nK - 1
+    ncol = size(F.idx, 2) ÷ nK
+    yk, r = F.yk, F.r
+    @inbounds for c in 1:ncol
+        for f in 1:nf; r[f] = 0.0; end
+        for K in 1:nK
+            bk = (c - 1) * nK + K; o = (K - 1) * n
+            for t in 1:n; yk[o+t] = 0.0; end
+            for s in 1:n                               # y_K = E_K⁻¹ R_K
+                Rs = R[F.idx[s, bk]]
+                @simd for t in 1:n
+                    yk[o+t] += F.Einv[t, s, bk] * Rs
+                end
+            end
+            g1 = g2 = 0.0                              # G_K y_K
+            @simd for t in 1:n
+                g1 += F.G[1, t, bk] * yk[o+t]; g2 += F.G[2, t, bk] * yk[o+t]
+            end
+            K > 1 && (r[K-1] += g1)
+            K < nK && (r[K] += g2)
         end
-        nf > 0 && ldiv!(F.S[c], r)
-        o = 0
-        for (K, id) in enumerate(idx)
-            yK = view(F.yk, o+1:o+length(id))
-            nf > 0 && mul!(yK, F.W[c][K], r, 1.0, 1.0)
-            for (t, k) in enumerate(id); y[k] = yK[t]; end
-            o += length(id)
+        nf > 0 && ldiv!(F.S[c], view(r, 1:nf))        # S M̂ = r
+        for K in 1:nK                                  # Z_K = y_K + W_K M̂
+            bk = (c - 1) * nK + K; o = (K - 1) * n
+            mb = K > 1 ? r[K-1] : 0.0; mt = K < nK ? r[K] : 0.0
+            @simd for t in 1:n
+                y[F.idx[t, bk]] = yk[o+t] + F.W[t, 1, bk] * mb + F.W[t, 2, bk] * mt
+            end
         end
     end
     return y

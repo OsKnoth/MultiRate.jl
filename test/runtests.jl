@@ -3,7 +3,7 @@
 #     julia --project -e 'using Pkg; Pkg.test()'
 
 using MultiRate
-using LinearAlgebra, Random, Test
+using LinearAlgebra, Random, Test, SparseArrays
 
 const E2 = MultiRate.Euler2D
 const FV = MultiRate.FV2D
@@ -1278,7 +1278,9 @@ end
     TS.frozen_vertical_implicit!(zz, m, C, 2.0, 1.5, k, y)
     r = zeros(m.nq); TS.frozen_vertical_rhs!(r, m, C, zz, 2.0, 1.5)
     @test norm(zz .- z .- r) < 1e-10 * norm(zz .- z)
-    # :cs is second order in the small step on terrain (predictors of frozen_hthermo! / frozen_hmomentum!)
+    # :cs on terrain: the error drops by 3.1, 2.5 for n = 10, 20, 40 and tends to first order for small h (as before
+    # the well-balanced form of the momentum step: ratios 4.2, 3.5, 2.7, 2.2 for n = 10..160; the error now is ≤ the
+    # old one at every n, e(160) = 0.37 both)
     TS.frozen_data!(C, S, m, q)
     tmp = ntuple(_ -> zeros(m.nq), 6)
     function fs(meth, n)
@@ -1287,7 +1289,7 @@ end
     end
     zr = fs(:rk4, 400)
     e = [norm(fs(:cs, n) .- zr) for n in (10, 20, 40)]
-    @test e[1] / e[2] > 3.3 && e[2] / e[3] > 3.2
+    @test e[1] / e[2] > 2.9 && e[2] / e[3] > 2.4
     # Bokhove's partition (:csb): the flows A_c, B_c are exact (semigroup), the step is second order
     TS.frozen_stage_begin!(m, C, z)
     for fl in (:a, :b)
@@ -1339,6 +1341,71 @@ end
         y2 = TS.frozen_vertical_solve!(zeros(ml.nq), mh, C0, 0.7, 0.9, R)
         @test norm(y2 .- y1) < 1e-12 * norm(y1)
     end
+end
+
+@testset "Euler2D: contravariant momenta in the fast solver (vsplit = :contravariant_momentum), favoured S2" begin
+    gas = CM.Gas()
+    ρr, Θr, θr = CM.stratified_reference(gas; θ0 = 300.0, N = 0.01)
+    L, H, U = 80e3, 10e3, 20.0
+    hill(x) = 400 / (1 + ((x - L / 2) / 5e3)^2)
+    isU(k, base) = k <= base.nq && mod1(cld(k, base.mesh.np^2), 4) == 2
+    for zs in (x -> 0.0, hill)
+        M = E2.Mesh2D(8, 4, 3, L, H; zs)
+        base = E2.Euler2DModel(M, gas, ρr, Θr)
+        qb = CM.project2d(base, (x, z) -> (ρ = Θr(z) / (θr(z) + 0.01 * exp(-((x - L / 3) / 5e3)^2)); (ρ, ρ * U, 0.0, Θr(z))))
+        mf = E2.DGPressureModel(base; lmars = :momentum)
+        mc = E2.DGPressureModel(base; lmars = :momentum, vsplit = :contravariant_momentum)
+        mh = E2.DGPressureModel(base; lmars = :momentum, vsplit = :contravariant_momentum, vsolver = :hdg)
+        z0 = E2.pressure_state(mf, qb)
+        C = zeros(TS.frozen_ncoef(mf)); S = zeros(mf.nq); TS.frozen_data!(C, S, mf, z0)
+        for m in (mf, mc, mh); TS.frozen_stage_begin!(m, C, z0); end
+        @test maximum(abs, mc.vert.Jh + mc.vert.Jv - mf.vert.Jh - mf.vert.Jv; init = 0.0) < 1e-12 * maximum(abs, mf.vert.Jv)
+        Is, Js, Vs = findnz(mc.vert.P * mc.vert.Jv * mc.vert.Pinv)       # no Ũ in the transformed vertical part
+        @test maximum(abs, [Vs[t] for t in eachindex(Is) if isU(Is[t], base) || isU(Js[t], base)]; init = 0.0) < 1e-12 * maximum(abs, Vs)
+        R = sin.(1:mf.nq) .* abs.(z0)
+        y0 = TS.frozen_vertical_solve!(zeros(mf.nq), mf, C, 0.7, 0.9, R)
+        y1 = TS.frozen_vertical_solve!(zeros(mf.nq), mc, C, 0.7, 0.9, R)
+        y2 = TS.frozen_vertical_solve!(zeros(mf.nq), mh, C, 0.7, 0.9, R)
+        zs(L / 2) == 0 && @test norm(y1 .- y0) < 1e-12 * norm(y0)             # flat: identical to :full
+        @test norm(y2 .- y1) < 1e-12 * norm(y1)                              # HDG = LU
+    end
+    # rest over the hill (isothermal, exactly balanced): MIS54 with the favoured S2 keeps it, dry and moist (no water)
+    Tiso = 250.0
+    mg = CM.MoistGas(); gm = CM.Gas(R = mg.Rd, γ = mg.Cpd / (mg.Cpd - mg.Rd), p00 = mg.p0)
+    M = E2.Mesh2D(8, 4, 3, L, H; zs = hill)
+    for (g_, moist) in ((gas, false), (gm, true))
+        ρi(z) = g_.p00 / (g_.R * Tiso) * exp(-g_.g * z / (g_.R * Tiso))
+        Θi(z) = g_.p00 / g_.R * (g_.R * Tiso * ρi(z) / g_.p00)^(1 / g_.γ)
+        base = E2.Euler2DModel(M, g_, ρi, Θi)
+        qi = CM.project2d(base, (x, z) -> (ρi(z), 0.0, 0.0, Θi(z)))
+        m = E2.DGPressureModel(base; lmars = :momentum, vsplit = :contravariant_momentum, vsolver = :hdg, hpredict = false,
+                               moist, mgas = mg)
+        q0 = moist ? E2.moist_dg_state(m, qi, (x, z) -> 0.0) : E2.pressure_state(m, qi)
+        @test maximum(abs, TS.rhs_nonlinear(m, q0)) < 1e-10                   # the operator is balanced
+        mom(q) = maximum(abs, q[E2.node_iq(M.np, e, r, i, j)] for r in (2, 3), e in 1:M.Ne, j in 1:M.np, i in 1:M.np)
+        # explicit Störmer–Verlet (S1, small step below the vertical limit) keeps the rest state
+        q = TS.run_frozen(m, copy(q0), 10.0, 2; tab = TS.mis_tableau(:MIS54), nsub = 60, fast = :verlet)
+        @test mom(q) < 1e-9                                                   # [kg/(m² s)]
+        # S2 (:cs, :csfb) as well (well balanced: the horizontal momentum step acts on bⁿ, the explicit vertical force is
+        # added after it, and the horizontal mass flux of a⁺ uses the momenta of the column solve with frozen a), also
+        # with the midpoint predictor and with vsplit = :full
+        for fast in (:cs, :csfb), (vs, hp) in ((:contravariant_momentum, false), (:contravariant_momentum, true), (:full, false))
+            mv = E2.DGPressureModel(base; lmars = :momentum, vsplit = vs, vsolver = :hdg, hpredict = hp, moist, mgas = mg)
+            q = TS.run_frozen(mv, copy(q0), 30.0, 4; tab = TS.mis_tableau(:MIS54), nsub = 24, fast, offcenter = 0.1, smdiv = 0.1)
+            @test mom(q) < 1e-9
+        end
+    end
+    # regression: gravity wave over the hill, favoured setting against RK4 of the same model
+    M = E2.Mesh2D(8, 4, 3, L, H; zs = hill)
+    base = E2.Euler2DModel(M, gas, ρr, Θr)
+    qb = CM.project2d(base, (x, z) -> (ρ = Θr(z) / (θr(z) + 0.01 * exp(-((x - L / 3) / 5e3)^2)); (ρ, ρ * U, 0.0, Θr(z))))
+    m = E2.DGPressureModel(base; lmars = :momentum, vsplit = :contravariant_momentum, vsolver = :hdg, hpredict = false)
+    q0 = E2.pressure_state(m, qb)
+    T = 600.0; nref = 2400
+    qr = TS.run_rk4(m, q0, T / nref, nref)
+    q = TS.run_frozen(m, copy(q0), 30.0, 20; tab = TS.mis_tableau(:MIS54), nsub = 24, fast = :cs, offcenter = 0.1, smdiv = 0.1)
+    θ(x) = E2.field(base, x[1:base.nq], 4) ./ E2.field(base, x[1:base.nq], 1)
+    @test maximum(abs, θ(q) .- θ(qr)) < 0.08     # K; measured 6.5e-2 (the MIS error: S1 and S2 :full give 7.8e-2, 6.7e-2)
 end
 
 @testset "Euler2D: moist air with the pressure as additional variable (DGPressureModel, moist = true)" begin

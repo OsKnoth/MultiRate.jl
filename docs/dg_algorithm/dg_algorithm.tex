@@ -113,10 +113,21 @@ coupled only through the vertical terms:
 \begin{pmatrix}I-\tfrac h2D_T^z&-\tfrac h2A_T^z\\-\beta h\,A_M^z&I-\beta h\,D_M^z\end{pmatrix}\begin{pmatrix}T^1\\\tilde W^1\end{pmatrix}=\begin{pmatrix}T^*\\\tilde W^*\end{pmatrix},\qquad
 \tilde W^*=\tilde W^0+hf_{\tilde W}+(1-\beta)h\big(A_M^zT^0+D_M^z\tilde W^0\big)+h\big(A_M^x\tilde T^{1/2}+D_M^xM^0\big)_{\tilde W},
 \]
-one system per node column. In the code the horizontal part of stage 3 is evaluated before the solve, with the $\tilde W$-component
-of $M^1$ predicted by $\tilde W+\beta h\,(A_M^zT+D_M^z\tilde W)$ at the state before the solve ($A_T^x$ sees $\tilde W$ only through the
-averaged metric of the $\xi$ volume pairs); the half step after the solve is evaluated with the new values. The third stage of a small step and the first of the next are combined (the horizontal self-coupling
-evaluated anew). The small step is limited by the explicit horizontal part only.
+one system per node column. In the code the horizontal part of stage 3 is evaluated before the solve, with $M^1$ predicted by the
+momentum rows of the column system with $T$ frozen at $T^*$,
+\[
+\hat{\tilde W}=\tilde W^*+\beta h\,(I-\beta h\,D_M^z)^{-1}\big(A_M^zT^*+D_M^z\tilde W^*\big)
+\]
+($D_M^z$ couples only the two nodes of an $\eta$-face; $A_T^x$ sees $\tilde W$ only through the averaged metric of the $\xi$ volume pairs);
+the half step after the solve is evaluated with the new values. The third stage of a small step and the first of the next are combined (the
+horizontal self-coupling evaluated anew). In stage 2 the horizontal part acts on $M^0$, the explicit vertical force $(1-\beta)h(\dots)$ is added
+after it. The small step is limited by the explicit horizontal part only.
+
+\paragraph{Rest state.} If the spatial operator is balanced, $N(q^*)=0$ with $M^*=0$ (the isothermal atmosphere with the logarithmic density
+mean in the gravity term, the constant-$\theta$ one with the Stolarsky mean, Artiano et al.), then $\tilde W^*=-\beta h\,A_M^zT^*$ (the horizontal
+and the explicit vertical force), so $\hat{\tilde W}=0$, $T^*=T^0$, and the column solve returns $T^1=T^0$, $M^1=0$: S2 and the MIS step keep
+$q^*$ on terrain to round-off. With $D_M^xM$ evaluated at $M^0+(1-\beta)h(\dots)$, or with the explicit predictor
+$\tilde W^*+\beta h(A_M^zT^*+D_M^z\tilde W^*)$, they do not (drift $O(h^2)$ per small step).
 
 \section{Column solve by static condensation}
 In a node column with the elements $K=1,\dots,N$ and the interior $\eta$-faces $f=1,\dots,N-1$ an auxiliary unknown, the interface momentum
@@ -140,7 +151,9 @@ are coupled only through $\hat M$. The solve:
 \item $\big(I-\sum_KG_KW_K\big)\hat M=\sum_KG_Ky_K$, tridiagonal of size $N-1$;
 \item $Z_K=y_K+W_K\hat M$.
 \end{enumerate}
-$\hat M$ is not kept; the result is the solution of the column system. The factorization is done once per stage and weight pair.
+$\hat M$ is not kept; the result is the solution of the column system. The factorization is done once per stage and weight pair. Since
+element $K$ touches only the faces $K-1$ and $K$, $W_K$ has two columns and $G_K$ two rows; $E_K^{-1}$ is stored as a dense inverse, so
+a solve costs per element one product with $E_K^{-1}$ and two with $W_K$, $G_K$, per column one tridiagonal solve.
 
 \section{Parameters and implementation}
 \begin{center}\small
