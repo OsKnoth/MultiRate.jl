@@ -11,18 +11,19 @@ struct Tree
 end
 
 """Admissible child multisets per vertex for the problem classes: `:G` general F(y, z), `:B` affine
-in z (≤ 1 white child), `:A` additive f(y) + g(z) (children of one colour), `:L` f(y) + L z (only black
-children or exactly one white child)."""
+in z (≤ 1 white child), `:BA` affine plus additive f(y) + B(y) z + g(z) (≤ 1 white child or only white children),
+`:A` additive f(y) + g(z) (children of one colour), `:L` f(y) + L z (only black children or exactly one white child)."""
 function admissible(ch, class::Symbol)
     nw = count(first, ch)
     class == :G && return true
     class == :B && return nw <= 1
+    class == :BA && return nw <= 1 || nw == length(ch)
     class == :A && return nw == 0 || nw == length(ch)
     class == :L && return nw == 0 || (nw == 1 && length(ch) == 1)
-    throw(ArgumentError("class must be :G, :B, :A or :L"))
+    throw(ArgumentError("class must be :G, :B, :BA, :A or :L"))
 end
 
-"""All trees with at most `p` vertices of the class (`:G`, `:B`, `:A`, `:L`), ordered by size."""
+"""All trees with at most `p` vertices of the class (`:G`, `:B`, `:BA`, `:A`, `:L`), ordered by size."""
 function trees(p::Int; class::Symbol = :G)
     ts = Tree[Tree(Tuple{Bool,Int}[], 1, 1)]
     for n in 2:p

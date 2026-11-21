@@ -142,12 +142,15 @@ We consider \eqref{eq:G} with $F$ sufficiently smooth. Throughout, the index $y$
 differentiation with respect to the first (second) argument. Important special cases are
 \begin{align}
  &\text{affine in the fast argument:} && F(y,z)=f(y)+B(y)\,z, \tag{$\mathcal B$}\label{eq:B}\\
+ &\text{affine plus additive:} && F(y,z)=f(y)+B(y)\,z+g(z), \tag{$\mathcal{BA}$}\label{eq:BA}\\
  &\text{additive:} && F(y,z)=f(y)+g(z), \tag{$\mathcal A$}\label{eq:A}\\
  &\text{constant linear fast part:} && F(y,z)=f(y)+Lz. \tag{$\mathcal L$}\label{eq:L}
 \end{align}
 In \eqref{eq:B} the fast operator depends on the frozen state, as in the split-explicit treatment of the Euler equations;
 if $B$ depends linearly on a set of frozen coefficient fields, a linear combination $\sum_jp_{ij}F(Y_j,z)$ needs only one
-application of $B$ to $z$, which makes polynomial coupling cheap. Every system \eqref{eq:G} can be written as a
+application of $B$ to $z$, which makes polynomial coupling cheap. In \eqref{eq:BA} a nonlinear fast part $g$ that does
+not depend on the frozen state is added, e.g.\ the nonlinear equation of state in the pressure gradient when the
+advecting velocity and the transported quantities are frozen. Every system \eqref{eq:G} can be written as a
 partitioned system by doubling the unknowns, $u'=F(u,v)$, $v'=F(u,v)$, $u(0)=v(0)$, so partitioned B-series (P-series)
 apply \cite{HairerNorsettWanner1993}; since both components are equal, the colour of the root plays no role.
 
@@ -322,6 +325,7 @@ solution is
 independent of the colours. For the problem classes of Section~\ref{sec:problem} the set of trees shrinks:
 \begin{itemize}
 \item \eqref{eq:B}: $\partial_z^2F=0$, so a vertex has at most one white child;
+\item \eqref{eq:BA}: $\partial_y\partial_z^2F=0$, so a vertex has at most one white child, or only white children;
 \item \eqref{eq:A}: $\partial_y\partial_zF=0$, so all children of a vertex have the same colour;
 \item \eqref{eq:L}: in addition $\partial_z^2F=0$, so a vertex has either only black children or exactly one, white,
   child: the white vertices form chains ($L$-chains), the trees of exponential integrators;
@@ -339,6 +343,7 @@ conditions at each order, for the problem classes. Computed by enumeration.}
 order & 1 & 2 & 3 & 4 & 5 & 6 & 7\\\midrule
 general \eqref{eq:G} & 1 & 2 & 7 & 26 & 107 & 458 & 2058\\
 affine in $z$ \eqref{eq:B} & 1 & 2 & 6 & 20 & 73 & 278 & 1106\\
+affine plus additive \eqref{eq:BA} & 1 & 2 & 7 & 25 & 99 & 406 & 1749\\
 additive \eqref{eq:A} & 1 & 2 & 6 & 18 & 60 & 204 & 734\\
 constant linear \eqref{eq:L} & 1 & 2 & 5 & 13 & 37 & 108 & 332\\
 classical RK (black only) & 1 & 1 & 2 & 4 & 9 & 20 & 48\\
@@ -523,7 +528,7 @@ order & 2 & 3 & 4 & 5\\\midrule
 all trees & 2 & 7 & 26 & 107\\
 base method (black trees) & 1 & 2 & 4 & 9\\
 coupling conditions, class \eqref{eq:restart} & 0 & 1 & 4 & 16\\
-coupling conditions, general $\alpha$, $g_{ij}$ & 1 & 5 & 22 & 89\\
+coupling conditions, general $\alpha$, $g_{ij}$, $K\ge1$ & 1 & 5 & 22 & 98\\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -542,7 +547,9 @@ with $\eta_j(\Tbbw)=\sum_{l\in\text{chain}(j)}\sum_rc_r\int_0^1p_{lr}z_l$. All o
 The counts were obtained as ranks of the stage-wise coefficient vectors of many random methods, computed exactly modulo
 a large prime, with the products of lower-order coefficients included as admissible relations. For orders two and three
 they agree with Theorem~\ref{thm:exactfast}; a proof of the order-four statement in the style of
-Theorem~\ref{thm:exactfast}(b) is open.
+Theorem~\ref{thm:exactfast}(b) is open. The counts were confirmed independently as rank increments of the Jacobian of
+the residuals at methods that satisfy all conditions of lower order (Section~\ref{sec:special}); this check corrected
+the last entry of the table, for general $\alpha$, $g_{ij}$ all 107 conditions of order five are independent for $K\ge1$.
 
 \subsection{Matrix form of the conditions in the restart class}
 \label{sec:matrixform}
@@ -768,10 +775,70 @@ since $J$ is arbitrary, the two arguments have to be treated as independent.
 For ETD2RK, $r_3^{[2]}=(1-\tau)\cdot0+\tau\cdot1-\tau=0$, so it has stiff order two. Analogous bivariate and trivariate
 polynomial identities, grouped by pairs of stage times, are sufficient for the order-four conditions.
 
-\subsection{Affine fast part}
-For \eqref{eq:B}, trees with a vertex with two or more white children drop out: 20 instead of 26 conditions at order four
-and 73 instead of 107 at order five (Table~\ref{tab:treecount}). A method constructed for \eqref{eq:B} only has to satisfy
-these. The class contains \eqref{eq:L} and is the structure of frozen fast operators that depend on the slow state.
+\subsection{Affine fast parts}
+\label{sec:special}
+
+The general case $F(y,y)=\mathcal F(y)$ with arbitrary dependence on both arguments is \eqref{eq:G}. For \eqref{eq:B},
+trees with a vertex with two or more white children drop out: 20 instead of 26 conditions at order four and 73 instead
+of 107 at order five (Table~\ref{tab:treecount}). The class contains \eqref{eq:L} and is the structure of frozen fast
+operators that depend on the slow state. For \eqref{eq:BA} only the trees with a vertex that has two or more white and
+at least one black child drop out (25 and 99 conditions). The conditions for both classes up to order five are listed
+in the supplementary files \texttt{mis\_conditions\_order5\_B} and \texttt{mis\_conditions\_order5\_BA}.
+
+Fewer trees do not always mean fewer conditions on the coefficients. Table~\ref{tab:indep} gives the number of
+conditions of order $q$ that are independent of all conditions of lower order, computed as the rank increment of the
+Jacobian of the residuals with respect to the coefficients at random methods that satisfy all conditions of order
+$q-1$ (complex-step derivatives, maximum over several random methods and chains).
+
+\begin{table}[ht]
+\centering
+\caption{Number of coupling conditions of order $q$ that are independent of the base method and of the conditions of
+lower order; base method 1, 1, 2, 4, 9. Restart class \eqref{eq:restart} with random chains, and general $\alpha$,
+$g_{ij}$; coupling degree $K$. Computed by \texttt{independent\_conditions}.}
+\label{tab:indep}
+\begin{tabular}{l|ccc|c|cccc|c}
+\toprule
+ & \multicolumn{4}{c|}{restart class} & \multicolumn{5}{c}{general $\alpha$, $g_{ij}$}\\
+ & \multicolumn{3}{c|}{$K\ge1$} & $K=0$ & \multicolumn{4}{c|}{$K\ge1$} & $K=0$\\
+$q$ & 3 & 4 & 5 & 5 & 2 & 3 & 4 & 5 & 5\\\midrule
+general \eqref{eq:G} & 1 & 4 & 16 & 12 & 1 & 5 & 22 & 98 & 72\\
+affine plus additive \eqref{eq:BA} & 1 & 4 & 16 & 12 & 1 & 5 & 21 & 90 & 73\\
+affine \eqref{eq:B} & 1 & 4 & 16 & 12 & 1 & 4 & 16 & 64 & 64\\
+additive \eqref{eq:A} & 1 & 4 & 14 & 12 & 1 & 4 & 14 & 51 & 51\\
+constant linear \eqref{eq:L} & 1 & 4 & 13 & 12 & 1 & 3 & 9 & 28 & 28\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{proposition}\label{prop:affine}
+Assume \eqref{eq:restart} and $c_{s+1}=1$. A method has order four for \eqref{eq:B} if and only if it has order four
+for \eqref{eq:BA}, if and only if it has order four for \eqref{eq:G}, i.e.\ if and only if the 13 conditions of
+Proposition~\ref{prop:matrix} hold. In \eqref{eq:B} and \eqref{eq:BA} the condition $\hat b^TW^{(2)}c=\frac14$ (C2)
+belongs to the tree $\btree{[,b [,b][,w [,w]]]}$ instead of \Tfourbww:
+\[
+ d_i\big(\btree{[,b [,b][,w [,w]]]}\big)=\sum_jc_j\int_0^1p_{ij}(\sigma)\,\zeta_i(\sigma;\Tbw)\dd\sigma
+ =\tfrac12\big(W^{(2)}c\big)_i,\qquad \frac1{\gamma}=\frac18.
+\]
+\end{proposition}
+
+\begin{proof}
+The trees of \eqref{eq:B} are trees of \eqref{eq:BA}, and these are trees of \eqref{eq:G}, so order four for \eqref{eq:G}
+implies order four for the other two classes. Conversely, the trees of the eight base conditions and of C1, C3, C4 and
+\eqref{eq:coupling3} have vertices with at most one white child and belong to \eqref{eq:B}. By
+Theorem~\ref{thm:exactfast}(a), $\zeta_i(\sigma;\Tbw)=z_i(\sigma)^2/2$, which gives the formula for the tree
+$[\bullet_b,\Tbw_w]$ of \eqref{eq:B}; its condition is C2. Hence order four for \eqref{eq:B} implies the 13 conditions,
+which imply order four for \eqref{eq:G} by Proposition~\ref{prop:matrix}.
+\end{proof}
+
+Numerically: methods with $s\in\{5,6\}$, $K\in\{0,1\}$ driven by a Newton iteration to the 12 conditions without C2
+violate the conditions of the \eqref{eq:B}-trees $\btree{[,b [,b][,w [,w]]]}$, $\btree{[,b [,w [,b][,w]]]}$ and
+$\btree{[,b [,w [,w [,b]]]]}$ together. At order five Table~\ref{tab:indep} shows the same number of independent
+conditions for the three classes; since the conditions of \eqref{eq:B} are a subset of those of \eqref{eq:G}, they
+generate the conditions of \eqref{eq:G} near generic methods of order four. In the restart class the affine structure
+therefore saves nothing up to order five, and methods should be constructed for \eqref{eq:G}. For general $\alpha$,
+$g_{ij}$, in contrast, \eqref{eq:B} saves 6 of 22 coupling conditions at order four and 34 of 98 at order five, while
+the nonlinear fast part $g$ in \eqref{eq:BA} costs almost as much as the general case (21 and 90). With constant
+coupling ($K=0$) the conditions of \eqref{eq:G} and \eqref{eq:BA} of order five are not all independent.
 
 % =====================================================================
 \section{Computing the order conditions}
@@ -808,8 +875,9 @@ Table~\ref{tab:treecount}, Tables~\ref{tab:oc3} and~\ref{tab:oc4}, Theorem~\ref{
 and the orders of the methods cited in Section~\ref{sec:subclasses}. The Julia module also writes the conditions
 \eqref{eq:oc} in the form of Tables~\ref{tab:oc3} and~\ref{tab:oc4} for any order and problem class
 (\texttt{latex\_conditions}; the conditions of order five for \eqref{eq:G} are given in the supplementary file
-\texttt{mis\_conditions\_order5}), and evaluates the matrix form of Proposition~\ref{prop:matrix}
-(\texttt{restart\_conditions}).
+\texttt{mis\_conditions\_order5}, those for \eqref{eq:B} and \eqref{eq:BA} in \texttt{mis\_conditions\_order5\_B},
+\texttt{\_BA}), evaluates the matrix form of Proposition~\ref{prop:matrix} (\texttt{restart\_conditions}), and counts the
+independent conditions of Table~\ref{tab:indep} (\texttt{independent\_conditions}).
 
 % =====================================================================
 \section{Conclusions and open questions}

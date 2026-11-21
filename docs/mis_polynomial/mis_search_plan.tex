@@ -1,0 +1,142 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs,xcolor}
+\usepackage{enumitem}
+\usepackage[margin=2.6cm]{geometry}
+\usepackage{xr-hyper}
+\externaldocument[T-]{mis_theory}
+\usepackage[colorlinks=true,linkcolor=blue!60!black]{hyperref}
+
+\title{Construction of new MIS methods with polynomial coupling: a plan}
+\author{Oswald Knoth}
+\date{\today}
+\newcommand{\dd}{\,\mathrm{d}}
+
+\begin{document}
+\sloppy
+\maketitle
+
+Companion to \texttt{mis\_theory.tex} (equation and proposition names refer to it). The theory gives the order
+conditions for every problem class; this note fixes the targets, the search space, the objectives, the tools and the
+order of the work.
+
+\section{Starting point}
+
+\begin{itemize}
+\item \emph{Problem classes.} The split-explicit Euler equations (frozen advecting velocity and transported quantities,
+  integrated mass fluxes and pressure) have the structure $F(y,z)=f(y)+B(y)z+g(z)$ \eqref{T-eq:BA} if the equation of
+  state enters nonlinearly, and $f(y)+B(y)z$ \eqref{T-eq:B} after linearisation of the fast part; the general case is
+  $F(y,z)$ \eqref{T-eq:G}.
+\item \emph{Restart class} ($g_{ij}=0$, inner problems start at a previous stage). The conditions up to order four are the
+  13 conditions of the matrix form (8 base, 1 coupling of order three, 4 of order four), \emph{identical} for
+  \eqref{T-eq:G}, \eqref{T-eq:BA} and \eqref{T-eq:B} (Proposition~\ref{T-prop:affine}); at order five 9 + 16 conditions in all
+  three classes. Methods in this class are therefore constructed for \eqref{T-eq:G}.
+\item \emph{General $\alpha$, $g_{ij}$} (classical MIS structure). Here the class matters: independent coupling conditions
+  of order 3/4/5 are 5/22/98 for \eqref{T-eq:G}, 5/21/90 for \eqref{T-eq:BA}, 4/16/64 for \eqref{T-eq:B}
+  (Table~\ref{T-tab:indep}). Only \eqref{T-eq:B} gives a real saving.
+\item \emph{Existing methods.} MIS54 and MISF53 (constant coupling, order 2 resp.\ 3 for \eqref{T-eq:G}, MIS54 order 4 for
+  \eqref{T-eq:A}); WS-RK3 (order 2 nonlinear); CF4 (restart, $K=0$, five inner integrations, order 4); Lüscher RK3 and
+  CK(5,4) in Bazavov's low-storage form; ETD2RK.
+\item \emph{Tools in \texttt{MultiRate.MIS}.} Residuals in generic arithmetic (exact with \texttt{Rational}, derivatives
+  with complex step), \texttt{order}, \texttt{error\_norm}, \texttt{restart\_conditions}, \texttt{independent\_conditions}
+  with a Gauss--Newton projection onto the solution set (\texttt{project\_conditions}), linear stability
+  (\texttt{amplification} with exact or inexact inner solution, \texttt{max\_amplification}, \texttt{adv\_limit},
+  \texttt{stability\_map}) with FV and DG symbols.
+\item \emph{Not yet available.} Polynomial coupling in the 2D/3D models (they take a constant-coupling
+  \texttt{MISTableau}).
+\end{itemize}
+
+\section{Targets}
+
+\begin{enumerate}[label=T\arabic*]
+\item \emph{Order three for \eqref{T-eq:G}, restart class, $K=1$}, $s=3,4$: 5 conditions, $2\cdot s(s+1)/2$ coefficients and
+  the chain. The free parameters are used for stability and cost. Reference: Lüscher RK3, CF3, MISF53.
+\item \emph{Order four for \eqref{T-eq:G}, restart class}: 13 conditions. Question: is $s=4$ with $K=1$ (20 coefficients)
+  possible, i.e.\ order four with four inner integrations instead of the five of CF4? Then the best method for $s=5$,
+  $K=1$.
+\item \emph{Order three for \eqref{T-eq:G}, general $\alpha$, $g_{ij}$, $K=1$}: 10 conditions; the extra freedom of the
+  classical MIS structure for stability at large acoustic Courant numbers.
+\item \emph{Order four for \eqref{T-eq:B}, general $\alpha$, $g_{ij}$}: 29 conditions instead of 36 for \eqref{T-eq:G}; only
+  useful if the fast part of the model is linear in $z$ with frozen coefficients.
+\item \emph{Low storage} (optional): restart chain $k(i)=i-1$, Bazavov's 2N form, for the 3D model.
+\end{enumerate}
+
+\section{Constraints and objectives}
+
+\paragraph{Constraints.}
+\begin{itemize}
+\item order conditions (equalities, Gauss--Newton projection);
+\item forward inner integration: $q_i(\tau)=\sum_jp_{ij}(\tau)\ge0$ on $[0,1]$ for all stages (the small step,
+  forward-backward or :cs, is stable only forward in time; checked at Chebyshev points, enforced by a penalty);
+\item stage times $0\le c_i\le1$ and moderate coefficients ($|a_{ijk}|\le a_{\max}$, e.g.\ 4), against cancellation;
+\item optionally uniform fast speed $q_i\equiv d_i$ (constant number of small steps per stage, simplest implementation).
+\end{itemize}
+
+\paragraph{Objectives} (all computable with existing functions).
+\begin{enumerate}[label=O\arabic*]
+\item \emph{Stability}: advective Courant limit \texttt{adv\_limit} at acoustic Courant numbers
+  $C_s\in\{0,2,6\}$ for the FV symbols (third-order upwind advection, C-grid acoustics) and the DG symbols ($P=3,4$,
+  LMARS).
+\item \emph{Cost}: total fast time per step $T_f=\sum_{i=2}^{s+1}Q_i(1)$ (all stages, not only the chain), which is
+  proportional to the number of small steps. The efficiency measure is the stability limit per unit fast time,
+  $\texttt{adv\_limit}/T_f$, compared at equal $T_f$ with the reference methods.
+\item \emph{Accuracy}: error constant $\texttt{error\_norm}(m,p+1)$ for \eqref{T-eq:G} and \eqref{T-eq:BA}.
+\item \emph{Robustness}: amplification with inexact inner solution (\texttt{inner = (:verlet, n)}, $n$ small steps per unit
+  fast time) close to the exact one; order with RK inner steps (open question of the theory note: does $K>0$ need a
+  higher inner quadrature order?).
+\item \emph{Fast modes}: $|R|\le1$ for pure acoustics without divergence damping, and weak damping of the fast modes.
+\end{enumerate}
+
+\section{Algorithm}
+
+\begin{enumerate}[label=S\arabic*]
+\item \emph{Parametrisation} (new file \texttt{src/MIS/search.jl}): families \texttt{RestartFamily(s, K, chain; uniform)}
+  and \texttt{GeneralFamily(s, K)} mapping a vector $x$ to a \texttt{PolyMIS}, generalising \texttt{random\_family}.
+\item \emph{Feasible points}: multistart Gauss--Newton projection onto the order conditions (minimum-norm step with
+  backtracking, complex-step Jacobian). For the restart class all chains are enumerated ($s!$ chains, 120 for $s=5$),
+  so the chain is not left to chance.
+\item \emph{Optimisation on the solution set}: the objectives are non-smooth (bisection in \texttt{adv\_limit}), so a
+  derivative-free method in the tangent space: random steps in the null space of the Jacobian, retraction by
+  projection, acceptance if the penalised objective improves ((1+1)-evolution strategy with step-size adaptation; no
+  new dependencies). A cheap proxy, the maximum amplification on a coarse $(\theta,C_{\mathrm{adv}})$ grid, during
+  the search; \texttt{adv\_limit} and \texttt{stability\_map} for the final candidates.
+\item \emph{Pareto fronts} for the efficiency \texttt{adv\_limit}$/T_f$ against the error constant, per target and $s$.
+\item \emph{Rationalisation}: free parameters rounded to simple fractions, the remaining coefficients re-solved in
+  \texttt{BigFloat} (or exactly where the system is triangular); order verified with \texttt{order(m; pmax = p+1)} in
+  exact or high-precision arithmetic, for \eqref{T-eq:G}, \eqref{T-eq:BA}, \eqref{T-eq:B}.
+\end{enumerate}
+
+\section{Verification}
+
+\begin{enumerate}[label=V\arabic*]
+\item order in exact arithmetic, all classes; tableau into \texttt{mis\_tableaus.tex} (generated, as the existing ones);
+\item linear stability, exact and inexact inner solution, FV and DG symbols, against MIS54, MISF53, CF4, Lüscher RK3;
+\item polynomial coupling in the 2D model: the stage right-hand side $\sum_jp_{ij}(\tau)F(Y_j,z)$ evaluated per small
+  step; for \eqref{T-eq:BA} with $B$ linear in the frozen fields as $\sum_jp_{ij}(\tau)f(Y_j)+B\big(\sum_jp_{ij}(\tau)Y_j\big)z
+  +q_i(\tau)g(z)$, i.e.\ one application of $B$ per small step;
+\item convergence in time (nonlinear) and test cases at equal cost: gravity wave (SK94, reference solution available),
+  moist bubble, flow over the a100 hill; FV and DG.
+\end{enumerate}
+
+\section{Phases}
+
+\begin{center}
+\begin{tabular}{lp{6.6cm}p{6.2cm}}
+\toprule
+phase & content & result / decision\\\midrule
+P0 & order conditions, special classes, counts & done (\texttt{mis\_theory.tex})\\
+P1 & S1--S3, tests: rediscover CF4, Lüscher RK3, MISF53 & tool works\\
+P2 & T1: order three, restart, $K=1$, $s=3,4$ & gain over CF3/MISF53? If not: $K=0$ suffices\\
+P3 & T2: order four, restart, minimal $s$, best $s=5$ & four inner integrations possible?\\
+P4 & T3 (and T4 if the fast part is linear in $z$) & stability at large $C_s$\\
+P5 & V3, V4: implementation in the 2D model, test cases & choice of the methods for the model\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{Open choices.} The cost model (is the cost of a step dominated by the small steps, so that $T_f$ is the right
+measure?), the range of acoustic Courant numbers, and the spatial discretisations whose symbols are used in O1.
+
+\end{document}

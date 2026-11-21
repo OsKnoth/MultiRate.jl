@@ -1556,6 +1556,9 @@ end
     rw = MM.restart_conditions(MM.etd2rk())
     @test rw[9][2] == 0 && rw[3][2] != 0          # ETD2RK: coupling condition of order 3 holds, base b'c^2 fails
     @test count(==('\n'), MM.latex_conditions(4)) > 26 && occursin("\\btree", MM.latex_conditions(3; class = :L))
+    @test MM.tree_count(5; class = :BA) == [1, 2, 7, 25, 99]                   # F = f(y) + B(y) z + g(z)
+    ic = MM.independent_conditions(4; class = :BA, s = 6, K = 1, samples = 2)  # restart class: as for F(y, z)
+    @test ic.coupling == [0, 0, 1, 4] && ic.base == [1, 1, 2, 4]
 end
 
 end

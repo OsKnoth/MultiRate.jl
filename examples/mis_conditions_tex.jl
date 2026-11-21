@@ -9,7 +9,8 @@ p = length(ARGS) >= 1 ? parse(Int, ARGS[1]) : 5
 class = length(ARGS) >= 2 ? Symbol(ARGS[2]) : :G
 dir = joinpath(@__DIR__, "..", "docs", "mis_polynomial")
 name = class == :G ? "mis_conditions_order$p" : "mis_conditions_order$(p)_$class"
-cls = Dict(:G => "general \$F(y,z)\$", :B => "affine in \$z\$", :A => "additive", :L => "constant linear fast part")[class]
+cls = Dict(:G => "general \$F(y,z)\$", :B => "affine in \$z\$, \$F=f(y)+B(y)z\$",
+           :BA => "affine plus additive, \$F=f(y)+B(y)z+g(z)\$", :A => "additive", :L => "constant linear fast part")[class]
 open(joinpath(dir, "$name.tex"), "w") do io
     print(io, raw"""
 \documentclass[10pt,a4paper]{article}

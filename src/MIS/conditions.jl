@@ -114,3 +114,81 @@ function latex_conditions(p::Int; class::Symbol = :G)
     println(io, "\\end{longtable}}")
     return String(take!(io))
 end
+
+# ---------------------------------------------------------------------------------------------------------------
+# Number of independent conditions per order: rank of the Jacobian of the residuals with respect to the coefficients
+# at a random method (complex-step derivatives, exact to round-off since the residuals are polynomials).
+
+"""Random method with free coefficients `x`: restart class (g = 0, chain `k`) or general α, g; coupling degree K."""
+function random_family(x, s, K; restart::Bool, k = nothing)
+    T = eltype(x); n = s + 1; c = 0
+    α = zeros(T, n, n); p = fill(T[], n, n); g = fill(T[], n, n)
+    for i in 2:n
+        restart && k[i] > 1 && (α[i, k[i]] = one(T))
+        for j in 1:i-1
+            restart || (α[i, j] = x[c+=1]; g[i, j] = x[c+1:c+K+1]; c += K + 1)
+            p[i, j] = x[c+1:c+K+1]; c += K + 1
+            restart && (g[i, j] = [zero(T)])
+        end
+    end
+    return PolyMIS(α, p, g)
+end
+family_size(s, K; restart::Bool) = (restart ? K + 1 : 2K + 3) * s * (s + 1) ÷ 2
+
+function family_jacobian(x, s, K, k, restart, p, class, ts)
+    r = residuals(random_family(x, s, K; restart, k), p; class, ts)
+    J = zeros(length(ts), length(x))
+    for l in eachindex(x)
+        xc = complex.(x); xc[l] += 1e-30im
+        J[:, l] = imag.(residuals(random_family(xc, s, K; restart, k), p; class, ts)) ./ 1e-30
+    end
+    return r, J
+end
+
+"""Minimum-norm Gauss–Newton iteration onto the set where the residuals of all trees of order ≤ q vanish."""
+function project_conditions(x, s, K, k, restart, q, class; it = 80, tol = 1e-11)
+    ts = trees(q; class)
+    res(x) = norm(residuals(random_family(x, s, K; restart, k), q; class, ts))
+    for _ in 1:it
+        r, J = family_jacobian(x, s, K, k, restart, q, class, ts)
+        nr = norm(r); nr < tol && return x, true
+        dx = pinv(J) * r; λ = 1.0                                          # backtracking on ‖r‖
+        while λ > 1e-4 && !(res(x - λ * dx) < nr); λ /= 2; end
+        x = x - λ * dx
+        all(isfinite, x) || return x, false
+    end
+    return x, norm(residuals(random_family(x, s, K; restart, k), q; class, ts)) < tol
+end
+
+"""
+    independent_conditions(p; class = :G, restart = true, s = 8, K = 2, samples = 4) -> (; total, base, coupling)
+
+Numbers of independent order conditions of order q = 1 … p for the problem class, in the sense relevant for the
+construction of methods: the codimension that the conditions of order q add to the set of methods of order q - 1. For
+each q, random s-stage methods of coupling degree K (restart class with random chain, or general α, g_ij) are driven to
+order q - 1 by a minimum-norm Gauss–Newton iteration, and the rank increment of the Jacobian of the residuals (complex
+step, exact to round-off) is taken there; the maximum over `samples` methods (generic rank). `base` counts the black
+trees (conditions of the base method), `coupling` the remainder. Samples whose iteration fails are skipped.
+"""
+function independent_conditions(p::Int; class::Symbol = :G, restart::Bool = true, s::Int = 8, K::Int = 2,
+                                samples::Int = 4, rtol = 1e-8)
+    ts = trees(p; class)
+    black(j) = all(!w && black(c) for (w, c) in ts[j].children)
+    N = family_size(s, K; restart)
+    total = zeros(Int, p); base = zeros(Int, p)
+    for q in 1:p, seed in 1:samples
+        u(l) = (hash((seed, q, l)) % UInt(1 << 30)) / (1 << 30)          # deterministic pseudo-random in [0, 1)
+        k = [1; [1 + floor(Int, u(-i) * (i - 1)) for i in 2:s+1]]
+        x = [u(l) - 0.5 for l in 1:N]
+        if q > 1
+            x, ok = project_conditions(x, s, K, k, restart, q - 1, class)
+            ok || continue
+        end
+        _, J = family_jacobian(x, s, K, k, restart, q, class, ts[1:count(t -> t.n <= q, ts)])
+        rk(sel) = isempty(sel) ? 0 : rank(J[sel, :]; rtol)
+        lo = [j for j in eachindex(ts) if ts[j].n < q]; hi = [j for j in eachindex(ts) if ts[j].n <= q]
+        total[q] = max(total[q], rk(hi) - rk(lo))
+        base[q] = max(base[q], rk(filter(black, hi)) - rk(filter(black, lo)))
+    end
+    return (; total, base, coupling = total .- base)
+end
