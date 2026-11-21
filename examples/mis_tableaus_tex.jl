@@ -35,6 +35,23 @@ function matrix(A; lower::Bool)
     rows = [join((j < i || (!lower && j == i) ? fmt(A[i, j]) : "" for j in 1:s), " & ") for i in 1:s]
     return "\\left(\\begin{array}{" * "r"^s * "}" * join(rows, "\\\\\n") * "\\end{array}\\right)"
 end
+"""Classical order (≤ 4) of the Runge–Kutta method (A, b), from the eight conditions."""
+function rkorder(A, b; tol = 1e-5)
+    c = vec(sum(A; dims = 2)); e = ones(length(b))
+    r = [[sum(b) - 1], [b' * c - 1 / 2], [b' * c .^ 2 - 1 / 3, b' * A * c - 1 / 6],
+         [b' * c .^ 3 - 1 / 4, b' * (c .* (A * c)) - 1 / 8, b' * A * c .^ 2 - 1 / 12, b' * A * A * c - 1 / 24]]
+    p = findfirst(k -> any(abs.(r[k]) .> tol), 1:4)
+    return p === nothing ? "at least 4" : string(p - 1)
+end
+
+"""Butcher tableau c | A over bᵀ of the base Runge–Kutta method (strictly lower triangular A)."""
+function butcher(A, b)
+    s = length(b); c = vec(sum(A; dims = 2))
+    rows = [fmt(c[i]) * " & " * join((j < i ? fmt(A[i, j]) : "" for j in 1:s), " & ") for i in 1:s]
+    return "\\begin{array}{r|" * "r"^s * "}" * join(rows, "\\\\\n") * "\\\\\\hline\n & " *
+           join((fmt(x) for x in b), " & ") * "\\end{array}"
+end
+
 """Largest C_adv such that every C_adv' ≤ C_adv is stable, at each C_sound of the grid."""
 function limit(ρ, i)
     j = findfirst(>(1 + 1e-8), ρ[i, :])
@@ -128,6 +145,10 @@ for n in filter(in(keys(reg.res)), order_names)
     print(io, "{\\footnotesize\\[(\\alpha_{ij})_{i\\ge2}=", matrix(a; lower = false),
           "\\]\n\\[\\beta=", matrix(t.β; lower = false),
           "\\]\n\\[(\\gamma_{ij})_{i\\ge2}=", matrix(g; lower = false), "\\]}\n\n")
+    A, b = M.base_method(m)
+    print(io, "\\noindent Base Runge--Kutta method (\\texttt{base\\_method}; \$F\$ independent of its second argument), ",
+          "classical order ", rkorder(A, b), ":\n",
+          "{\\footnotesize\\[", butcher(A, b), "\\]}\n\n")
     print(io, "\\begin{center}\\includegraphics[width=0.8\\textwidth]{stability_fv/$n.png}\n\n\\small\\begin{tabular}{l",
           "c"^length(css), "}\\toprule \$C_{\\rm sound}\$ & ", join(css, " & "), "\\\\\\midrule largest \$C_{\\rm adv}\$ & ",
           join((@sprintf("%.2f", x) for x in lims), " & "), "\\\\\\bottomrule\\end{tabular}\\end{center}\n")
