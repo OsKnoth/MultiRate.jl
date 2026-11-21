@@ -5,6 +5,8 @@
 *.log
 *.out
 *.toc
+*.fdb_latexmk
+*.fls
 *.synctex.gz
 .DS_Store
 # Julia environments are resolved locally

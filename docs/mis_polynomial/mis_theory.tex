@@ -544,6 +544,69 @@ a large prime, with the products of lower-order coefficients included as admissi
 they agree with Theorem~\ref{thm:exactfast}; a proof of the order-four statement in the style of
 Theorem~\ref{thm:exactfast}(b) is open.
 
+\subsection{Matrix form of the conditions in the restart class}
+\label{sec:matrixform}
+
+For methods of the class \eqref{eq:restart} the conditions up to order four can be written in terms of the coefficients
+in the form familiar from Runge--Kutta methods, $b^TAc=\frac16$ etc. Define the strictly lower triangular
+$(s+1)\times(s+1)$ \emph{weighted moment matrices}
+\begin{equation}\label{eq:moments}
+ W^{(m)}_{ij}=\int_0^1p_{ij}(\sigma)\,z_i(\sigma)^m\dd\sigma,\qquad z_i(\sigma)=c_{k(i)}+Q_i(\sigma),\qquad m=0,1,2,
+\end{equation}
+the chain matrix $\Lambda=(I-\alpha)^{-1}$ ($\Lambda_{il}=1$ if $l$ lies on the chain of $i$), $\hat b^T=e_{s+1}^T\Lambda$, the
+base method $\mathfrak A=\Lambda W^{(0)}$ with weights $b^T=\hat b^TW^{(0)}$ (its last row), and the stage times $c$. Powers
+of vectors are taken componentwise. $W^{(m)}$ is an explicit polynomial in the coefficients $a_{ijk}$: with uniform fast
+speed $q_i\equiv d_i$, $z_i(\sigma)=c_{k(i)}+d_i\sigma$ and
+\[
+ W^{(m)}_{ij}=\sum_{\nu=0}^Ka_{ij\nu}\sum_{l=0}^m\binom ml\frac{c_{k(i)}^{m-l}d_i^{\,l}}{\nu+l+1},
+ \qquad\text{for }K=0:\quad W^{(m)}_{ij}=a_{ij0}\,\frac{c_i^{m+1}-c_{k(i)}^{m+1}}{(m+1)\,d_i}\quad(d_i\ne0).
+\]
+
+\begin{proposition}[matrix form]\label{prop:matrix}
+Assume \eqref{eq:restart} and $c_{s+1}=1$. The conditions of the trees with only black vertices are the Runge--Kutta
+conditions of $\mathfrak A$, and the coupling conditions of Theorem~\ref{thm:exactfast} and Proposition~\ref{prop:count}
+read
+\begin{center}
+\renewcommand{\arraystretch}{1.5}
+\begin{tabular}{clcl}
+\toprule
+order & tree & condition & \\\midrule
+3 & \Tbbw & $\hat b^TW^{(1)}c=\frac13$ & \eqref{eq:coupling3}\\
+4 & \Tfourbbw & $\hat b^TW^{(1)}c^2=\frac14$ & C1\\
+4 & \Tfourbww & $\hat b^TW^{(2)}c=\frac14$ & C2\\
+4 & \Tfourbbl & $\hat b^TW^{(1)}\mathfrak Ac=\frac18$ & C3\\
+4 & \Tfourbbwl & $b^T\Lambda W^{(1)}c=\frac1{12}$ & C4\\
+\bottomrule
+\end{tabular}
+\end{center}
+Consequently a method of the class \eqref{eq:restart} has order three if and only if $\mathfrak A$ has order three and
+$\hat b^TW^{(1)}c=\frac13$. Under Proposition~\ref{prop:count}, it has order four if and only if $\mathfrak A$ has order
+four (eight conditions) and the five conditions of the table hold.
+\end{proposition}
+
+\begin{proof}
+By Theorem~\ref{thm:exactfast}(a), $\zeta_i(\sigma;\bullet)=z_i(\sigma)$, and by Proposition~\ref{prop:base},
+$\eta_j(\bullet)=c_j$ and $\eta(\Tbb)=\mathfrak Ac$. Inserting into \eqref{eq:dit}: for $t=[\bullet_b^r,\bullet_w^m]$
+($r$ black and $m$ white leaves), $d_i(t)=\sum_jc_j^r\int_0^1p_{ij}z_i^m=(W^{(m)}c^r)_i$; for $t=[\Tbb_b,\bullet_w]$,
+$d_i(t)=\sum_j\eta_j(\Tbb)\int_0^1p_{ij}z_i=(W^{(1)}\mathfrak Ac)_i$. For $t=[\Tbbw_b]$, $d_i(t)=\sum_jP_{ij}(1)\eta_j(\Tbbw)$
+with $\eta(\Tbbw)=\Lambda d(\Tbbw)=\Lambda W^{(1)}c$, so $\hat b^Td(t)=\hat b^TW^{(0)}\Lambda W^{(1)}c=b^T\Lambda W^{(1)}c$. The
+equivalences follow from Theorem~\ref{thm:exactfast}(c) and Proposition~\ref{prop:count}.
+\end{proof}
+
+The identities of the table are proved; only the sufficiency at order four rests on the computational
+Proposition~\ref{prop:count}. As an independent check, random methods of the class \eqref{eq:restart} with
+$s\in\{5,6\}$, $K\in\{0,1\}$ and random start stages were driven to the 13 conditions of Proposition~\ref{prop:matrix}
+by a Newton iteration; for all 25 methods obtained, the residuals of all bicoloured trees of order $\le4$ are below
+$10^{-9}$, while those of order five are not small.
+
+\begin{remark}[relation to Owren's conditions]
+For commutator-free methods ($K=0$, Section~\ref{sec:cf}) the count agrees with Owren \cite{Owren2006}: the eight classical
+conditions, one additional condition of order three and four of order four. Owren writes them with ordered tensor products
+$t_\mu=\sum_{j_1\le\dots\le j_\mu}\frac1{\mathbf j!}\beta_{j_1}\otimes\dots\otimes\beta_{j_\mu}$ of the coefficient vectors of
+the exponentials, $\mathbf j!$ the product of the factorials of the multiplicities of equal indices; in Proposition~\ref{prop:matrix} the same information is contained in the chain matrix $\Lambda$ and the
+moment matrices $W^{(m)}$, which for $K=0$ have the closed form above. For CF4 all 13 conditions hold exactly.
+\end{remark}
+
 % =====================================================================
 \section{Subclasses with an existing order theory}
 \label{sec:subclasses}
@@ -742,7 +805,11 @@ of new methods; with dual numbers they provide exact gradients for numerical sea
 in Fortran, in Python, in Julia (the module \texttt{MIS} of the package \texttt{MultiRate}), and, for constant $g_{ij}$,
 in \texttt{BSeries.jl} (\texttt{MultirateInfinitesimalSplitMethod}) \cite{KetchesonRanocha2023}. They reproduce
 Table~\ref{tab:treecount}, Tables~\ref{tab:oc3} and~\ref{tab:oc4}, Theorem~\ref{thm:exactfast} (checked up to order five),
-and the orders of the methods cited in Section~\ref{sec:subclasses}.
+and the orders of the methods cited in Section~\ref{sec:subclasses}. The Julia module also writes the conditions
+\eqref{eq:oc} in the form of Tables~\ref{tab:oc3} and~\ref{tab:oc4} for any order and problem class
+(\texttt{latex\_conditions}; the conditions of order five for \eqref{eq:G} are given in the supplementary file
+\texttt{mis\_conditions\_order5}), and evaluates the matrix form of Proposition~\ref{prop:matrix}
+(\texttt{restart\_conditions}).
 
 % =====================================================================
 \section{Conclusions and open questions}

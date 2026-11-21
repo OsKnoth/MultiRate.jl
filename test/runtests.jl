@@ -1552,6 +1552,10 @@ end
     @test MM.order(MM.cf4()) == 4                                   # commutator-free Lie group methods
     @test MM.order(MM.luscher3()) == 3
     @test MM.order(MM.ck54_cf(); tol = 1e-9) == 4                   # Bazavov's low-storage format, RK(5,4)
+    @test all(iszero(r) for (_, r) in MM.restart_conditions(MM.cf4()))          # matrix form, restart class
+    rw = MM.restart_conditions(MM.etd2rk())
+    @test rw[9][2] == 0 && rw[3][2] != 0          # ETD2RK: coupling condition of order 3 holds, base b'c^2 fails
+    @test count(==('\n'), MM.latex_conditions(4)) > 26 && occursin("\\btree", MM.latex_conditions(3; class = :L))
 end
 
 end

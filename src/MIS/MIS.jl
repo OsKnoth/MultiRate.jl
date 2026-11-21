@@ -32,12 +32,13 @@ using ..TimeStepping: MISTableau
 using ..Euler2D: gll, lagrange_basis
 
 export PolyMIS, etd2rk, commutator_free, cf4, lowstorage_cf, luscher3, ck54_cf, base_method, stage_times, coupling_degree, uniform_fast_speed,
-       Tree, trees, tree_count, residuals, order, error_norm,
+       Tree, trees, tree_count, residuals, order, error_norm, restart_matrices, restart_conditions, latex_conditions,
        fv_symbols, dg_symbols, symbols, amplification, max_amplification, adv_limit, stability_map
 
 include("tableau.jl")
 include("trees.jl")
 include("bseries.jl")
+include("conditions.jl")
 include("acoustic1d.jl")
 include("stability.jl")
 
