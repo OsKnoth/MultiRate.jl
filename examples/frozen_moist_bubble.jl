@@ -15,7 +15,8 @@
 # 2 K cos²(π r/(2 r_c)), r_c = 2 km, at (10 km, 2 km) at fixed pressure and r_t, saturated (as
 # CGDycore `PerturbMoistProfile`). MIS54, Verlet EI; reference RK4 of the same operator. T = 1000 s.
 # PVAR = p: the pressure itself as the additional variable (∂p/∂(ρ, Θ, V, C), plain δp).
-# MICRO = fast (default): phase change in every small step, τ = a quarter of the acoustic step (shortest stable); slow: at the
+# MICRO = fast (default): phase change in every small step, τ = TAUFAC times the acoustic step, default 0.5 (Verlet, EI, WRF:
+# one phase-change evaluation with weight c needs c/τ ≲ 1; 0.25 fails at Δx = 500 m) and 0.25 for HEVI; slow: at the
 # slow stages (then set WTAU, τ = min(Δx, Δz)/WTAU ≳ Δt/2).
 # METHODS: comma separated tableaus of the frozen step (default MIS54): MIS (MIS54, WSRK3 = Wicker–Skamarock
 # RK3, ...), Lawson (LRK4, LRK3, LRK2) or ETD (EB4, ETD2, EB1); Lawson and ETD freeze the fast part at qⁿ.
@@ -43,7 +44,7 @@ const OFFC = parse(Float64, get(ENV, "OFFCENTER", FAST === :ei ? "0.1" : "0"))  
 const SMDIV = parse(Float64, get(ENV, "SMDIV", "0"))
 mgm = FV.MoistGas(thvar = THVAR)                                   # gas of the model; mg (ρθ_ρ) builds the initial state
 mθ = FV.MoistExnerModel(base; mgas = mg, pvar = PVAR, micro = MICRO)
-m = FV.MoistExnerModel(base; mgas = mgm, pvar = PVAR, micro = MICRO, τfac = parse(Float64, get(ENV, "TAUFAC", FAST === :ei ? "0.5" : "0.25")),
+m = FV.MoistExnerModel(base; mgas = mgm, pvar = PVAR, micro = MICRO, τfac = parse(Float64, get(ENV, "TAUFAC", FAST === :hevi ? "0.25" : "0.5")),
                         wτ = haskey(ENV, "WTAU") ? parse(Float64, ENV["WTAU"]) : nothing)
 const θe0, rt0 = 320.0, 0.02
 
