@@ -1208,6 +1208,113 @@ end
     end
 end
 
+@testset "FV3D: moist air (MoistModel3D, the 2D moist model in 3D)" begin
+    F3 = MultiRate.FV3D
+    mgθ = FV.MoistGas()
+    gas = CM.Gas(R = mgθ.Rd, γ = mgθ.Cpd / (mgθ.Cpd - mgθ.Rd), p00 = mgθ.p0)
+    ρr, Θr, θr = CM.stratified_reference(gas; θ0 = 300.0, N = 0.01)
+    # ny = 1 is the 2D moist model: N, parts, column solve and MIS steps (:hevi, :cs), supersaturated (phase change
+    # active), flat and terrain following, all thermodynamic and pressure variables
+    nx, nz, L, H = 16, 10, 40e3, 10e3
+    ridge(x) = 800 / (1 + ((x - 20e3) / 4e3)^2)
+    for (terr, thv, pvar) in ((false, :thetarho, :pi), (true, :thetarho, :p), (true, :energy, :pi), (false, :entropy, :p))
+        g2 = terr ? FV.FVGrid(nx, nz, L, H; zs = ridge) : FV.FVGrid(nx, nz, L, H)
+        g3 = terr ? F3.Grid3D(nx, 1, nz, L, 5e3, H; zs = (x, y) -> ridge(x), terrain = :follow) : F3.Grid3D(nx, 1, nz, L, 5e3, H)
+        b2 = FV.FVModel(g2, gas, ρr, Θr); b3 = F3.Model3D(g3, gas, ρr, Θr)
+        mg = FV.MoistGas(thvar = thv)
+        m2θ = FV.MoistExnerModel(b2; mgas = mgθ, pvar)
+        m2 = FV.MoistExnerModel(b2; mgas = mg, pvar); m3 = F3.MoistModel3D(b3; mgas = mg, pvar)
+        @test m3.τ ≈ m2.τ
+        q = CM.project2d(b2, (x, z) -> (ρ = ρr(z) * (1 + 1e-3 * sin(2π * x / L)); (ρ, 10ρ + sin(x / 5e3), 0.3 * sin(π * z / H) * cos(x / 7e3), Θr(z) * (1 + 1e-3 * cos(x / 6e3)))))
+        x2 = FV.thermo_convert(m2θ, m2, FV.moist_exner_state(m2θ, q, [0.012 * q[FV.iρ(g2, i, k)] for i in 1:nx, k in 1:nz]))
+        for i in 1:nx, k in 1:nz
+            c = x2[FV.iC(m2, i, k)]; x2[FV.iV(m2, i, k)] += 0.3c; x2[FV.iC(m2, i, k)] -= 0.3c
+        end
+        TS.frozen_step_end!(m2, x2)
+        function to3(x)
+            y = zeros(m3.nq)
+            for k in 1:nz, i in 1:nx
+                y[F3.iρ(g3, i, 1, k)] = x[FV.iρ(g2, i, k)]; y[F3.iΘ(g3, i, 1, k)] = x[FV.iΘ(g2, i, k)]
+                y[F3.iU(g3, i, 1, k)] = x[FV.iU(g2, i, k)]; k > 1 && (y[F3.iW(g3, i, 1, k)] = x[FV.iW(g2, i, k)])
+                y[F3.iqv(m3, i, 1, k)] = x[FV.iV(m2, i, k)]; y[F3.iqc(m3, i, 1, k)] = x[FV.iC(m2, i, k)]
+                y[F3.iπ(m3, i, 1, k)] = x[FV.iπ(m2, i, k)]
+            end
+            return y
+        end
+        x3 = to3(x2)
+        d(y2, y3) = maximum(abs, to3(y2) - y3) / maximum(abs, y2)
+        @test d(TS.rhs_nonlinear(m2, x2), TS.rhs_nonlinear(m3, x3)) < 1e-14
+        C2 = zeros(TS.frozen_ncoef(m2)); S2 = zeros(m2.nq); TS.frozen_data!(C2, S2, m2, x2)
+        C3 = zeros(TS.frozen_ncoef(m3)); S3 = zeros(m3.nq); TS.frozen_data!(C3, S3, m3, x3)
+        for p in (:hthermo, :hmomentum, :vertical, :thermo, :momentum)
+            @test d(TS.frozen_fast!(zeros(m2.nq), m2, C2, x2, p, S2), TS.frozen_fast!(zeros(m3.nq), m3, C3, x3, p, S3)) < 1e-14
+        end
+        TS.frozen_stage_begin!(m2, C2, x2); TS.frozen_stage_begin!(m3, C3, x3)
+        R2 = 1e-3 .* cos.(1:m2.nq); Y2 = zeros(m2.nq); Y3 = zeros(m3.nq)
+        FV.moist_column_solve!(Y2, m2, 3.0, R2, 1.7); F3.moist_column_solve!(Y3, m3, 3.0, to3(R2), 1.7)
+        @test d(Y2, Y3) < 1e-14
+        for fast in (:hevi, :cs)
+            y2 = TS.run_frozen(m2, x2, 4.0, 2; tab = TS.mis_tableau(:MIS54), nsub = 6, fast)
+            y3 = TS.run_frozen(m3, x3, 4.0, 2; tab = TS.mis_tableau(:MIS54), nsub = 6, fast)
+            @test maximum(abs, to3(y2) - y3) < 1e-8 * maximum(abs, y2 - x2)
+        end
+    end
+    # genuine 3D (8 × 8 × 6, flat and a terrain-following hill): parts, linear fast part (micro = :slow), exact column
+    # solve, x ↔ y symmetry (flat), conservation of mass and total water by the frozen step (micro = :fast)
+    hill(x, y) = 1200.0 * exp(-((x - 10e3)^2 + (y - 10e3)^2) / 4e3^2)
+    for terr in (false, true)
+        g = terr ? F3.Grid3D(8, 8, 6, 20e3, 20e3, 6e3; zs = hill, terrain = :follow) : F3.Grid3D(8, 8, 6, 20e3, 20e3, 6e3)
+        b = F3.Model3D(g, gas, ρr, Θr)
+        mθ = F3.MoistModel3D(b; mgas = mgθ, micro = :slow)
+        fq(x, y, z) = (ρ = ρr(z) * (1 + 1e-3 * sin(x / 3e3) * cos(y / 4e3)); (ρ, 8ρ + sin(y / 3e3), 5ρ + cos(x / 4e3), 0.2ρ * sin(π * z / 6e3) * cos((x + 2y) / 5e3), Θr(z) * (1 + 1e-3 * cos((x - y) / 3e3))))
+        q = F3.project3d(b, fq)
+        x = F3.moist_exner_state(mθ, q, [0.013 * q[F3.iρ(g, i, j, k)] for i in 1:8, j in 1:8, k in 1:6])
+        C = zeros(TS.frozen_ncoef(mθ)); S = zeros(mθ.nq); TS.frozen_data!(C, S, mθ, x)
+        o(p, z = x) = TS.frozen_fast!(zeros(mθ.nq), mθ, C, z, p, S)
+        N = TS.rhs_nonlinear(mθ, x)
+        @test o(:all) == N
+        @test maximum(abs, o(:hthermo) + o(:hmomentum) + o(:vertical) - N) < 1e-13 * maximum(abs, N)
+        @test maximum(abs, o(:thermo) + o(:momentum) - N) < 1e-13 * maximum(abs, N)
+        v = 1e-3 .* sin.(1:mθ.nq)
+        @test maximum(abs, o(:all, x .+ v) + o(:all, x .- v) - 2N) < 1e-11 * maximum(abs, N)
+        TS.frozen_stage_begin!(mθ, C, x)
+        R = 1e-3 .* cos.(1:mθ.nq); Y = zeros(mθ.nq); F3.moist_column_solve!(Y, mθ, 3.0, R)
+        @test maximum(abs.(Y .- 3.0 .* (o(:vertical, x .+ Y) .- o(:vertical, x)) .- R)) < 1e-9 * maximum(abs, R)
+        xs = copy(x); xs[F3.iπ(mθ, 3, 2, 3)] += 1e-3; TS.frozen_step_end!(mθ, xs)
+        @test xs ≈ x rtol = 1e-15
+        if !terr                                              # x ↔ y: transposed state, transposed tendency
+            function T(z)
+                y = copy(z)
+                for k in 1:6, j in 1:8, i in 1:8
+                    y[F3.iU(g, i, j, k)] = z[F3.iV(g, j, i, k)]; y[F3.iV(g, i, j, k)] = z[F3.iU(g, j, i, k)]
+                    for f in (F3.iρ, F3.iΘ); y[f(g, i, j, k)] = z[f(g, j, i, k)]; end
+                    for f in (F3.iqv, F3.iqc, F3.iπ); y[f(mθ, i, j, k)] = z[f(mθ, j, i, k)]; end
+                    k > 1 && (y[F3.iW(g, i, j, k)] = z[F3.iW(g, j, i, k)])
+                end
+                return y
+            end
+            @test maximum(abs, TS.rhs_nonlinear(mθ, T(x)) - T(N)) < 1e-13 * maximum(abs, N)
+        end
+        mf = F3.MoistModel3D(b; mgas = mgθ, micro = :fast)
+        xsup = copy(x)
+        for k in 1:6, j in 1:8, i in 1:8
+            c = xsup[F3.iqc(mf, i, j, k)]; xsup[F3.iqv(mf, i, j, k)] += 0.3c; xsup[F3.iqc(mf, i, j, k)] -= 0.3c
+        end
+        TS.frozen_step_end!(mf, xsup)
+        Nf = TS.rhs_nonlinear(mf, xsup)
+        Nn = TS.rhs_nonlinear(F3.MoistModel3D(b; mgas = mgθ, micro = :none), xsup)
+        @test minimum(Nf[F3.iqc(mf, i, j, k)] - Nn[F3.iqc(mf, i, j, k)]
+                      for i in 1:8, j in 1:8, k in 1:6 if xsup[F3.iqc(mf, i, j, k)] > 0) > 0   # condensation in the cloudy cells
+        for fast in (:hevi, :cs)
+            y = TS.run_frozen(mf, xsup, 3.0, 3; tab = TS.mis_tableau(:MIS54), nsub = 6, fast)
+            @test abs(F3.total3d(mf, y, :ρ) / F3.total3d(mf, xsup, :ρ) - 1) < 1e-13
+            @test abs((F3.total3d(mf, y, :qv) + F3.total3d(mf, y, :qc)) / (F3.total3d(mf, xsup, :qv) + F3.total3d(mf, xsup, :qc)) - 1) < 1e-13
+            @test F3.total3d(mf, y, :qc) > F3.total3d(mf, xsup, :qc)
+        end
+    end
+    @test_throws ErrorException F3.MoistModel3D(F3.Model3D(F3.Grid3D(8, 8, 6, 20e3, 20e3, 6e3; zs = hill), gas, ρr, Θr; implicit = :column))
+end
+
 @testset "MethodDesign: bicoloured B-series of MIS with frozen first argument" begin
     BC = Main.BiColourMIS
     @test [length(BC.trees(n)) for n in 1:4] == [1, 2, 7, 26]
