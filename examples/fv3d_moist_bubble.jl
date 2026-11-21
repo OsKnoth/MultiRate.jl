@@ -3,7 +3,7 @@
 # pressure as prognostic variables, no saturation adjustment, condensation as an explicit Fischer–Burmeister
 # relaxation with τ on the fast scale, π recomputed after every MIS step).
 #
-#     [PVAR=pi|p] [THVAR=thetarho|energy|entropy] [FAST=verlet|hevi|cs|ei] [MICRO=fast|slow] [TAUFAC=f] [WTAU=w]
+#     [PVAR=p|pi] [THVAR=thetarho|energy|entropy] [FAST=verlet|hevi|cs|ei] [MICRO=fast|slow] [TAUFAC=f] [WTAU=w]
 #         [METHODS=MIS54,WSRK3] [DTS=5] [DTPLOT=5] [REF=1] julia -t auto --project=examples examples/fv3d_moist_bubble.jl [T] [nx]
 #
 # Saturated, neutral atmosphere θ_e = 320 K, r_t = 0.02, 20 km × 20 km × 10 km, nx × nx × nx/2 cells (default
@@ -28,7 +28,7 @@ gas = CM.Gas(R = mg.Rd, γ = mg.Cpd / (mg.Cpd - mg.Rd), p00 = mg.p0, g = 9.81)
 grid = F3.Grid3D(nx, nx, nz, L, L, H)
 ρr, Θr, _ = CM.stratified_reference(gas; θ0 = 300.0, N = 0.0)        # output reference only
 base = F3.Model3D(grid, gas, ρr, Θr)
-const PVAR = Symbol(get(ENV, "PVAR", "pi"))
+const PVAR = Symbol(get(ENV, "PVAR", "p"))
 const MICRO = Symbol(get(ENV, "MICRO", "fast"))
 const THVAR = Symbol(get(ENV, "THVAR", "thetarho"))
 const FAST = Symbol(get(ENV, "FAST", "verlet"))
@@ -192,7 +192,7 @@ if !isempty(res)
             Colorbar(fig[r, 2col], hm)
         end
     end
-    sfx = join(filter(!isempty, [PVAR === :pi ? "" : string(PVAR), THVAR === :thetarho ? "" : string(THVAR),
+    sfx = join(filter(!isempty, [PVAR === :p ? "" : string(PVAR), THVAR === :thetarho ? "" : string(THVAR),
                                  FAST === :verlet ? "" : string(FAST), MICRO === :fast ? "" : string(MICRO)]), "_")
     fn = get(ENV, "OUT", "fv3d_moist_bubble$(isempty(sfx) ? "" : "_" * sfx).png")
     save(fn, fig)

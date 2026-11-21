@@ -32,11 +32,12 @@ MoistColumn3D(g::Grid3D) = (z = () -> zeros(g.nx, g.ny, g.nz + 1);
     MoistColumn3D(z(), z(), z(), z(), z(), z(), z(), Dict{Float64,NTuple{3,Array{Float64,3}}}(), zeros(g.nz + 1)))
 
 """
-    MoistModel3D(base::Model3D; mgas = MoistGas(), pvar = :pi, micro = :fast, τfac = 0.25, cs = 350.0,
+    MoistModel3D(base::Model3D; mgas = MoistGas(), pvar = :p, micro = :fast, τfac = 0.25, cs = 350.0,
                  wτ = nothing, τ = nothing)
 
 Moist 3D FV model (flat or terrain following; no cut cells, `implicit = :column`), the 3D form of
-`FV2D.MoistExnerModel`: state `[ρ; U; V; W; X; ρq_v; ρq_c; π]` (`moist_exner_state`), frozen split for
+`FV2D.MoistExnerModel`: state `[ρ; U; V; W; X; ρq_v; ρq_c; p]` (pvar = :p, the default) or `[…; π]` (pvar = :pi)
+(`moist_exner_state`), frozen split for
 `TimeStepping.run_frozen` (:verlet, :hevi, :ei, :wrf, :cs, :csfb, :rk4), π (or p) recomputed from the equation of
 state after every MIS step. Condensation by the explicit Fischer–Burmeister relaxation, in every fast step
 (micro = :fast, default), at the slow stages (:slow) or off (:none). Relaxation time: the given τ, or
@@ -60,7 +61,7 @@ struct MoistModel3D
     pc::Array{Float64,3}           # prognostic pressure per cell (work, :energy)
     column::MoistColumn3D
 end
-function MoistModel3D(base::Model3D; mgas::MoistGas = MoistGas(), pvar::Symbol = :pi, micro::Symbol = :fast,
+function MoistModel3D(base::Model3D; mgas::MoistGas = MoistGas(), pvar::Symbol = :p, micro::Symbol = :fast,
                       τfac::Real = 0.25, cs::Real = 350.0, wτ = nothing, τ = nothing)
     pvar in (:pi, :p) || error("pvar: :pi or :p")
     mgas.thvar in (:thetarho, :energy, :entropy) || error("thvar: :thetarho, :energy or :entropy")

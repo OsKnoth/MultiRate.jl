@@ -1315,6 +1315,47 @@ end
     @test_throws ErrorException F3.MoistModel3D(F3.Model3D(F3.Grid3D(8, 8, 6, 20e3, 20e3, 6e3; zs = hill), gas, ρr, Θr; implicit = :column))
 end
 
+@testset "FV3DKA: moist 3D model with KernelAbstractions, x-y tiles (one rank; MPI: test/fv3dka_mpi.jl)" begin
+    F3 = MultiRate.FV3D; K = MultiRate.FV3DKA
+    mgθ = CM.MoistGas()
+    @test isbits(mgθ) && CM.MoistGas(thvar = :energy).thvar === :energy
+    gas = CM.Gas(R = mgθ.Rd, γ = mgθ.Cpd / (mgθ.Cpd - mgθ.Rd), p00 = mgθ.p0)
+    ρr, Θr, θr = CM.stratified_reference(gas; θ0 = 300.0, N = 0.01)
+    hill(x, y) = 1200.0 * exp(-((x - 10e3)^2 + (y - 7e3)^2) / 4e3^2)
+    nx, ny, nz, L, Ly, H = 10, 8, 6, 20e3, 16e3, 6e3
+    for terr in (false, true), (thv, pvar, micro) in ((:thetarho, :p, :fast), (:energy, :pi, :fast), (:entropy, :p, :slow))
+        g3 = terr ? F3.Grid3D(nx, ny, nz, L, Ly, H; zs = hill, terrain = :follow) : F3.Grid3D(nx, ny, nz, L, Ly, H)
+        b3 = F3.with_sponge(F3.Model3D(g3, gas, ρr, Θr), zeros(F3.nunknowns(g3)); zD = 4e3, αtop = 0.05)
+        mg = CM.MoistGas(thvar = thv)
+        mθ = F3.MoistModel3D(b3; mgas = mgθ, pvar, micro); m3 = F3.MoistModel3D(b3; mgas = mg, pvar, micro)
+        fq(x, y, z) = (ρ = ρr(z) * (1 + 1e-3 * sin(x / 3e3) * cos(y / 4e3)); (ρ, 8ρ + sin(y / 3e3), 5ρ + cos(x / 4e3), 0.2ρ * sin(π * z / H) * cos((x + 2y) / 5e3), Θr(z) * (1 + 1e-3 * cos((x - y) / 3e3))))
+        q = F3.project3d(b3, fq)
+        x = F3.thermo_convert(mθ, m3, F3.moist_exner_state(mθ, q, [0.013 * q[F3.iρ(g3, i, j, k)] for i in 1:nx, j in 1:ny, k in 1:nz]))
+        for k in 1:nz, j in 1:ny, i in 1:nx                   # supersaturated: phase change active
+            c = x[F3.iqc(m3, i, j, k)]; x[F3.iqv(m3, i, j, k)] += 0.3c; x[F3.iqc(m3, i, j, k)] -= 0.3c
+        end
+        TS.frozen_step_end!(m3, x)
+        gk = K.KAGrid(nx, ny, nz, L, Ly, H; zs = terr ? hill : nothing)
+        I = K.HALO .+ (1:nx); J = K.HALO .+ (1:ny)
+        @test Array(gk.Jc)[I, J] == g3.Jc && Array(gk.zxx)[I, J, :] == g3.zxx && Array(gk.zyf)[I, J, :] == g3.zyf
+        mk = K.MoistKA(gk; mgas = mg, pvar, micro, sponge = (4e3, 0.05))
+        @test mk.τ ≈ m3.τ
+        Q = K.ka_state(mk, m3, x)
+        @test K.global_state(mk, m3, Q) == x
+        Q2 = copy(Q); Q2[1, :, :, :] .= 0; Q2[:, end, :, :] .= 0; K.exchange!(K.SerialDecomp(), Q2, gk)
+        @test Q2 == Q                                         # periodic halo
+        N3 = TS.rhs_nonlinear(m3, x)
+        out = K.ka_zeros(mk); K.ka_rhs!(out, mk, Q)
+        # equal up to the finite-difference noise of the frozen ∂p/∂(ρ, X, ρq_v, ρq_c) (h = 1e-6)
+        @test maximum(abs, K.global_state(mk, m3, out) - N3) < 1e-9 * maximum(abs, N3)
+        y3 = TS.run_frozen(m3, x, 3.0, 2; tab = TS.mis_tableau(:MIS54), nsub = 6, fast = :cs)
+        K.ka_run!(mk, Q, 3.0, 2; tab = TS.mis_tableau(:MIS54), nsub = 6)
+        @test maximum(abs, K.global_state(mk, m3, Q) - y3) < 1e-8 * maximum(abs, y3 - x)
+        @test abs(K.ka_total(mk, Q, K.VR) / F3.total3d(m3, x, :ρ) - 1) < 1e-13
+        @test abs((K.ka_total(mk, Q, K.VQV) + K.ka_total(mk, Q, K.VQC)) / (F3.total3d(m3, x, :qv) + F3.total3d(m3, x, :qc)) - 1) < 1e-13
+    end
+end
+
 @testset "MethodDesign: bicoloured B-series of MIS with frozen first argument" begin
     BC = Main.BiColourMIS
     @test [length(BC.trees(n)) for n in 1:4] == [1, 2, 7, 26]

@@ -3,17 +3,30 @@
 # equilibrium (initial states only), Fischer–Burmeister function of the condensation relaxation and the phase factors
 # of the X and pressure equations. Formulation: src/FV/moist.jl.
 
-Base.@kwdef struct MoistGas
-    Rd::Float64 = 287.0
-    Rv::Float64 = 461.0
-    Cpd::Float64 = 1004.0
-    Cpv::Float64 = 1885.0
-    Cpl::Float64 = 4186.0
-    L0V::Float64 = 2.5e6
-    T0::Float64 = 273.15
-    p0::Float64 = 1.0e5
-    thvar::Symbol = :thetarho      # thermodynamic variable X: :thetarho (ρθ_ρ), :energy (internal energy ρe) or :entropy (ρs)
+"""
+    MoistGas(; Rd, Rv, Cpd, Cpv, Cpl, L0V, T0, p0, thvar = :thetarho)
+
+Constants of moist air and the thermodynamic variable X (`thvar`): :thetarho (ρθ_ρ), :energy (internal energy ρe)
+or :entropy (ρs). The choice is the type parameter, `MoistGas{thvar}` (read as `mg.thvar`), so that the struct is
+isbits and can be passed to GPU kernels (FV3DKA).
+"""
+struct MoistGas{TV}
+    Rd::Float64
+    Rv::Float64
+    Cpd::Float64
+    Cpv::Float64
+    Cpl::Float64
+    L0V::Float64
+    T0::Float64
+    p0::Float64
 end
+function MoistGas(; Rd = 287.0, Rv = 461.0, Cpd = 1004.0, Cpv = 1885.0, Cpl = 4186.0, L0V = 2.5e6, T0 = 273.15,
+                  p0 = 1.0e5, thvar::Symbol = :thetarho)
+    thvar in (:thetarho, :energy, :entropy) || error("thvar: :thetarho, :energy or :entropy")
+    return MoistGas{thvar}(Rd, Rv, Cpd, Cpv, Cpl, L0V, T0, p0)
+end
+@inline Base.getproperty(mg::MoistGas{TV}, s::Symbol) where {TV} = s === :thvar ? TV : getfield(mg, s)
+Base.propertynames(::MoistGas) = (:Rd, :Rv, :Cpd, :Cpv, :Cpl, :L0V, :T0, :p0, :thvar)
 """Energy constant of the vapour: e_v = c_vv T + e0v, so that L(T) = h_v - h_l = e0v + (c_pv - c_pl) T."""
 @inline _e0v(mg::MoistGas) = mg.L0V - (mg.Cpv - mg.Cpl) * mg.T0
 

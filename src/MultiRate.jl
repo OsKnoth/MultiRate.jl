@@ -26,8 +26,9 @@ include("LinearAnalysis/LinearAnalysis.jl")
 include("DGSEM/Euler2D/Euler2D.jl")
 include("FV/FV2D.jl")
 include("FV3D/FV3D.jl")
+include("FV3DKA/FV3DKA.jl")
 include("MIS/MIS.jl")
 
-export Common, TimeStepping, LinearAnalysis, Euler2D, FV2D, FV3D, MIS
+export Common, TimeStepping, LinearAnalysis, Euler2D, FV2D, FV3D, FV3DKA, MIS
 
 end # module
