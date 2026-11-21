@@ -1559,6 +1559,10 @@ end
     @test MM.tree_count(5; class = :BA) == [1, 2, 7, 25, 99]                   # F = f(y) + B(y) z + g(z)
     ic = MM.independent_conditions(4; class = :BA, s = 6, K = 1, samples = 2)  # restart class: as for F(y, z)
     @test ic.coupling == [0, 0, 1, 4] && ic.base == [1, 1, 2, 4]
+    Ab, bb = MM.base_method(m54); zz = 0.4 + 0.3im                  # base RK: R(z) = 1 + b'z(I - zA)⁻¹1
+    @test MM.rk_amplification(m54, fill(zz, 1, 1))[1] ≈ 1 + bb' * ((I - zz * Ab) \ (zz * ones(length(bb))))
+    @test MM.max_amplification(m54, MM.symbols(:fv); Cadv = 0.7, Csound = 0) ≈
+          MM.max_amplification(m54, MM.symbols(:fv); Cadv = 0.7, Csound = 0, base = true)
 end
 
 end

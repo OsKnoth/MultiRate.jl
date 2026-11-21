@@ -24,7 +24,41 @@ classes: G general $F(y,z)$ (the frozen form), B affine in $z$, A additive $f(y)
 \noindent\textbf{Stability} (Knoth \& Wensch 2014, eq.~(10)): $u_t+Uu_x=-cp_x$, $p_t+Up_x=-cu_x$, periodic C-grid, centred
 second-order acoustics (fast), third-order upwind advection (slow), exact fast part; stable region (blue) of
 $\max_\theta\rho\le1+10^{-8}$ over $C_{\rm sound}=c\Delta t/\Delta x$ and $C_{\rm adv}=U\Delta t/\Delta x$
-(\texttt{examples/mis\_stability\_fv.jl}). The table gives the largest $C_{\rm adv}$ with all smaller ones stable.
+(\texttt{examples/mis\_stability\_fv.jl}); orange: the base Runge--Kutta method; dashed: $U/c=1/6$. The computation is
+described below.
+
+\subsection*{How the stability plots are computed}
+\begin{enumerate}
+\item \emph{Symbols.} With $p$ in the cells, $u$ on the faces and the Fourier ansatz $p_k=\hat p\,e^{\mathrm ik\theta}$,
+  $u_{k+1/2}=\hat u\,e^{\mathrm i(k+1/2)\theta}$, $\theta\in[0,\pi]$, the semi-discretisation becomes
+  $(\hat p,\hat u)'=(C_{\rm adv}S_1(\theta)+C_{\rm sound}L_1(\theta))(\hat p,\hat u)$ per time step $\Delta t=1$, with the
+  centred staggered acoustics
+  \[
+   L_1(\theta)=\begin{pmatrix}0&-(e^{\mathrm i\theta}-1)\\-(1-e^{-\mathrm i\theta})&0\end{pmatrix},\qquad
+   \text{eigenvalues }\pm2\mathrm i\sin(\theta/2),
+  \]
+  and the third-order upwind flux-form advection of both variables,
+  $S_1(\theta)=\nu(\theta)I$, $\nu(\theta)=-(2e^{\mathrm i\theta}+3-6e^{-\mathrm i\theta}+e^{-2\mathrm i\theta})/6$
+  (\texttt{MultiRate.MIS.fv\_symbols}). The acoustic part is the fast part $L$, the advection the slow part $S$.
+\item \emph{MIS step matrix.} Stage $i$ solves $V'=d_iLV+r_i$ on $[0,1]$, $V(0)=I+\sum_j\alpha_{ij}(Y_j-I)$, with the
+  constant forcing $r_i=\sum_j\gamma_{ij}(Y_j-I)+\sum_j\beta_{ij}SY_j$; the inner problem is solved exactly (matrix
+  exponential of the system augmented by the forcing), i.e.\ the small steps are not part of the analysis. The stage
+  recursion gives the $2\times2$ step matrix $R(\theta)$ (\texttt{MultiRate.MIS.amplification}).
+\item \emph{Criterion.} A point $(C_{\rm sound},C_{\rm adv})$ is stable if $\max_\theta\rho(R(\theta))\le1+10^{-8}$, with
+  40 equidistant $\theta\in[0,\pi]$ (\texttt{max\_amplification}). Grid: $\Delta C_{\rm sound}=0.125$ on $[0,24]$,
+  $\Delta C_{\rm adv}=0.05$ on $[0,4]$; blue are the stable grid points, the black line is the level $\rho=1+10^{-8}$.
+\item \emph{Base Runge--Kutta method} (orange). The explicit method $(A,b)$ that the MIS method reduces to if $F$ does not
+  depend on its second argument (\texttt{base\_method}), applied to the whole operator without fast integration:
+  $R=I+b^TZ(I-AZ)^{-1}\mathbf 1$, $Z=C_{\rm adv}S_1+C_{\rm sound}L_1$ (\texttt{rk\_amplification}). At $C_{\rm sound}=0$
+  both methods coincide, so the regions agree on the $C_{\rm adv}$ axis; the distance between the orange and the blue
+  region in $C_{\rm sound}$ is the gain of the multirate integration.
+\item \emph{Line $U/c=1/6$} (dashed), $C_{\rm adv}=C_{\rm sound}/6$: a typical upper bound of the Mach number in the
+  atmosphere ($U\approx55$\,m/s, $c\approx340$\,m/s). On this line both Courant numbers grow with $\Delta t$; the value
+  ``$U/c=1/6$'' given for each method is the largest $C_{\rm sound}$ (step $1/16$) up to which all points of the line
+  are stable, i.e.\ the largest stable time step $\Delta t=C_{\rm sound}\Delta x/c$ at this Mach number.
+\item \emph{Tables.} For given $C_{\rm sound}$ the largest $C_{\rm adv}$ such that all smaller $C_{\rm adv}$ are stable
+  (from the grid).
+\end{enumerate}
 
 \begin{center}\includegraphics[width=\textwidth]{stability_fv/all.png}\end{center}
 \tableofcontents
@@ -44,7 +78,8 @@ Wicker \& Skamarock (2002), RK3 split-explicit scheme: $\beta=\mathrm{diag}(1/3,
 
 \begin{center}\includegraphics[width=0.8\textwidth]{stability_fv/WSRK3.png}
 
-\small\begin{tabular}{lccccc}\toprule $C_{\rm sound}$ & 0 & 2 & 4 & 8 & 12\\\midrule largest $C_{\rm adv}$ & 1.60 & 1.30 & 0.00 & 0.00 & 0.00\\\bottomrule\end{tabular}\end{center}
+\small\begin{tabular}{lcccccccc}\toprule $C_{\rm sound}$ & 0 & 2 & 4 & 8 & 12 & 16 & 20 & 24\\\midrule largest $C_{\rm adv}$ & 1.60 & 1.30 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00\\\bottomrule\end{tabular}\end{center}
+\noindent On the line $U/c=1/6$ stable up to $C_{\rm sound}=3.12$ ($C_{\rm adv}=0.52$). Base Runge--Kutta method, all explicit: $C_{\rm adv}\le1.60$ at $C_{\rm sound}=0$, $C_{\rm sound}\le0.750$ at $C_{\rm adv}=0$.
 \clearpage
 \section{MIS2}
 Knoth \& Wensch (2014).
@@ -61,7 +96,8 @@ Knoth \& Wensch (2014).
 
 \begin{center}\includegraphics[width=0.8\textwidth]{stability_fv/MIS2.png}
 
-\small\begin{tabular}{lccccc}\toprule $C_{\rm sound}$ & 0 & 2 & 4 & 8 & 12\\\midrule largest $C_{\rm adv}$ & 1.35 & 0.50 & 0.70 & 1.30 & 2.00\\\bottomrule\end{tabular}\end{center}
+\small\begin{tabular}{lcccccccc}\toprule $C_{\rm sound}$ & 0 & 2 & 4 & 8 & 12 & 16 & 20 & 24\\\midrule largest $C_{\rm adv}$ & 1.35 & 0.50 & 0.70 & 1.30 & 2.00 & 2.65 & 3.30 & 4.00\\\bottomrule\end{tabular}\end{center}
+\noindent On the line $U/c=1/6$ stable up to $C_{\rm sound}=6.19$ ($C_{\rm adv}=1.03$). Base Runge--Kutta method, all explicit: $C_{\rm adv}\le1.35$ at $C_{\rm sound}=0$, $C_{\rm sound}\le0.000$ at $C_{\rm adv}=0$.
 \clearpage
 \section{MIS3C}
 Knoth \& Wensch (2014).
@@ -78,7 +114,8 @@ Knoth \& Wensch (2014).
 
 \begin{center}\includegraphics[width=0.8\textwidth]{stability_fv/MIS3C.png}
 
-\small\begin{tabular}{lccccc}\toprule $C_{\rm sound}$ & 0 & 2 & 4 & 8 & 12\\\midrule largest $C_{\rm adv}$ & 1.60 & 1.05 & 0.80 & 0.00 & 0.10\\\bottomrule\end{tabular}\end{center}
+\small\begin{tabular}{lcccccccc}\toprule $C_{\rm sound}$ & 0 & 2 & 4 & 8 & 12 & 16 & 20 & 24\\\midrule largest $C_{\rm adv}$ & 1.60 & 1.05 & 0.80 & 0.00 & 0.10 & 0.00 & 0.05 & 0.00\\\bottomrule\end{tabular}\end{center}
+\noindent On the line $U/c=1/6$ stable up to $C_{\rm sound}=4.38$ ($C_{\rm adv}=0.73$). Base Runge--Kutta method, all explicit: $C_{\rm adv}\le1.60$ at $C_{\rm sound}=0$, $C_{\rm sound}\le0.750$ at $C_{\rm adv}=0$.
 \clearpage
 \section{MIS4}
 Knoth \& Wensch (2014).
@@ -98,7 +135,8 @@ Knoth \& Wensch (2014).
 
 \begin{center}\includegraphics[width=0.8\textwidth]{stability_fv/MIS4.png}
 
-\small\begin{tabular}{lccccc}\toprule $C_{\rm sound}$ & 0 & 2 & 4 & 8 & 12\\\midrule largest $C_{\rm adv}$ & 1.60 & 1.30 & 0.80 & 1.15 & 2.00\\\bottomrule\end{tabular}\end{center}
+\small\begin{tabular}{lcccccccc}\toprule $C_{\rm sound}$ & 0 & 2 & 4 & 8 & 12 & 16 & 20 & 24\\\midrule largest $C_{\rm adv}$ & 1.60 & 1.30 & 0.80 & 1.15 & 2.00 & 2.55 & 3.00 & 1.25\\\bottomrule\end{tabular}\end{center}
+\noindent On the line $U/c=1/6$ stable up to $C_{\rm sound}=7.75$ ($C_{\rm adv}=1.29$). Base Runge--Kutta method, all explicit: $C_{\rm adv}\le1.60$ at $C_{\rm sound}=0$, $C_{\rm sound}\le0.750$ at $C_{\rm adv}=0$.
 \clearpage
 \section{MIS4a}
 Knoth \& Wensch (2014), with the authors' corrected $\beta_{41}$ (values as in ClimaTimeSteppers.jl).
@@ -118,7 +156,8 @@ Knoth \& Wensch (2014), with the authors' corrected $\beta_{41}$ (values as in C
 
 \begin{center}\includegraphics[width=0.8\textwidth]{stability_fv/MIS4a.png}
 
-\small\begin{tabular}{lccccc}\toprule $C_{\rm sound}$ & 0 & 2 & 4 & 8 & 12\\\midrule largest $C_{\rm adv}$ & 1.95 & 1.70 & 1.65 & 2.05 & 3.00\\\bottomrule\end{tabular}\end{center}
+\small\begin{tabular}{lcccccccc}\toprule $C_{\rm sound}$ & 0 & 2 & 4 & 8 & 12 & 16 & 20 & 24\\\midrule largest $C_{\rm adv}$ & 1.95 & 1.70 & 1.65 & 2.05 & 3.00 & 0.00 & 0.00 & 0.00\\\bottomrule\end{tabular}\end{center}
+\noindent On the line $U/c=1/6$ stable up to $C_{\rm sound}=13.44$ ($C_{\rm adv}=2.24$). Base Runge--Kutta method, all explicit: $C_{\rm adv}\le1.95$ at $C_{\rm sound}=0$, $C_{\rm sound}\le1.000$ at $C_{\rm adv}=0$.
 \clearpage
 \section{MIS\_KW3}
 Knoth--Wolke RK3 ($c=0,1/3,3/4$) in MIS form with recursive stages ($\alpha_{i,i-1}=1$, $\gamma=0$).
@@ -135,7 +174,8 @@ Knoth--Wolke RK3 ($c=0,1/3,3/4$) in MIS form with recursive stages ($\alpha_{i,i
 
 \begin{center}\includegraphics[width=0.8\textwidth]{stability_fv/MIS_KW3.png}
 
-\small\begin{tabular}{lccccc}\toprule $C_{\rm sound}$ & 0 & 2 & 4 & 8 & 12\\\midrule largest $C_{\rm adv}$ & 1.60 & 0.65 & 0.00 & 0.00 & 0.00\\\bottomrule\end{tabular}\end{center}
+\small\begin{tabular}{lcccccccc}\toprule $C_{\rm sound}$ & 0 & 2 & 4 & 8 & 12 & 16 & 20 & 24\\\midrule largest $C_{\rm adv}$ & 1.60 & 0.65 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00\\\bottomrule\end{tabular}\end{center}
+\noindent On the line $U/c=1/6$ stable up to $C_{\rm sound}=2.50$ ($C_{\rm adv}=0.42$). Base Runge--Kutta method, all explicit: $C_{\rm adv}\le1.60$ at $C_{\rm sound}=0$, $C_{\rm sound}\le0.750$ at $C_{\rm adv}=0$.
 \clearpage
 \section{MIS54}
 Bauer \& Knoth, J.~Comput.\ Appl.\ Math.\ 387 (2021), Table~2.
@@ -158,7 +198,8 @@ Bauer \& Knoth, J.~Comput.\ Appl.\ Math.\ 387 (2021), Table~2.
 
 \begin{center}\includegraphics[width=0.8\textwidth]{stability_fv/MIS54.png}
 
-\small\begin{tabular}{lccccc}\toprule $C_{\rm sound}$ & 0 & 2 & 4 & 8 & 12\\\midrule largest $C_{\rm adv}$ & 2.05 & 2.30 & 2.70 & 2.35 & 3.00\\\bottomrule\end{tabular}\end{center}
+\small\begin{tabular}{lcccccccc}\toprule $C_{\rm sound}$ & 0 & 2 & 4 & 8 & 12 & 16 & 20 & 24\\\midrule largest $C_{\rm adv}$ & 2.05 & 2.30 & 2.70 & 2.35 & 3.20 & 2.00 & 0.00 & 0.00\\\bottomrule\end{tabular}\end{center}
+\noindent On the line $U/c=1/6$ stable up to $C_{\rm sound}=15.50$ ($C_{\rm adv}=2.58$). Base Runge--Kutta method, all explicit: $C_{\rm adv}\le2.05$ at $C_{\rm sound}=0$, $C_{\rm sound}\le1.500$ at $C_{\rm adv}=0$.
 \clearpage
 \section{MISF53}
 This project (\texttt{MethodDesign/}): MIS54 projected (minimum norm) onto all bicoloured order conditions $\le3$.
@@ -181,7 +222,8 @@ This project (\texttt{MethodDesign/}): MIS54 projected (minimum norm) onto all b
 
 \begin{center}\includegraphics[width=0.8\textwidth]{stability_fv/MISF53.png}
 
-\small\begin{tabular}{lccccc}\toprule $C_{\rm sound}$ & 0 & 2 & 4 & 8 & 12\\\midrule largest $C_{\rm adv}$ & 2.05 & 2.45 & 2.40 & 2.50 & 3.00\\\bottomrule\end{tabular}\end{center}
+\small\begin{tabular}{lcccccccc}\toprule $C_{\rm sound}$ & 0 & 2 & 4 & 8 & 12 & 16 & 20 & 24\\\midrule largest $C_{\rm adv}$ & 2.05 & 2.45 & 2.40 & 2.50 & 3.35 & 0.00 & 0.00 & 0.00\\\bottomrule\end{tabular}\end{center}
+\noindent On the line $U/c=1/6$ stable up to $C_{\rm sound}=14.25$ ($C_{\rm adv}=2.38$). Base Runge--Kutta method, all explicit: $C_{\rm adv}\le2.05$ at $C_{\rm sound}=0$, $C_{\rm sound}\le1.500$ at $C_{\rm adv}=0$.
 \clearpage
 \section{MIS\_FV42}
 This project (\texttt{MethodDesign/search\_app.jl}): from MIS4, stable on the column Fourier blocks of the frozen FV split.
@@ -201,7 +243,8 @@ This project (\texttt{MethodDesign/search\_app.jl}): from MIS4, stable on the co
 
 \begin{center}\includegraphics[width=0.8\textwidth]{stability_fv/MIS_FV42.png}
 
-\small\begin{tabular}{lccccc}\toprule $C_{\rm sound}$ & 0 & 2 & 4 & 8 & 12\\\midrule largest $C_{\rm adv}$ & 1.85 & 1.60 & 1.50 & 1.20 & 1.85\\\bottomrule\end{tabular}\end{center}
+\small\begin{tabular}{lcccccccc}\toprule $C_{\rm sound}$ & 0 & 2 & 4 & 8 & 12 & 16 & 20 & 24\\\midrule largest $C_{\rm adv}$ & 1.85 & 1.60 & 1.50 & 1.20 & 1.85 & 2.50 & 3.15 & 2.90\\\bottomrule\end{tabular}\end{center}
+\noindent On the line $U/c=1/6$ stable up to $C_{\rm sound}=7.38$ ($C_{\rm adv}=1.23$). Base Runge--Kutta method, all explicit: $C_{\rm adv}\le1.85$ at $C_{\rm sound}=0$, $C_{\rm sound}\le0.500$ at $C_{\rm adv}=0$.
 \clearpage
 \section{MIS\_FV53}
 This project (\texttt{MethodDesign/search\_app.jl}): from MISF53, stable on the column Fourier blocks of the frozen FV split.
@@ -224,7 +267,8 @@ This project (\texttt{MethodDesign/search\_app.jl}): from MISF53, stable on the 
 
 \begin{center}\includegraphics[width=0.8\textwidth]{stability_fv/MIS_FV53.png}
 
-\small\begin{tabular}{lccccc}\toprule $C_{\rm sound}$ & 0 & 2 & 4 & 8 & 12\\\midrule largest $C_{\rm adv}$ & 2.05 & 2.30 & 2.20 & 2.85 & 3.00\\\bottomrule\end{tabular}\end{center}
+\small\begin{tabular}{lcccccccc}\toprule $C_{\rm sound}$ & 0 & 2 & 4 & 8 & 12 & 16 & 20 & 24\\\midrule largest $C_{\rm adv}$ & 2.05 & 2.30 & 2.20 & 2.85 & 4.00 & 2.95 & 3.30 & 4.00\\\bottomrule\end{tabular}\end{center}
+\noindent On the line $U/c=1/6$ stable up to $C_{\rm sound}=17.56$ ($C_{\rm adv}=2.93$). Base Runge--Kutta method, all explicit: $C_{\rm adv}\le2.05$ at $C_{\rm sound}=0$, $C_{\rm sound}\le0.000$ at $C_{\rm adv}=0$.
 \clearpage
 \section{MIS\_DG53}
 This project (\texttt{MethodDesign/search\_app.jl}): from MISF53, stable on the column Fourier blocks of the frozen DG split.
@@ -247,7 +291,8 @@ This project (\texttt{MethodDesign/search\_app.jl}): from MISF53, stable on the 
 
 \begin{center}\includegraphics[width=0.8\textwidth]{stability_fv/MIS_DG53.png}
 
-\small\begin{tabular}{lccccc}\toprule $C_{\rm sound}$ & 0 & 2 & 4 & 8 & 12\\\midrule largest $C_{\rm adv}$ & 2.35 & 1.85 & 1.35 & 2.15 & 2.25\\\bottomrule\end{tabular}\end{center}
+\small\begin{tabular}{lcccccccc}\toprule $C_{\rm sound}$ & 0 & 2 & 4 & 8 & 12 & 16 & 20 & 24\\\midrule largest $C_{\rm adv}$ & 2.35 & 1.85 & 1.35 & 2.15 & 2.25 & 2.70 & 2.85 & 2.40\\\bottomrule\end{tabular}\end{center}
+\noindent On the line $U/c=1/6$ stable up to $C_{\rm sound}=15.31$ ($C_{\rm adv}=2.55$). Base Runge--Kutta method, all explicit: $C_{\rm adv}\le2.35$ at $C_{\rm sound}=0$, $C_{\rm sound}\le1.375$ at $C_{\rm adv}=0$.
 \clearpage
 \section{TVDMISB}
 Knoth \& Wensch (2014), as in Breeze.jl. The published coefficients have about 6 digits: the residual of \(\bullet[w]\) is \(2\cdot10^{-6}\).
@@ -264,7 +309,8 @@ Knoth \& Wensch (2014), as in Breeze.jl. The published coefficients have about 6
 
 \begin{center}\includegraphics[width=0.8\textwidth]{stability_fv/TVDMISB.png}
 
-\small\begin{tabular}{lccccc}\toprule $C_{\rm sound}$ & 0 & 2 & 4 & 8 & 12\\\midrule largest $C_{\rm adv}$ & 1.60 & 1.20 & 1.05 & 1.40 & 2.05\\\bottomrule\end{tabular}\end{center}
+\small\begin{tabular}{lcccccccc}\toprule $C_{\rm sound}$ & 0 & 2 & 4 & 8 & 12 & 16 & 20 & 24\\\midrule largest $C_{\rm adv}$ & 1.60 & 1.20 & 1.05 & 1.40 & 2.05 & 1.55 & 2.45 & 2.70\\\bottomrule\end{tabular}\end{center}
+\noindent On the line $U/c=1/6$ stable up to $C_{\rm sound}=12.31$ ($C_{\rm adv}=2.05$). Base Runge--Kutta method, all explicit: $C_{\rm adv}\le1.60$ at $C_{\rm sound}=0$, $C_{\rm sound}\le0.750$ at $C_{\rm adv}=0$.
 \clearpage
 \section{SSPMIS43}
 Breeze.jl (branch \texttt{glw/mis-tableau-search}): coupled order 2, slow order 3, SSP slow method (SSP coefficient 1.79), CMA-ES search for the cost per simulated time with Breeze's own fast integrator.
@@ -284,7 +330,8 @@ Breeze.jl (branch \texttt{glw/mis-tableau-search}): coupled order 2, slow order 
 
 \begin{center}\includegraphics[width=0.8\textwidth]{stability_fv/SSPMIS43.png}
 
-\small\begin{tabular}{lccccc}\toprule $C_{\rm sound}$ & 0 & 2 & 4 & 8 & 12\\\midrule largest $C_{\rm adv}$ & 2.05 & 1.15 & 0.20 & 0.15 & 0.25\\\bottomrule\end{tabular}\end{center}
+\small\begin{tabular}{lcccccccc}\toprule $C_{\rm sound}$ & 0 & 2 & 4 & 8 & 12 & 16 & 20 & 24\\\midrule largest $C_{\rm adv}$ & 2.05 & 1.15 & 0.20 & 0.15 & 0.25 & 0.35 & 0.45 & 0.55\\\bottomrule\end{tabular}\end{center}
+\noindent On the line $U/c=1/6$ stable up to $C_{\rm sound}=3.00$ ($C_{\rm adv}=0.50$). Base Runge--Kutta method, all explicit: $C_{\rm adv}\le2.05$ at $C_{\rm sound}=0$, $C_{\rm sound}\le1.000$ at $C_{\rm adv}=0$.
 \clearpage
 \section{ConvexMIS52}
 Breeze.jl (branch \texttt{glw/mis-tableau-search}): coupled order 2, convex stage start states, $\beta\ge0$, Shu--Osher coefficient 1.5; constrained search for the stable step per cost.
@@ -307,7 +354,8 @@ Breeze.jl (branch \texttt{glw/mis-tableau-search}): coupled order 2, convex stag
 
 \begin{center}\includegraphics[width=0.8\textwidth]{stability_fv/ConvexMIS52.png}
 
-\small\begin{tabular}{lccccc}\toprule $C_{\rm sound}$ & 0 & 2 & 4 & 8 & 12\\\midrule largest $C_{\rm adv}$ & 2.70 & 2.40 & 2.55 & 3.00 & 3.00\\\bottomrule\end{tabular}\end{center}
+\small\begin{tabular}{lcccccccc}\toprule $C_{\rm sound}$ & 0 & 2 & 4 & 8 & 12 & 16 & 20 & 24\\\midrule largest $C_{\rm adv}$ & 2.70 & 2.40 & 2.55 & 3.95 & 4.00 & 4.00 & 4.00 & 4.00\\\bottomrule\end{tabular}\end{center}
+\noindent On the line $U/c=1/6$ stable up to $C_{\rm sound}\ge24.00$ ($C_{\rm adv}\ge4.00$). Base Runge--Kutta method, all explicit: $C_{\rm adv}\le2.70$ at $C_{\rm sound}=0$, $C_{\rm sound}\le0.750$ at $C_{\rm adv}=0$.
 \clearpage
 \section{ConvexMIS52r20}
 Breeze.jl (branch \texttt{glw/mis-tableau-search}): as ConvexMIS52 with Shu--Osher coefficient 2.0.
@@ -330,7 +378,8 @@ Breeze.jl (branch \texttt{glw/mis-tableau-search}): as ConvexMIS52 with Shu--Osh
 
 \begin{center}\includegraphics[width=0.8\textwidth]{stability_fv/ConvexMIS52r20.png}
 
-\small\begin{tabular}{lccccc}\toprule $C_{\rm sound}$ & 0 & 2 & 4 & 8 & 12\\\midrule largest $C_{\rm adv}$ & 2.70 & 2.45 & 2.60 & 3.00 & 3.00\\\bottomrule\end{tabular}\end{center}
+\small\begin{tabular}{lcccccccc}\toprule $C_{\rm sound}$ & 0 & 2 & 4 & 8 & 12 & 16 & 20 & 24\\\midrule largest $C_{\rm adv}$ & 2.70 & 2.45 & 2.60 & 3.60 & 4.00 & 4.00 & 4.00 & 4.00\\\bottomrule\end{tabular}\end{center}
+\noindent On the line $U/c=1/6$ stable up to $C_{\rm sound}\ge24.00$ ($C_{\rm adv}\ge4.00$). Base Runge--Kutta method, all explicit: $C_{\rm adv}\le2.70$ at $C_{\rm sound}=0$, $C_{\rm sound}\le0.000$ at $C_{\rm adv}=0$.
 \clearpage
 \section{ConvexMIS42}
 Breeze.jl (branch \texttt{glw/mis-tableau-search}): 4 stages, as ConvexMIS52 (Shu--Osher coefficient 1.5).
@@ -350,5 +399,6 @@ Breeze.jl (branch \texttt{glw/mis-tableau-search}): 4 stages, as ConvexMIS52 (Sh
 
 \begin{center}\includegraphics[width=0.8\textwidth]{stability_fv/ConvexMIS42.png}
 
-\small\begin{tabular}{lccccc}\toprule $C_{\rm sound}$ & 0 & 2 & 4 & 8 & 12\\\midrule largest $C_{\rm adv}$ & 2.25 & 1.95 & 2.20 & 3.00 & 3.00\\\bottomrule\end{tabular}\end{center}
+\small\begin{tabular}{lcccccccc}\toprule $C_{\rm sound}$ & 0 & 2 & 4 & 8 & 12 & 16 & 20 & 24\\\midrule largest $C_{\rm adv}$ & 2.25 & 1.95 & 2.20 & 3.05 & 4.00 & 4.00 & 4.00 & 4.00\\\bottomrule\end{tabular}\end{center}
+\noindent On the line $U/c=1/6$ stable up to $C_{\rm sound}\ge24.00$ ($C_{\rm adv}\ge4.00$). Base Runge--Kutta method, all explicit: $C_{\rm adv}\le2.25$ at $C_{\rm sound}=0$, $C_{\rm sound}\le0.000$ at $C_{\rm adv}=0$.
 \end{document}

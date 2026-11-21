@@ -94,16 +94,36 @@ function amplification(m::PolyMIS, S::AbstractMatrix, L::AbstractMatrix; inner =
 end
 
 """
-    max_amplification(m, sym; Cadv, Csound, θs = range(0, π, length = 48), inner = :exact)
+    rk_amplification(m::PolyMIS, Z)
+
+Step matrix of the base method (A, b) of `m` (the explicit Runge–Kutta method that the scheme reduces to if F does
+not depend on its second argument) for y' = Z y (h = 1): Y₁ = I, Yᵢ = I + Σ_j a_ij Z Y_j, R = I + Σ_j b_j Z Y_j.
+"""
+function rk_amplification(m::PolyMIS, Z::AbstractMatrix)
+    A, b = base_method(m)
+    n = size(Z, 1); s = length(b)
+    Id = Matrix{ComplexF64}(I, n, n)
+    Y = Vector{Matrix{ComplexF64}}(undef, s)
+    for i in 1:s
+        Y[i] = Id + sum((A[i, j] .* (Z * Y[j]) for j in 1:i-1); init = zeros(ComplexF64, n, n))
+    end
+    return Id + sum(b[j] .* (Z * Y[j]) for j in 1:s)
+end
+
+"""
+    max_amplification(m, sym; Cadv, Csound, θs = range(0, π, length = 48), inner = :exact, base = false)
 
 max over θ of the spectral radius of the step matrix for S = C_adv S₁(θ), L = C_sound L₁(θ), with
-`sym = symbols(:fv; …)` or `symbols(:dg; …)`.
+`sym = symbols(:fv; …)` or `symbols(:dg; …)`. `base = true`: the base Runge–Kutta method applied to the whole
+operator S + L (no fast integration, F independent of its second argument).
 """
-function max_amplification(m::PolyMIS, sym; Cadv, Csound, θs = range(0, π, length = 48), inner = :exact)
+function max_amplification(m::PolyMIS, sym; Cadv, Csound, θs = range(0, π, length = 48), inner = :exact,
+                           base::Bool = false)
     ρ = 0.0
     for θ in θs
         S1, L1 = sym(θ)
-        ρ = max(ρ, maximum(abs, eigvals(amplification(m, Cadv .* S1, Csound .* L1; inner))))
+        R = base ? rk_amplification(m, Cadv .* S1 .+ Csound .* L1) : amplification(m, Cadv .* S1, Csound .* L1; inner)
+        ρ = max(ρ, maximum(abs, eigvals(R)))
     end
     return ρ
 end

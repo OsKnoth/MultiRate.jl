@@ -40,6 +40,11 @@ function limit(ρ, i)
     j = findfirst(>(1 + 1e-8), ρ[i, :])
     return j === nothing ? reg.Ca[end] : j == 1 ? 0.0 : reg.Ca[j-1]
 end
+"""Largest C_sound such that every C_sound' ≤ C_sound is stable, at C_adv = 0."""
+function slimit(ρ)
+    i = findfirst(>(1 + 1e-8), ρ[:, 1])
+    return i === nothing ? reg.Cs[end] : i == 1 ? 0.0 : reg.Cs[i-1]
+end
 
 io = IOBuffer()
 print(io, raw"""
@@ -69,7 +74,41 @@ classes: G general $F(y,z)$ (the frozen form), B affine in $z$, A additive $f(y)
 \noindent\textbf{Stability} (Knoth \& Wensch 2014, eq.~(10)): $u_t+Uu_x=-cp_x$, $p_t+Up_x=-cu_x$, periodic C-grid, centred
 second-order acoustics (fast), third-order upwind advection (slow), exact fast part; stable region (blue) of
 $\max_\theta\rho\le1+10^{-8}$ over $C_{\rm sound}=c\Delta t/\Delta x$ and $C_{\rm adv}=U\Delta t/\Delta x$
-(\texttt{examples/mis\_stability\_fv.jl}). The table gives the largest $C_{\rm adv}$ with all smaller ones stable.
+(\texttt{examples/mis\_stability\_fv.jl}); orange: the base Runge--Kutta method; dashed: $U/c=1/6$. The computation is
+described below.
+
+\subsection*{How the stability plots are computed}
+\begin{enumerate}
+\item \emph{Symbols.} With $p$ in the cells, $u$ on the faces and the Fourier ansatz $p_k=\hat p\,e^{\mathrm ik\theta}$,
+  $u_{k+1/2}=\hat u\,e^{\mathrm i(k+1/2)\theta}$, $\theta\in[0,\pi]$, the semi-discretisation becomes
+  $(\hat p,\hat u)'=(C_{\rm adv}S_1(\theta)+C_{\rm sound}L_1(\theta))(\hat p,\hat u)$ per time step $\Delta t=1$, with the
+  centred staggered acoustics
+  \[
+   L_1(\theta)=\begin{pmatrix}0&-(e^{\mathrm i\theta}-1)\\-(1-e^{-\mathrm i\theta})&0\end{pmatrix},\qquad
+   \text{eigenvalues }\pm2\mathrm i\sin(\theta/2),
+  \]
+  and the third-order upwind flux-form advection of both variables,
+  $S_1(\theta)=\nu(\theta)I$, $\nu(\theta)=-(2e^{\mathrm i\theta}+3-6e^{-\mathrm i\theta}+e^{-2\mathrm i\theta})/6$
+  (\texttt{MultiRate.MIS.fv\_symbols}). The acoustic part is the fast part $L$, the advection the slow part $S$.
+\item \emph{MIS step matrix.} Stage $i$ solves $V'=d_iLV+r_i$ on $[0,1]$, $V(0)=I+\sum_j\alpha_{ij}(Y_j-I)$, with the
+  constant forcing $r_i=\sum_j\gamma_{ij}(Y_j-I)+\sum_j\beta_{ij}SY_j$; the inner problem is solved exactly (matrix
+  exponential of the system augmented by the forcing), i.e.\ the small steps are not part of the analysis. The stage
+  recursion gives the $2\times2$ step matrix $R(\theta)$ (\texttt{MultiRate.MIS.amplification}).
+\item \emph{Criterion.} A point $(C_{\rm sound},C_{\rm adv})$ is stable if $\max_\theta\rho(R(\theta))\le1+10^{-8}$, with
+  40 equidistant $\theta\in[0,\pi]$ (\texttt{max\_amplification}). Grid: $\Delta C_{\rm sound}=0.125$ on $[0,24]$,
+  $\Delta C_{\rm adv}=0.05$ on $[0,4]$; blue are the stable grid points, the black line is the level $\rho=1+10^{-8}$.
+\item \emph{Base Runge--Kutta method} (orange). The explicit method $(A,b)$ that the MIS method reduces to if $F$ does not
+  depend on its second argument (\texttt{base\_method}), applied to the whole operator without fast integration:
+  $R=I+b^TZ(I-AZ)^{-1}\mathbf 1$, $Z=C_{\rm adv}S_1+C_{\rm sound}L_1$ (\texttt{rk\_amplification}). At $C_{\rm sound}=0$
+  both methods coincide, so the regions agree on the $C_{\rm adv}$ axis; the distance between the orange and the blue
+  region in $C_{\rm sound}$ is the gain of the multirate integration.
+\item \emph{Line $U/c=1/6$} (dashed), $C_{\rm adv}=C_{\rm sound}/6$: a typical upper bound of the Mach number in the
+  atmosphere ($U\approx55$\,m/s, $c\approx340$\,m/s). On this line both Courant numbers grow with $\Delta t$; the value
+  ``$U/c=1/6$'' given for each method is the largest $C_{\rm sound}$ (step $1/16$) up to which all points of the line
+  are stable, i.e.\ the largest stable time step $\Delta t=C_{\rm sound}\Delta x/c$ at this Mach number.
+\item \emph{Tables.} For given $C_{\rm sound}$ the largest $C_{\rm adv}$ such that all smaller $C_{\rm adv}$ are stable
+  (from the grid).
+\end{enumerate}
 
 \begin{center}\includegraphics[width=\textwidth]{stability_fv/all.png}\end{center}
 \tableofcontents
@@ -81,7 +120,7 @@ for n in filter(in(keys(reg.res)), order_names)
     o = [M.order(m; class = c, tol = 1e-5) for c in (:G, :B, :A, :L)]
     c = M.stage_times(m)[2:end]
     ρ = reg.res[n]
-    css = (0, 2, 4, 8, 12); lims = [limit(ρ, findmin(abs.(reg.Cs .- x))[2]) for x in css]
+    css = (0, 2, 4, 8, 12, 16, 20, 24); lims = [limit(ρ, findmin(abs.(reg.Cs .- x))[2]) for x in css]
     print(io, "\\clearpage\n\\section{$(replace(string(n), "_" => "\\_"))}\n", src[n], "\n\n")
     print(io, "\\noindent \$s=$s\$, \$\\Sigma d=", @sprintf("%.4f", sum(t.d)), "\$, orders G/B/A/L: ", join(o, " / "),
           ".\\\\ Stage times \$c=(", join((@sprintf("%.4f", x) for x in c), ", "), ")\$.\n\n")
@@ -92,6 +131,12 @@ for n in filter(in(keys(reg.res)), order_names)
     print(io, "\\begin{center}\\includegraphics[width=0.8\\textwidth]{stability_fv/$n.png}\n\n\\small\\begin{tabular}{l",
           "c"^length(css), "}\\toprule \$C_{\\rm sound}\$ & ", join(css, " & "), "\\\\\\midrule largest \$C_{\\rm adv}\$ & ",
           join((@sprintf("%.2f", x) for x in lims), " & "), "\\\\\\bottomrule\\end{tabular}\\end{center}\n")
+    ρrk = reg.resrk[n]
+    rel = reg.line[n] >= reg.Cs[end] - 1e-12 ? "\\ge" : "="                 # stable to the end of the range
+    print(io, "\\noindent On the line \$U/c=1/6\$ stable up to \$C_{\\rm sound}", rel, @sprintf("%.2f", reg.line[n]),
+          "\$ (\$C_{\\rm adv}", rel, @sprintf("%.2f", reg.line[n] / 6), "\$). Base Runge--Kutta method, all explicit: ",
+          "\$C_{\\rm adv}\\le", @sprintf("%.2f", limit(ρrk, 1)), "\$ at \$C_{\\rm sound}=0\$, \$C_{\\rm sound}\\le",
+          @sprintf("%.3f", slimit(ρrk)), "\$ at \$C_{\\rm adv}=0\$.\n")
 end
 print(io, "\\end{document}\n")
 write(joinpath(dir, "mis_tableaus.tex"), String(take!(io)))
