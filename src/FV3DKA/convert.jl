@@ -30,6 +30,7 @@ the ranks, `allreduce_sum`, gives the whole state).
 """
 function global_state(m::MoistKA, m3::FV3D.MoistModel3D, Q; fill::Real = 0.0)
     g, g3 = m.grid, m3.base.grid
+    KA.synchronize(KA.get_backend(m))
     A = Array(Q)
     x = Base.fill(Float64(fill), m3.nq)
     for k in 1:g.nz, j in 1:g.nyl, i in 1:g.nxl
@@ -46,6 +47,7 @@ end
 """Σ J ΔV q over the interior of all tiles of the cell variable v (VR, VX, VQV, VQC)."""
 function ka_total(m::MoistKA, Q, v::Int)
     g = m.grid
+    KA.synchronize(KA.get_backend(m))
     A = Array(view(Q, HALO+1:HALO+g.nxl, HALO+1:HALO+g.nyl, 1:g.nz, v))
     J = Array(view(g.Jc, HALO+1:HALO+g.nxl, HALO+1:HALO+g.nyl))
     dV = g.dx * g.dy * g.dz
@@ -84,7 +86,7 @@ end
 
 """Interior fields of the tile for output: w at the interior η-faces (nxl, nyl, nz-1), θ_e and q_c at the centres."""
 function ka_fields(m::MoistKA, Q)
-    g = m.grid; A = Array(Q)
+    g = m.grid; KA.synchronize(KA.get_backend(m)); A = Array(Q)
     I, J = HALO .+ (1:g.nxl), HALO .+ (1:g.nyl)
     w = [A[i, j, k, VW] / (0.5 * (A[i, j, k-1, VR] + A[i, j, k, VR])) for i in I, j in J, k in 2:g.nz]
     θe = [theta_e(m.mgas, A[i, j, k, VR], A[i, j, k, VX], A[i, j, k, VQV], A[i, j, k, VQC]) for i in I, j in J, k in 1:g.nz]

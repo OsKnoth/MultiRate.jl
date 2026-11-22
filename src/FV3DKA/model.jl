@@ -72,6 +72,7 @@ function MoistKA(g::KAGrid, dec::AbstractDecomp = SerialDecomp(); mgas::MoistGas
                   z3(nz), z3(nz), z3(nz + 1), z4(6), z4(6), z4(9), z4(9), z3(nz + 1),
                   Dict{Float64,NTuple{3,typeof(z3(nz))}}())
     dd = KA.allocate(be, Float64, nz + 1); copyto!(dd, damp)
+    init_exchange!(dec, g)                                   # communication buffers, once
     return MoistKA(g, dec, mgas, pvar === :p, micro === :none ? 0 : micro === :fast ? 1 : 2, τv, Float64(grav), dd, work)
 end
 
@@ -82,10 +83,14 @@ ka_zeros(m::MoistKA, nv::Int = NV) = KA.zeros(KA.get_backend(m), Float64, m.grid
 """The additional variable of the equation of state: p (pres) or π."""
 @inline ka_pvar(mg, pres, ρ, X, ρv, ρc) = pres ? _moist_p(mg, ρ, X, ρv, ρc) : moist_exner(mg, ρ, X, ρv, ρc)
 
-"""Launch a kernel on the backend of the model and wait."""
-function _launch!(m, kernel!, ndrange, args...)
+"""Launch a kernel on the backend of the model (asynchronous: kernels of one task run in order on the device; the
+host synchronizes before it reads device data). `wg`: the workgroup size (default: chosen by KernelAbstractions)."""
+function _launch!(m, kernel!, ndrange, args...; wg = nothing)
     be = KA.get_backend(m)
-    kernel!(be)(args...; ndrange)
-    KA.synchronize(be)
+    (wg === nothing ? kernel!(be) : kernel!(be, wg))(args...; ndrange)
     return nothing
 end
+"""Workgroups of the fast loop: one thread per column (column solve) in groups of 64, so that the few thousand columns
+of a tile spread over all multiprocessors; one thread per (column, level) in groups of 256 along the columns."""
+const WG_COL = 64
+const WG_CELL = (256, 1)

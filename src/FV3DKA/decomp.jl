@@ -25,6 +25,18 @@ extension MultiRateMPIExt: load MPI first (`using MPI`).
 """
 function mpi_decomp end
 
+"""
+    init_exchange!(dec, g)
+
+Allocate the communication buffers of the decomposition for the tile grid g once (as CGDycore `InitExchangeData3D`):
+per side one send and one receive buffer on the device of the grid, large enough for every exchange of the model
+(`exchange_length`); all exchanges use views of them. Serial: nothing to do.
+"""
+init_exchange!(dec::SerialDecomp, g) = dec
+"""Values per side of the largest message: the halo of the state (NV variables, nz+1 levels) and of the four face
+velocities in one exchange (`ka_frozen_data!`)."""
+exchange_length(g) = HALO * max(g.nxh, g.nyh) * (g.nz + 1) * 12
+
 """4D view of a 3D array (one variable)."""
 _as4(A::AbstractArray{T,4}) where {T} = A
 _as4(A::AbstractArray{T,3}) where {T} = reshape(A, size(A)..., 1)
@@ -57,6 +69,17 @@ function exchange!(::SerialDecomp, A, g::KAGrid, vars::Tuple = Tuple(1:size(_as4
     KA.synchronize(be)
     return A
 end
+
+"""
+    h = start_halo!(dec, A, g, vars); finish_halo!(dec, h)
+
+Non-blocking exchange of the halo of the variables `vars` of A between the side neighbours (no corners: the fast
+loop needs the halo cells next to the faces only). Between start and finish the interior can be computed; the cells
+that are sent (first and last interior column and row) must be final at the start. Serial: periodic copies at the
+start, finish does nothing.
+"""
+start_halo!(dec::SerialDecomp, A, g::KAGrid, vars::Tuple) = (exchange!(dec, A, g, vars); nothing)
+finish_halo!(::SerialDecomp, h) = nothing
 
 """Exchange of several arrays in one communication (MPI: one message per neighbour)."""
 exchange!(dec::SerialDecomp, As::Tuple, g::KAGrid) = (foreach(A -> exchange!(dec, A, g), As); As)
