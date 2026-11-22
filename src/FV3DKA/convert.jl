@@ -9,13 +9,15 @@ Tile state Q (on the device of m, halo included) of the global state vector x of
 function ka_state(m::MoistKA, m3::FV3D.MoistModel3D, x::AbstractVector)
     g, g3 = m.grid, m3.base.grid
     (g3.nx, g3.ny, g3.nz) == (g.nx, g.ny, g.nz) || error("ka_state: different grids")
-    Q = zeros(g.nxh, g.nyh, g.nz + 1, NV)
+    m.rain == m3.rain || error("ka_state: rain in one model only")
+    Q = zeros(g.nxh, g.nyh, g.nz + 1, m.nv)
     for k in 1:g.nz, J in 1:g.nyh, I in 1:g.nxh
         i, j = mod1(g.i0 + I - HALO, g.nx), mod1(g.j0 + J - HALO, g.ny)
         Q[I, J, k, VR] = x[FV3D.iρ(g3, i, j, k)]; Q[I, J, k, VU] = x[FV3D.iU(g3, i, j, k)]
         Q[I, J, k, VV] = x[FV3D.iV(g3, i, j, k)]; Q[I, J, k, VX] = x[FV3D.iΘ(g3, i, j, k)]
         Q[I, J, k, VQV] = x[FV3D.iqv(m3, i, j, k)]; Q[I, J, k, VQC] = x[FV3D.iqc(m3, i, j, k)]
         Q[I, J, k, VP] = x[FV3D.iπ(m3, i, j, k)]
+        m.rain && (Q[I, J, k, VQR] = x[FV3D.iqr(m3, i, j, k)])
         k >= 2 && (Q[I, J, k, VW] = x[FV3D.iW(g3, i, j, k)])
     end
     D = ka_zeros(m); copyto!(D, Q)
@@ -39,12 +41,13 @@ function global_state(m::MoistKA, m3::FV3D.MoistModel3D, Q; fill::Real = 0.0)
         x[FV3D.iV(g3, gi, gj, k)] = A[I, J, k, VV]; x[FV3D.iΘ(g3, gi, gj, k)] = A[I, J, k, VX]
         x[FV3D.iqv(m3, gi, gj, k)] = A[I, J, k, VQV]; x[FV3D.iqc(m3, gi, gj, k)] = A[I, J, k, VQC]
         x[FV3D.iπ(m3, gi, gj, k)] = A[I, J, k, VP]
+        m.rain && (x[FV3D.iqr(m3, gi, gj, k)] = A[I, J, k, VQR])
         k >= 2 && (x[FV3D.iW(g3, gi, gj, k)] = A[I, J, k, VW])
     end
     return x
 end
 
-"""Σ J ΔV q over the interior of all tiles of the cell variable v (VR, VX, VQV, VQC)."""
+"""Σ J ΔV q over the interior of all tiles of the cell variable v (VR, VX, VQV, VQC, VQR)."""
 function ka_total(m::MoistKA, Q, v::Int)
     g = m.grid
     KA.synchronize(KA.get_backend(m))
@@ -65,7 +68,7 @@ state. No global state is needed (large grids, MPI).
 function ka_project(m::MoistKA, f; mgθ::MoistGas = MoistGas())
     g = m.grid; mg = m.mgas
     Jc = Array(g.Jc); Jx = Array(g.Jx); Jy = Array(g.Jy)
-    Q = zeros(g.nxh, g.nyh, g.nz + 1, NV)
+    Q = zeros(g.nxh, g.nyh, g.nz + 1, m.nv)
     xc(I) = (g.i0 + I - HALO - 0.5) * g.dx; yc(J) = (g.j0 + J - HALO - 0.5) * g.dy
     xf(I) = (g.i0 + I - HALO - 1) * g.dx; yf(J) = (g.j0 + J - HALO - 1) * g.dy
     zc(k) = (k - 0.5) * g.dz
@@ -84,12 +87,22 @@ function ka_project(m::MoistKA, f; mgθ::MoistGas = MoistGas())
     return D
 end
 
-"""Interior fields of the tile for output: w at the interior η-faces (nxl, nyl, nz-1), θ_e and q_c at the centres."""
+"""Interior fields of the tile for output: w at the interior η-faces (nxl, nyl, nz-1), θ_e, q_c and q_r (rain) at the
+centres."""
 function ka_fields(m::MoistKA, Q)
     g = m.grid; KA.synchronize(KA.get_backend(m)); A = Array(Q)
     I, J = HALO .+ (1:g.nxl), HALO .+ (1:g.nyl)
     w = [A[i, j, k, VW] / (0.5 * (A[i, j, k-1, VR] + A[i, j, k, VR])) for i in I, j in J, k in 2:g.nz]
-    θe = [theta_e(m.mgas, A[i, j, k, VR], A[i, j, k, VX], A[i, j, k, VQV], A[i, j, k, VQC]) for i in I, j in J, k in 1:g.nz]
+    ql(i, j, k) = A[i, j, k, VQC] + (m.rain ? A[i, j, k, VQR] : 0.0)
+    θe = [theta_e(m.mgas, A[i, j, k, VR], A[i, j, k, VX], A[i, j, k, VQV], ql(i, j, k)) for i in I, j in J, k in 1:g.nz]
     qc = [A[i, j, k, VQC] / A[i, j, k, VR] for i in I, j in J, k in 1:g.nz]
-    return (; w, θe, qc)
+    qr = m.rain ? [A[i, j, k, VQR] / A[i, j, k, VR] for i in I, j in J, k in 1:g.nz] : zero(qc)
+    return (; w, θe, qc, qr)
+end
+
+"""Surface precipitation rate ρ_r V_r (kg m⁻² s⁻¹ = mm/s) of the interior columns of the tile (nxl, nyl), rain = true."""
+function ka_precipitation_rate(m::MoistKA, Q)
+    g = m.grid; KA.synchronize(KA.get_backend(m)); A = Array(view(Q, :, :, 1, :))
+    return [(ρr = A[i, j, VQR]; ρd = A[i, j, VR] - A[i, j, VQV] - A[i, j, VQC] - ρr;
+             ρr > 0 ? ρr * rain_velocity(m.kp, ρd, ρr, ρd) : 0.0) for i in HALO .+ (1:g.nxl), j in HALO .+ (1:g.nyl)]
 end

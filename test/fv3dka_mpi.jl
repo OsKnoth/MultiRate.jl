@@ -25,20 +25,21 @@ gas = CM.Gas(R = mgθ.Rd, γ = mgθ.Cpd / (mgθ.Cpd - mgθ.Rd), p00 = mgθ.p0)
 hill(x, y) = 1200.0 * exp(-((x - 10e3)^2 + (y - 7e3)^2) / 4e3^2)
 nx, ny, nz, L, Ly, H = 12, 8, 6, 20e3, 16e3, 6e3
 fails = 0
-for terr in (false, true), (thv, pvar) in ((:thetarho, :p), (:energy, :pi))
+for terr in (false, true), (thv, pvar, rain) in ((:thetarho, :p, false), (:energy, :pi, false), (:thetarho, :p, true))
     g3 = terr ? F3.Grid3D(nx, ny, nz, L, Ly, H; zs = hill, terrain = :follow) : F3.Grid3D(nx, ny, nz, L, Ly, H)
     b3 = F3.with_sponge(F3.Model3D(g3, gas, ρr, Θr), zeros(F3.nunknowns(g3)); zD = 4e3, αtop = 0.05)
     mg = CM.MoistGas(thvar = thv)
-    mθ = F3.MoistModel3D(b3; mgas = mgθ, pvar); m3 = F3.MoistModel3D(b3; mgas = mg, pvar)
+    mθ = F3.MoistModel3D(b3; mgas = mgθ, pvar, rain); m3 = F3.MoistModel3D(b3; mgas = mg, pvar, rain)
     fq(x, y, z) = (ρ = ρr(z) * (1 + 1e-3 * sin(x / 3e3) * cos(y / 4e3)); (ρ, 8ρ + sin(y / 3e3), 5ρ + cos(x / 4e3), 0.2ρ * sin(π * z / H) * cos((x + 2y) / 5e3), Θr(z) * (1 + 1e-3 * cos((x - y) / 3e3))))
     q = F3.project3d(b3, fq)
     x = F3.thermo_convert(mθ, m3, F3.moist_exner_state(mθ, q, [0.013 * q[F3.iρ(g3, i, j, k)] for i in 1:nx, j in 1:ny, k in 1:nz]))
     for k in 1:nz, j in 1:ny, i in 1:nx
         c = x[F3.iqc(m3, i, j, k)]; x[F3.iqv(m3, i, j, k)] += 0.3c; x[F3.iqc(m3, i, j, k)] -= 0.3c
+        rain && (x[F3.iqr(m3, i, j, k)] = 2e-3 * x[F3.iρ(g3, i, j, k)] * (1 + 0.5 * sin(i + 2j + k)))   # warm rain
     end
     TS.frozen_step_end!(m3, x)
     gk = K.KAGrid(nx, ny, nz, L, Ly, H; zs = terr ? hill : nothing, px, py, cx, cy)
-    mk = K.MoistKA(gk, dec; mgas = mg, pvar, sponge = (4e3, 0.05))
+    mk = K.MoistKA(gk, dec; mgas = mg, pvar, sponge = (4e3, 0.05), rain)
     Q = K.ka_state(mk, m3, x)
     N3 = TS.rhs_nonlinear(m3, x)
     out = K.ka_zeros(mk); K.ka_rhs!(out, mk, Q)
@@ -48,11 +49,11 @@ for terr in (false, true), (thv, pvar) in ((:thetarho, :p), (:energy, :pi))
     K.ka_run!(mk, Q, 3.0, 2; tab = TS.mis_tableau(:MIS54), nsub = 6)
     yk = K.allreduce_sum(dec, K.global_state(mk, m3, Q))
     eR = maximum(abs, yk - y3) / maximum(abs, y3 - x)
-    mass = K.ka_total(mk, Q, K.VR) / F3.total3d(m3, x, :ρ) - 1
+    mass = K.ka_total(mk, Q, K.VR) / F3.total3d(m3, y3, :ρ) - 1     # (rain leaves through the ground)
     ok = eN < 1e-9 && eR < 1e-8 && abs(mass) < 1e-13
     global fails += !ok
-    rank == 0 && @printf("%d × %d tiles, terrain=%-5s %-8s %-2s: N rel %.1e, 2 MIS54 steps rel %.1e, Δmass %.1e  %s\n",
-                         px, py, terr, thv, pvar, eN, eR, mass, ok ? "ok" : "FAILED")
+    rank == 0 && @printf("%d × %d tiles, terrain=%-5s %-8s %-2s%s: N rel %.1e, 2 MIS54 steps rel %.1e, Δmass %.1e  %s\n",
+                         px, py, terr, thv, pvar, rain ? " rain" : "", eN, eR, mass, ok ? "ok" : "FAILED")
 end
 MPI.Barrier(MPI.COMM_WORLD)
 rank == 0 && println(fails == 0 ? "all passed" : "$fails failed")

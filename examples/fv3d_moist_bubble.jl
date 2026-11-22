@@ -4,7 +4,7 @@
 # relaxation with τ on the fast scale, π recomputed after every MIS step).
 #
 #     [PVAR=p|pi] [THVAR=thetarho|energy|entropy] [FAST=verlet|hevi|cs|ei] [MICRO=fast|slow] [TAUFAC=f] [WTAU=w]
-#         [METHODS=MIS54,WSRK3] [DTS=5] [DTPLOT=5] [REF=1] julia -t auto --project=examples examples/fv3d_moist_bubble.jl [T] [nx]
+#         [RAIN=1] [METHODS=MIS54,WSRK3] [DTS=5] [DTPLOT=5] [REF=1] julia -t auto --project=examples examples/fv3d_moist_bubble.jl [T] [nx]
 #
 # Saturated, neutral atmosphere θ_e = 320 K, r_t = 0.02, 20 km × 20 km × 10 km, nx × nx × nx/2 cells (default
 # nx = 40, Δx = 500 m), in discrete hydrostatic balance with the pressure form of the model; perturbation of θ_ρ by
@@ -13,6 +13,10 @@
 # default 0.5 (Verlet, :cs, :ei: one phase-change evaluation with weight c needs c/τ ≲ 1) and 0.25 for :hevi. REF = 1: RK4 reference
 # of the same operator (expensive: the step also resolves τ). Output: table, fv3d_moist_bubble[_<suffix>].png
 # (θ_e′, w, q_c in the x–z plane through the centre and θ_e′ in the x–y plane at the height of max w, at T).
+# RAIN = 1: warm-rain Kessler microphysics (DCMIP 2016, `rain = true`, ρq_r prognostic): the saturated background has
+# q_c ≈ 5 g/kg above the autoconversion threshold of 1 g/kg, so it rains everywhere, the bubble on top of it. The
+# table adds max q_r, the accumulated surface precipitation and the mass budget Δmass + precipitation; the plot shows
+# q_r instead of q_c′.
 
 using MultiRate, Printf, CairoMakie
 const TS = MultiRate.TimeStepping
@@ -32,8 +36,9 @@ const PVAR = Symbol(get(ENV, "PVAR", "p"))
 const MICRO = Symbol(get(ENV, "MICRO", "fast"))
 const THVAR = Symbol(get(ENV, "THVAR", "thetarho"))
 const FAST = Symbol(get(ENV, "FAST", "verlet"))
-mθ = F3.MoistModel3D(base; mgas = mg, pvar = PVAR, micro = MICRO)
-m = F3.MoistModel3D(base; mgas = CM.MoistGas(thvar = THVAR), pvar = PVAR, micro = MICRO,
+const RAIN = get(ENV, "RAIN", "0") == "1"
+mθ = F3.MoistModel3D(base; mgas = mg, pvar = PVAR, micro = MICRO, rain = RAIN)
+m = F3.MoistModel3D(base; mgas = CM.MoistGas(thvar = THVAR), pvar = PVAR, micro = MICRO, rain = RAIN,
                     τfac = parse(Float64, get(ENV, "TAUFAC", FAST === :hevi ? "0.25" : "0.5")),
                     wτ = haskey(ENV, "WTAU") ? parse(Float64, ENV["WTAU"]) : nothing)
 const θe0, rt0 = 320.0, 0.02
@@ -151,10 +156,13 @@ for meth in METHODS, Δt in DTS
     n = round(Int, T / Δt); nsub = ceil(Int, Δt / dτ)
     x = copy(x0)
     w = TS.FrozenWork(m, length(x), tab); tmp = ntuple(_ -> zeros(length(x)), 6)
+    precip = zeros(nx, nx)                                # accumulated surface precipitation (kg/m² = mm)
     t = @elapsed try
         for _ in 1:n
+            RAIN && (precip .+= 0.5Δt .* F3.precipitation_rate(m, x))
             TS.frozen_mis_step!(x, m, x, Δt, tab, w; nsub, fast = FAST, tmp)
             TS.frozen_step_end!(m, x)
+            RAIN && (precip .+= 0.5Δt .* F3.precipitation_rate(m, x))
         end
     catch e
         e isa InterruptException && rethrow()
@@ -168,6 +176,9 @@ for meth in METHODS, Δt in DTS
             meth, Δt, nsub, extrema(θe)..., maximum(abs, w_field(x)), maximum(F3.qc3d(m, x)),
             xr === nothing ? "" : @sprintf(", error θ_e′ max %.2e K", maximum(abs, θe - θe_field(xr))),
             tot(x, :ρ) / tot(x0, :ρ) - 1, (tot(x, :qv) + tot(x, :qc)) / (tot(x0, :qv) + tot(x0, :qc)) - 1, t)
+    RAIN && @printf("       rain: max q_r %.2e, max Courant V_r h/Δz %.3f (small step h), surface precipitation mean %.3f mm, max %.3f mm, (Δmass + precipitation)/Δmass %.1e\n",
+                    maximum(F3.qr3d(m, x)), F3.rain_courant(m, x, Δt / nsub), sum(precip) / nx^2, maximum(precip),
+                    (tot(x, :ρ) - tot(x0, :ρ) + sum(precip) * grid.dx * grid.dy) / (tot(x, :ρ) - tot(x0, :ρ)))
     Δt == DTPLOT && push!(res, "$meth, Δt = $(round(Int, Δt)) s" => x)
     flush(stdout)
 end
@@ -180,10 +191,12 @@ if !isempty(res)
     for (r, (lab, x)) in enumerate(rows)
         θe = θe_field(x); wf = w_field(x)
         qc = 1e3 .* F3.qc3d(m, x); qc .-= sum(qc; dims = (1, 2)) ./ nx^2         # minus the horizontal mean
+        qr = 1e3 .* F3.qr3d(m, x)
         kw = argmax(abs.(wf))[3] + 1                      # level of max |w| (centres next to the face)
         panels = (("θ_e′ [K], y = $(round(grid.yc[jc] / 1e3, digits = 2)) km", xk, zk, θe[:, jc, :], (-0.5, 2.5), :thermal),
                   ("w [m/s]", xk, grid.zf[2:nz] ./ 1e3, wf[:, jc, :], (-12, 12), :balance),
-                  ("q_c′ [g/kg] (minus horizontal mean)", xk, zk, qc[:, jc, :], (-1, 1) .* max(1e-3, maximum(abs, qc)), :balance),
+                  RAIN ? ("q_r [g/kg]", xk, zk, qr[:, jc, :], (0, max(1e-3, maximum(qr))), :blues) :
+                         ("q_c′ [g/kg] (minus horizontal mean)", xk, zk, qc[:, jc, :], (-1, 1) .* max(1e-3, maximum(abs, qc)), :balance),
                   ("θ_e′ [K], z = $(round(grid.zc[kw] / 1e3, digits = 2)) km", xk, grid.yc ./ 1e3, θe[:, :, kw], (-0.5, 2.5), :thermal))
         for (col, (name, a, b, f, cr, cm)) in enumerate(panels)
             ax = Axis(fig[r, 2col-1]; title = "$lab: $name", xlabel = "x [km]", ylabel = col == 4 ? "y [km]" : "z [km]",
@@ -193,7 +206,8 @@ if !isempty(res)
         end
     end
     sfx = join(filter(!isempty, [PVAR === :p ? "" : string(PVAR), THVAR === :thetarho ? "" : string(THVAR),
-                                 FAST === :verlet ? "" : string(FAST), MICRO === :fast ? "" : string(MICRO)]), "_")
+                                 FAST === :verlet ? "" : string(FAST), MICRO === :fast ? "" : string(MICRO),
+                                 RAIN ? "rain" : ""]), "_")
     fn = get(ENV, "OUT", "fv3d_moist_bubble$(isempty(sfx) ? "" : "_" * sfx).png")
     save(fn, fig)
     println("wrote ", fn)

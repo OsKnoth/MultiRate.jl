@@ -40,7 +40,7 @@ end
 
 """Horizontal thermodynamic fluxes (and the horizontal part of Ω) of cell (I, J, k): the values of the ρ, X, ρq_v,
 ρq_c and p rows (FV3D/moist.jl `mthermo_h!`)."""
-@inline function _thermo_h(Z, Cf, Jc, Jx, Jy, zxf, zyf, follow, dx, dy, dz, nz, I, J, k)
+@inline function _thermo_h(Z, Cf, Jc, Jx, Jy, zxf, zyf, follow, dx, dy, dz, nz, I, J, k, rain = false)
     Fw = Jx[I, J] * Z[I, J, k, VU];   Fe = Jx[I+1, J] * Z[I+1, J, k, VU]
     Fs = Jy[I, J] * Z[I, J, k, VV];   Fn = Jy[I, J+1] * Z[I, J+1, k, VV]
     s = 1.0 / Jc[I, J]
@@ -48,43 +48,53 @@ end
                    (Cf[I, J+1, k, sy(bl)] * Fn - Cf[I, J, k, sy(br)] * Fs) / dy
     oρ = -(s * ((Fe - Fw) / dx + (Fn - Fs) / dy))
     oX = -(s * flux(0, 6)); oq = -(s * flux(1, 1)); oc = -(s * flux(5, 5)); op = -(s * flux(3, 4))
+    orr = rain ? -(s * ((Cf[I+1, J, k, SRX] * Fe - Cf[I, J, k, SRX] * Fw) / dx +
+                        (Cf[I, J+1, k, SRY] * Fn - Cf[I, J, k, SRY] * Fs) / dy)) : 0.0
     if follow
         Hb = _az(nz, k) * _Ωh(Z, zxf, zyf, follow, nz, I, J, k); Ht = _az(nz, k + 1) * _Ωh(Z, zxf, zyf, follow, nz, I, J, k + 1)
         vflux(bb, bt) = (Cf[I, J, k+1, sz(bb)] * Ht - Cf[I, J, k, sz(bt)] * Hb) / dz
         oρ -= s * (Ht - Hb) / dz
         oX -= s * vflux(0, 6); oq -= s * vflux(1, 1); oc -= s * vflux(5, 5); op -= s * vflux(3, 4)
+        rain && (orr -= s * (Cf[I, J, k+1, SRZ] * Ht - Cf[I, J, k, SRZ] * Hb) / dz)
     end
-    return oρ, oX, oq, oc, op
+    return oρ, oX, oq, oc, op, orr
 end
 
-"""out = :hthermo (thermodynamic rows: horizontal fluxes, phase change (micro = :fast), forcing F; W rows: forcing and
-sponge) on the region."""
+"""out = :hthermo (thermodynamic rows: horizontal fluxes, phase change (micro = :fast), sedimentation (rain), forcing
+F; W rows: forcing, sponge, sedimentation) on the region."""
 @kernel function _k_hthermo!(out, @Const(Z), @Const(Cf), @Const(F), Jc, Jx, Jy, zxf, zyf, follow, dx, dy, dz, nz,
-                             mg, pres, τ, fastphase, damp, R)
+                             mg, pres, τ, fastphase, damp, rain, R)
     r, k = @index(Global, NTuple)
     I, J = _IJ(R, r)
     @inbounds begin
-        oρ, oX, oq, oc, op = _thermo_h(Z, Cf, Jc, Jx, Jy, zxf, zyf, follow, dx, dy, dz, nz, I, J, k)
+        oρ, oX, oq, oc, op, orr = _thermo_h(Z, Cf, Jc, Jx, Jy, zxf, zyf, follow, dx, dy, dz, nz, I, J, k, rain)
         out[I, J, k, VR] = oρ; out[I, J, k, VX] = oX; out[I, J, k, VQV] = oq; out[I, J, k, VQC] = oc; out[I, J, k, VP] = op
-        fastphase && _phase!(out, Z, mg, pres, τ, I, J, k)
+        fastphase && _phase!(out, Z, mg, pres, τ, rain, I, J, k)
         for v in (VR, VX, VQV, VQC, VP)
             out[I, J, k, v] += F[I, J, k, v]
+        end
+        if rain
+            dρ, dX, dp = _sed_thermo(Z, Cf, Jc, dz, nz, I, J, k)
+            out[I, J, k, VQR] = orr + dρ + F[I, J, k, VQR]
+            out[I, J, k, VR] += dρ; out[I, J, k, VX] += dX; out[I, J, k, VP] += dp
         end
         if k >= 2
             out[I, J, k, VW] = F[I, J, k, VW]
             out[I, J, k, VW] -= damp[k] * (Z[I, J, k, VW] - 0.0)
+            rain && (out[I, J, k, VW] += _sed_w(Z, Cf, Jc, dz, nz, I, J, k))
         end
     end
 end
 
 """out = phase change of Z on the thermodynamic and W rows of the region (ρ and W rows zero)."""
-@kernel function _k_phaseset!(out, @Const(Z), mg, pres, τ, R)
+@kernel function _k_phaseset!(out, @Const(Z), mg, pres, τ, rain, R)
     r, k = @index(Global, NTuple)
     I, J = _IJ(R, r)
     @inbounds begin
         out[I, J, k, VR] = 0.0; out[I, J, k, VX] = 0.0; out[I, J, k, VQV] = 0.0; out[I, J, k, VQC] = 0.0; out[I, J, k, VP] = 0.0
+        rain && (out[I, J, k, VQR] = 0.0)
         k >= 2 && (out[I, J, k, VW] = 0.0)
-        _phase!(out, Z, mg, pres, τ, I, J, k)
+        _phase!(out, Z, mg, pres, τ, rain, I, J, k)
     end
 end
 
@@ -118,24 +128,25 @@ end
 Z (the kernel reads p only).
 """
 @kernel function _k_hmomentum!(out, Z, @Const(Cf), @Const(F), Jc, Jx, Jy, zxx, zyy, follow, dx, dy, dz, nz, a, add,
-                               part, R)
+                               part, rain, R)
     r, k = @index(Global, NTuple)
     i, j = _ij(R, r)
     I, J = i + HALO, j + HALO
     @inbounds begin
+        su, sv = rain ? _sed_uv(Z, Cf, Jx, Jy, dz, nz, I, J, k) : (0.0, 0.0)    # sedimentation (ρq_r of I-1, J-1)
         if part == 0 || (part == 1) == (i > 1)
-            u = a * (-(Cf[I, J, k, sx(2)] * _gradx(Z, Jc, Jx, zxx, follow, dx, dz, nz, I, J, k)) + F[I, J, k, VU])
+            u = a * (-(Cf[I, J, k, sx(2)] * _gradx(Z, Jc, Jx, zxx, follow, dx, dz, nz, I, J, k)) + su + F[I, J, k, VU])
             add ? (out[I, J, k, VU] += u) : (out[I, J, k, VU] = u)
         end
         if part == 0 || (part == 1) == (j > 1)
-            v = a * (-(Cf[I, J, k, sy(2)] * _grady(Z, Jc, Jy, zyy, follow, dy, dz, nz, I, J, k)) + F[I, J, k, VV])
+            v = a * (-(Cf[I, J, k, sy(2)] * _grady(Z, Jc, Jy, zyy, follow, dy, dz, nz, I, J, k)) + sv + F[I, J, k, VV])
             add ? (out[I, J, k, VV] += v) : (out[I, J, k, VV] = v)
         end
     end
 end
 
 """out = D G_v(Z): vertical thermodynamic fluxes (rows × ct) and the vertical momentum part (W rows × cw)."""
-@kernel function _k_vertical!(out, @Const(Z), @Const(Cf), Jc, dz, nz, grav, ct, cw, R)
+@kernel function _k_vertical!(out, @Const(Z), @Const(Cf), Jc, dz, nz, grav, ct, cw, rain, R)
     r, k = @index(Global, NTuple)
     I, J = _IJ(R, r)
     @inbounds begin
@@ -147,6 +158,7 @@ end
         out[I, J, k, VQV] = -(s * vflux(1, 1)) * ct
         out[I, J, k, VQC] = -(s * vflux(5, 5)) * ct
         out[I, J, k, VP] = -(s * vflux(3, 4)) * ct
+        rain && (out[I, J, k, VQR] = -(s * (Cf[I, J, k+1, SRZ] * Ft - Cf[I, J, k, SRZ] * Fb)) * ct)
         if k >= 2
             out[I, J, k, VW] = -(Cf[I, J, k, sz(2)] * (Z[I, J, k, VP] - Z[I, J, k-1, VP]) / (Jc[I, J] * dz) +
                                  grav * 0.5 * (Z[I, J, k-1, VR] + Z[I, J, k, VR])) * cw
@@ -156,12 +168,12 @@ end
 
 """State update on the thermodynamic rows (k ≤ nz) and W (2 ≤ k ≤ nz) of the region: mode 1 Z += a X, mode 2
 Z += a X + Y, mode 3 Z += a (X - P + K) + Y. The mode is a type (Val), so only the arrays it uses are read."""
-@kernel function _k_update!(Z, @Const(X), @Const(Y), @Const(P), @Const(K), a, md, nz, R)
+@kernel function _k_update!(Z, @Const(X), @Const(Y), @Const(P), @Const(K), a, md, nz, rain, R)
     r, k = @index(Global, NTuple)
     I, J = _IJ(R, r)
     @inbounds begin
-        for v in (VR, VX, VQV, VQC, VP, VW)
-            if v != VW || k >= 2
+        for v in (VR, VX, VQV, VQC, VP, VW, VQR)
+            if (v != VW || k >= 2) && (v != VQR || rain)
                 if md isa Val{1}
                     Z[I, J, k, v] += a * X[I, J, k, v]
                 elseif md isa Val{2}
@@ -193,7 +205,8 @@ end
 end
 
 """Y = (I - D J_v)⁻¹ R on the thermodynamic and W rows of the region's columns."""
-@kernel function _k_csolve!(Y, Wc, @Const(Rh), @Const(Cf), @Const(sub), @Const(cpr), @Const(iden), Jc, dz0, nz, grav, c, cw, R)
+@kernel function _k_csolve!(Y, Wc, @Const(Rh), @Const(Cf), @Const(sub), @Const(cpr), @Const(iden), Jc, dz0, nz, grav, c, cw,
+                            rain, R)
     r = @index(Global)
     I, J = _IJ(R, r)
     @inbounds begin
@@ -215,6 +228,7 @@ end
             Y[I, J, k, VQV] = Rh[I, J, k, VQV] - rr * (Cf[I, J, k+1, sz(1)] * Wt - Cf[I, J, k, sz(1)] * Wb)
             Y[I, J, k, VQC] = Rh[I, J, k, VQC] - rr * (Cf[I, J, k+1, sz(5)] * Wt - Cf[I, J, k, sz(5)] * Wb)
             Y[I, J, k, VP] = Rh[I, J, k, VP] - rr * (Cf[I, J, k+1, sz(3)] * Wt - Cf[I, J, k, sz(4)] * Wb)
+            rain && (Y[I, J, k, VQR] = Rh[I, J, k, VQR] - rr * (Cf[I, J, k+1, SRZ] * Wt - Cf[I, J, k, SRZ] * Wb))
         end
         for k in 2:nz
             Y[I, J, k, VW] = Wc[I, J, k]
@@ -228,18 +242,18 @@ _rk(m, R) = (ncols(R), m.grid.nz)
 function _hthermo!(out, m::MoistKA, Cf, Z, F, R::Region)
     g = m.grid
     _launch!(m, _k_hthermo!, _rk(m, R), out, Z, Cf, F, g.Jc, g.Jx, g.Jy, g.zxf, g.zyf, g.follow, g.dx, g.dy, g.dz,
-             g.nz, m.mgas, m.pres, m.τ, m.micro == 1, m.damp, R; wg = WG_CELL)
+             g.nz, m.mgas, m.pres, m.τ, m.micro == 1, m.damp, m.rain, R; wg = WG_CELL)
 end
 """out (+)= a :hmomentum of Z on the faces `part` (0 all, 1 without halo, 2 with halo) of the region."""
 _hmomentum!(out, m::MoistKA, Cf, Z, F, R::Region; a = 1.0, add::Bool = false, part::Int = 0) = (g = m.grid;
     _launch!(m, _k_hmomentum!, _rk(m, R), out, Z, Cf, F, g.Jc, g.Jx, g.Jy, g.zxx, g.zyy, g.follow, g.dx, g.dy, g.dz, g.nz,
-             Float64(a), add, part, R; wg = WG_CELL))
+             Float64(a), add, part, m.rain, R; wg = WG_CELL))
 _vertical!(out, m::MoistKA, Cf, Z, ct, cw, R::Region) = (g = m.grid;
-    _launch!(m, _k_vertical!, _rk(m, R), out, Z, Cf, g.Jc, g.dz, g.nz, m.grav, Float64(ct), Float64(cw), R; wg = WG_CELL))
-_phaseset!(out, m::MoistKA, Z, R::Region) = _launch!(m, _k_phaseset!, _rk(m, R), out, Z, m.mgas, m.pres, m.τ, R; wg = WG_CELL)
+    _launch!(m, _k_vertical!, _rk(m, R), out, Z, Cf, g.Jc, g.dz, g.nz, m.grav, Float64(ct), Float64(cw), m.rain, R; wg = WG_CELL))
+_phaseset!(out, m::MoistKA, Z, R::Region) = _launch!(m, _k_phaseset!, _rk(m, R), out, Z, m.mgas, m.pres, m.τ, m.rain, R; wg = WG_CELL)
 """Z += a X (mode 1), a X + Y (2), a (X - P + K) + Y (3) on the thermodynamic and W rows of the region."""
 _update!(Z, m::MoistKA, R::Region, a, X, Y = X, P = X, K = X; mode::Int = Y === X ? 1 : P === X ? 2 : 3) =
-    _launch!(m, _k_update!, _rk(m, R), Z, X, Y, P, K, Float64(a), Val(mode), m.grid.nz, R; wg = WG_CELL)
+    _launch!(m, _k_update!, _rk(m, R), Z, X, Y, P, K, Float64(a), Val(mode), m.grid.nz, m.rain, R; wg = WG_CELL)
 
 """Column factors of (I - D J_v), D = c (thermodynamic rows), cw (W rows): computed when c cw changes (once per stage
 for :cs; the work arrays are allocated once)."""
@@ -262,7 +276,8 @@ end
 function _csolve!(Y, m::MoistKA, Cf, c, Rh, cw, R::Region)
     g = m.grid
     sub, cpr, iden = _factors(m, Cf, c, cw)
-    _launch!(m, _k_csolve!, (ncols(R),), Y, m.work.Wc, Rh, Cf, sub, cpr, iden, g.Jc, g.dz, g.nz, m.grav, Float64(c), Float64(cw), R; wg = WG_COL)
+    _launch!(m, _k_csolve!, (ncols(R),), Y, m.work.Wc, Rh, Cf, sub, cpr, iden, g.Jc, g.dz, g.nz, m.grav, Float64(c), Float64(cw),
+             m.rain, R; wg = WG_COL)
 end
 
 # ------------------------------------------------------------------ parts on all columns (tests, N(q))
@@ -287,11 +302,11 @@ function ka_phase!(out, m::MoistKA, Z)
 end
 
 """
-    ka_rhs!(out, m, Q, Cf = ka_zeros(m, NC), S = ka_zeros(m))
+    ka_rhs!(out, m, Q, Cf = ka_zeros(m, m.nc), S = ka_zeros(m))
 
 N(q) = F(q, q) on the interior (halo of Q filled here): :hthermo + :hmomentum + the vertical part.
 """
-function ka_rhs!(out, m::MoistKA, Q, Cf = ka_zeros(m, NC), S = ka_zeros(m), tmp = ka_zeros(m))
+function ka_rhs!(out, m::MoistKA, Q, Cf = ka_zeros(m, m.nc), S = ka_zeros(m), tmp = ka_zeros(m))
     ka_frozen_data!(Cf, S, m, Q)
     ka_hthermo!(out, m, Cf, Q, S)
     out .+= ka_hmomentum!(tmp, m, Cf, Q, S)

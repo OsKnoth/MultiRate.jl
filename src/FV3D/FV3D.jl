@@ -30,7 +30,8 @@ import ..TimeStepping: rhs_nonlinear!, frozen_ncoef, frozen_data!, frozen_fast!,
 
 export Grid3D, Model3D, project3d, total3d, with_sponge, sponge!, sound_speed_max, theta_prime,
        vertical_velocity, hydrostatic_column, balanced_state, level, FV3D_PRESSURE_FORM, iρ, iU, iV, iW, iΘ, nunknowns,
-       MoistModel3D, iqv, iqc, iπ, moist_exner_state, base_state, thermo_convert, theta_e3d, qc3d, moist_column_solve!
+       MoistModel3D, iqv, iqc, iπ, iqr, moist_exner_state, base_state, thermo_convert, theta_e3d, qc3d, qr3d,
+       moist_column_solve!, precipitation_rate, rain_courant, msed!
 
 include("grid.jl")
 include("lsq.jl")

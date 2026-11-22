@@ -15,7 +15,7 @@ struct KAMISWork{A}
     c::A; F::A; Y::A; Z::A; k::A; E::A; P::A; y::A
 end
 function KAMISWork(m::MoistKA, s::Int)
-    z() = ka_zeros(m); zc() = ka_zeros(m, NC)
+    z() = ka_zeros(m); zc() = ka_zeros(m, m.nc)
     return KAMISWork([zc() for _ in 1:s], [z() for _ in 1:s], [z() for _ in 1:s], zc(), z(), z(), z(), z(), z(), z(), z())
 end
 
@@ -35,12 +35,13 @@ function _ka_cs_loop!(Z, m::MoistKA, Cf, F, h, N, w::KAMISWork, ε; overlap::Boo
     g, dec = m.grid, m.dec
     fast = m.micro == 1
     all_, ws, en, core = Region(g, :all), Region(g, :ws), Region(g, :en), Region(g, :core)
+    pvars = m.rain ? (VP, VQR) : (VP,)                 # :hmomentum reads p (and ρq_r: sedimentation) of the halo
     send!(vars) = (h_ = start_halo!(dec, Z, g, vars); overlap ? h_ : (finish_halo!(dec, h_); nothing))
     # first half step a½ = a + h/2 (-K b + f_a(a)) with the vertical part (h/2 on a, (1-β)h on b)
     _hthermo!(k, m, Cf, Z, F, all_)
     _vertical!(y, m, Cf, Z, h / 2, (1 - β) * h, all_)
     _update!(Z, m, all_, h / 2, k, y; mode = 2)
-    hp = send!((VP,))
+    hp = send!(pvars)
     for n in 1:N
         # U⁺ = U + h L₀ã½ + h f_U
         _hmomentum!(Z, m, Cf, Z, F, all_; a = h, add = true, part = 1)
@@ -65,7 +66,7 @@ function _ka_cs_loop!(Z, m::MoistKA, Cf, F, h, N, w::KAMISWork, ε; overlap::Boo
             else
                 _update!(Z, m, all_, h / 2, E, y; mode = 2)
             end
-            hp = send!((VP,))
+            hp = send!(pvars)
         end
     end
     return Z
@@ -107,15 +108,16 @@ function ka_mis_step!(m::MoistKA, q, Δt, tab::MISTableau, w::KAMISWork; nsub::I
     return ka_step_end!(m, q)
 end
 
-@kernel function _k_step_end!(Q, mg, pres)
+@kernel function _k_step_end!(Q, mg, pres, rain)
     i, j, k = @index(Global, NTuple)
     I, J = i + HALO, j + HALO
-    @inbounds Q[I, J, k, VP] = ka_pvar(mg, pres, Q[I, J, k, VR], Q[I, J, k, VX], Q[I, J, k, VQV], Q[I, J, k, VQC])
+    @inbounds Q[I, J, k, VP] = ka_pvar(mg, pres, Q[I, J, k, VR], Q[I, J, k, VX], Q[I, J, k, VQV],
+                                       Q[I, J, k, VQC] + _qr(Q, rain, I, J, k))
 end
-"""p (π) ← p(ρ, X, ρq_v, ρq_c) of the equation of state on the interior (no saturation adjustment)."""
+"""p (π) ← p(ρ, X, ρq_v, ρq_c + ρq_r) of the equation of state on the interior (no saturation adjustment)."""
 function ka_step_end!(m::MoistKA, q)
     g = m.grid
-    _launch!(m, _k_step_end!, (g.nxl, g.nyl, g.nz), q, m.mgas, m.pres)
+    _launch!(m, _k_step_end!, (g.nxl, g.nyl, g.nz), q, m.mgas, m.pres, m.rain)
     return q
 end
 

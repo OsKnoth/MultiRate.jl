@@ -51,8 +51,8 @@ allreduce_max(d::MPIDecomp, x) = MPI.Allreduce(x, max, d.comm)
 allreduce_min(d::MPIDecomp, x) = MPI.Allreduce(x, min, d.comm)
 
 """The buffers for the tile grid g, once (a later call with a larger grid enlarges them)."""
-function init_exchange!(d::MPIDecomp, g::KAGrid)
-    L = exchange_length(g)
+function init_exchange!(d::MPIDecomp, g::KAGrid, nfields::Int = 12)
+    L = exchange_length(g, nfields)
     b = d.buf[]
     (b !== nothing && length(b.send[1]) >= L) && return d
     be = KA.get_backend(g)

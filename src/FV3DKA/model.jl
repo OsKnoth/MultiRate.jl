@@ -3,6 +3,8 @@
 
 const VR, VU, VV, VW, VX, VQV, VQC, VP = 1, 2, 3, 4, 5, 6, 7, 8
 const NV = 8
+"""ρq_r (rain = true: the state has NV + 1 = 9 variables, `m.nv`)."""
+const VQR = 9
 """Coefficient slots of the faces (x: 1 … 7, y: 8 … 14, η: 15 … 21), slot b = 0 … 6 as in FV3D/moist.jl: χ of the
 cell left/below (0), q_v (1), momentum coefficient c_pd Θ̂ or 1 (2), κ left/below (3), κ right/above (4), q_c (5),
 χ right/above (6)."""
@@ -10,6 +12,11 @@ const NC = 21
 @inline sx(b) = 1 + b
 @inline sy(b) = 8 + b
 @inline sz(b) = 15 + b
+"""rain = true: q_r at the x-, y- and η-faces in the slots 22, 23, 24; frozen sedimentation coefficients of the cells
+in the slots 25 … 31 (`m.nc` = 31): V_r, liquid content x_r, ∂p/∂ρ + ∂p/∂ρ_l, ∂p/∂X, u at the left x-face, v at the
+lower y-face, w at the centre (FV3D/moist.jl `_rs`)."""
+const SRX, SRY, SRZ = 22, 23, 24
+const SVR, SXR, SKR, SKX, SUR, SVV, SWR = 25, 26, 27, 28, 29, 30, 31
 
 struct KAWork{A3,A4}
     θ::A3; φq::A3; φc::A3; Θh::A3; pc::A3                    # cells (nxh, nyh, nz)
@@ -21,19 +28,22 @@ struct KAWork{A3,A4}
     SH::A4                                                   # shifted velocities uL, uR, vL, vR, wL, wR (…, nz, 6)
     TT::A4                                                   # their advective tendencies (…, nz, 6)
     FVx::A4                                                  # x-face values θ, q_v, q_c and fluxes F φ_f/Δx of
-    FVy::A4                                                  # the six shifted velocities (…, nz, 9); y-faces
+    FVy::A4                                                  # the six shifted velocities (…, nz, 9; 10: q_r); y-faces
     Wc::A3                                                   # W of the column solve (nxh, nyh, nz+1)
     fac::Dict{Float64,NTuple{3,A3}}                          # column factors (nz+1, nxh, nyh) per c cw
+    φr::A3                                                   # q_r of the cells (rain)
 end
 
 """
     MoistKA(grid::KAGrid, dec = SerialDecomp(); mgas = MoistGas(), pvar = :p, micro = :fast, τfac = 0.25,
-            cs = 350.0, wτ = nothing, τ = nothing, grav = 9.81, sponge = nothing)
+            cs = 350.0, wτ = nothing, τ = nothing, grav = 9.81, sponge = nothing, rain = false,
+            kessler = KesslerParams())
 
 The moist model of `FV3D.MoistModel3D` on the tile `grid` of the decomposition `dec` (pressure p as the additional
 variable by default, or the Exner pressure, pvar = :pi). τ as in MoistModel3D (τfac Δτ_ac, or min(Δx, Δy, Δz_min)/wτ,
 or given). `sponge = (zD, αtop)`: Rayleigh damping of W above zD (as `FV3D.with_sponge`), or a vector of the rates
-at the η-faces k = 1 … nz+1.
+at the η-faces k = 1 … nz+1. `rain = true`: warm-rain Kessler microphysics as `FV3D.MoistModel3D(…; rain = true)`, the
+state has the 9th variable ρq_r (`VQR`).
 """
 struct MoistKA{TV,G<:KAGrid,D<:AbstractDecomp,A1,W<:KAWork}
     grid::G
@@ -45,10 +55,14 @@ struct MoistKA{TV,G<:KAGrid,D<:AbstractDecomp,A1,W<:KAWork}
     grav::Float64
     damp::A1                   # sponge rates at the η-faces (nz+1)
     work::W
+    rain::Bool
+    kp::KesslerParams
+    nv::Int                    # state variables: NV (8), NV + 1 with rain
+    nc::Int                    # coefficient slots: NC (21), 31 with rain
 end
 function MoistKA(g::KAGrid, dec::AbstractDecomp = SerialDecomp(); mgas::MoistGas = MoistGas(), pvar::Symbol = :p,
                  micro::Symbol = :fast, τfac::Real = 0.25, cs::Real = 350.0, wτ = nothing, τ = nothing,
-                 grav::Real = 9.81, sponge = nothing)
+                 grav::Real = 9.81, sponge = nothing, rain::Bool = false, kessler::KesslerParams = KesslerParams())
     pvar in (:pi, :p) || error("pvar: :pi or :p")
     micro in (:none, :fast, :slow) || error("micro: :none, :fast or :slow")
     be = KA.get_backend(g)
@@ -69,16 +83,18 @@ function MoistKA(g::KAGrid, dec::AbstractDecomp = SerialDecomp(); mgas::MoistGas
     z4(nv) = KA.zeros(be, Float64, g.nxh, g.nyh, g.nz, nv)
     nz = g.nz
     work = KAWork(z3(nz), z3(nz), z3(nz), z3(nz), z3(nz), z4(4), z3(nz + 1), KA.zeros(be, Float64, g.nxh, g.nyh, nz, 4),
-                  z3(nz), z3(nz), z3(nz + 1), z4(6), z4(6), z4(9), z4(9), z3(nz + 1),
-                  Dict{Float64,NTuple{3,typeof(z3(nz))}}())
+                  z3(nz), z3(nz), z3(nz + 1), z4(6), z4(6), z4(rain ? 10 : 9), z4(rain ? 10 : 9), z3(nz + 1),
+                  Dict{Float64,NTuple{3,typeof(z3(nz))}}(), z3(rain ? nz : 1))
     dd = KA.allocate(be, Float64, nz + 1); copyto!(dd, damp)
-    init_exchange!(dec, g)                                   # communication buffers, once
-    return MoistKA(g, dec, mgas, pvar === :p, micro === :none ? 0 : micro === :fast ? 1 : 2, τv, Float64(grav), dd, work)
+    nv = rain ? NV + 1 : NV
+    init_exchange!(dec, g, nv + 4)                           # communication buffers, once
+    return MoistKA(g, dec, mgas, pvar === :p, micro === :none ? 0 : micro === :fast ? 1 : 2, τv, Float64(grav), dd, work,
+                   rain, kessler, nv, rain ? 31 : NC)
 end
 
 KA.get_backend(m::MoistKA) = KA.get_backend(m.grid)
-"""A zero state (or coefficient array with `nv = NC`) on the device of the model."""
-ka_zeros(m::MoistKA, nv::Int = NV) = KA.zeros(KA.get_backend(m), Float64, m.grid.nxh, m.grid.nyh, m.grid.nz + 1, nv)
+"""A zero state (or coefficient array with `nv = m.nc`) on the device of the model."""
+ka_zeros(m::MoistKA, nv::Int = m.nv) = KA.zeros(KA.get_backend(m), Float64, m.grid.nxh, m.grid.nyh, m.grid.nz + 1, nv)
 
 """The additional variable of the equation of state: p (pres) or π."""
 @inline ka_pvar(mg, pres, ρ, X, ρv, ρc) = pres ? _moist_p(mg, ρ, X, ρv, ρc) : moist_exner(mg, ρ, X, ρv, ρc)

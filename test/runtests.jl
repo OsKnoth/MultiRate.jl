@@ -1315,6 +1315,111 @@ end
     @test_throws ErrorException F3.MoistModel3D(F3.Model3D(F3.Grid3D(8, 8, 6, 20e3, 20e3, 6e3; zs = hill), gas, ρr, Θr; implicit = :column))
 end
 
+@testset "FV3D: warm-rain Kessler microphysics (DCMIP), rain = true" begin
+    F3 = MultiRate.FV3D
+    mgθ = CM.MoistGas()
+    gas = CM.Gas(R = mgθ.Rd, γ = mgθ.Cpd / (mgθ.Cpd - mgθ.Rd), p00 = mgθ.p0)
+    ρr, Θr, θr = CM.stratified_reference(gas; θ0 = 300.0, N = 0.01)
+    # rates against the formulas of kessler.f90 (DCMIP 2016) in mixing ratios
+    kp = CM.KesslerParams(τr = 1e-12)                       # τr small: limiters inactive
+    ρ, ρv, ρc, ρrr, T, p = 1.1, 0.012, 0.003, 0.002, 285.0, 9.0e4
+    ρd = ρ - ρv - ρc - ρrr; qc, qr, qv = ρc / ρd, ρrr / ρd, ρv / ρd; r = 0.001ρd
+    P, E = CM.kessler_rates(kp, mgθ, ρ, T, p, ρv, ρc, ρrr)
+    @test P ≈ ρd * (0.001 * (qc - 0.001) + 2.2 * qc * qr^0.875)
+    qvs = CM.psat(mgθ, T) / (mgθ.Rv * T) / ρd
+    pc = 3.8 / (p / 100)                                     # kessler.f90: pc = 3.8/(p in mb)
+    ern = ((1.6 + 124.9 * (r * qr)^0.2046) * (r * qr)^0.525) / (2550000 * pc / (3.8 * qvs) + 540000) *
+          (max(qvs - qv, 0) / (r * qvs))
+    @test E ≈ ρd * ern
+    @test CM.rain_velocity(kp, ρd, ρrr, 1.2) ≈ 36.34 * (qr * r)^0.1364 * sqrt(1.2 / ρd)
+    @test CM.kessler_rates(kp, mgθ, ρ, T, p, 0.02, ρc, ρrr)[2] == 0           # supersaturated: no evaporation
+    # liquid content: X(ρ + h, T, ρv, ρl + h) - X(ρ - h, …) / 2h
+    for thv in (:thetarho, :energy, :entropy)
+        mg = CM.MoistGas(thvar = thv); h = 1e-7
+        X = CM._Θof(mg, ρ, T, ρv, ρc + ρrr)
+        fd = (CM._Θof(mg, ρ + h, T, ρv, ρc + ρrr + h) - CM._Θof(mg, ρ - h, T, ρv, ρc + ρrr - h)) / 2h
+        pp = (mg.Rd * ρd + mg.Rv * ρv) * T
+        @test CM.liquid_content(mg, ρ, X, T, pp, ρv, ρc + ρrr) ≈ fd rtol = 1e-6
+    end
+
+    hill(x, y) = 1200.0 * exp(-((x - 10e3)^2 + (y - 10e3)^2) / 4e3^2)
+    fq(x, y, z) = (ρ = ρr(z) * (1 + 1e-3 * sin(x / 3e3) * cos(y / 4e3)); (ρ, 8ρ + sin(y / 3e3), 5ρ + cos(x / 4e3), 0.2ρ * sin(π * z / 6e3) * cos((x + 2y) / 5e3), Θr(z) * (1 + 1e-3 * cos((x - y) / 3e3))))
+    for terr in (false, true), (thv, pvar) in ((:thetarho, :p), (:energy, :pi), (:entropy, :p))
+        g = terr ? F3.Grid3D(8, 8, 6, 20e3, 20e3, 6e3; zs = hill, terrain = :follow) : F3.Grid3D(8, 8, 6, 20e3, 20e3, 6e3)
+        b = F3.Model3D(g, gas, ρr, Θr)
+        mg = CM.MoistGas(thvar = thv)
+        mθ = F3.MoistModel3D(b; mgas = mgθ, pvar)
+        m0 = F3.MoistModel3D(b; mgas = mg, pvar); m1 = F3.MoistModel3D(b; mgas = mg, pvar, rain = true)
+        @test m1.nq == m0.nq + F3.ncell(g)
+        q = F3.project3d(b, fq)
+        x0 = F3.thermo_convert(mθ, m0, F3.moist_exner_state(mθ, q, [0.004 * q[F3.iρ(g, i, j, k)] for i in 1:8, j in 1:8, k in 1:6]))
+        # rain = 0 and q_c below the autoconversion threshold: the rain model is the model without rain
+        x1 = vcat(x0, zeros(F3.ncell(g)))
+        @test all(F3.qc3d(m0, x0) .< 1e-3)
+        N0 = TS.rhs_nonlinear(m0, x0); N1 = TS.rhs_nonlinear(m1, x1)
+        @test maximum(abs, N1[1:m0.nq] - N0) <= 1e-12 * maximum(abs, N0)
+        @test maximum(abs, N1[m0.nq+1:end]) == 0
+        # rain present, subsaturated layers: conversion, evaporation, sedimentation
+        xr = copy(x1)
+        for k in 1:6, j in 1:8, i in 1:8
+            ρk = xr[F3.iρ(g, i, j, k)]
+            xr[F3.iqr(m1, i, j, k)] = 2e-3 * ρk * (1 + 0.5 * sin(i + 2j + k))
+            xr[F3.iqc(m1, i, j, k)] = (k <= 3 ? 2.5e-3 : 0.0) * ρk                     # cloud only below
+            xr[F3.iqv(m1, i, j, k)] *= k <= 3 ? 1.0 : 0.8                              # subsaturated aloft
+        end
+        TS.frozen_step_end!(m1, xr)
+        C = zeros(TS.frozen_ncoef(m1)); S = zeros(m1.nq); TS.frozen_data!(C, S, m1, xr)
+        N = TS.rhs_nonlinear(m1, xr)
+        o(pp, z = xr) = TS.frozen_fast!(zeros(m1.nq), m1, C, z, pp, S)
+        @test maximum(abs, o(:hthermo) + o(:hmomentum) + o(:vertical) - N) < 1e-13 * maximum(abs, N)
+        @test maximum(abs, o(:thermo) + o(:momentum) - N) < 1e-13 * maximum(abs, N)
+        TS.frozen_stage_begin!(m1, C, xr)
+        R = 1e-3 .* cos.(1:m1.nq); Y = zeros(m1.nq); F3.moist_column_solve!(Y, m1, 3.0, R)
+        @test maximum(abs.(Y .- 3.0 .* (o(:vertical, xr .+ Y) .- o(:vertical, xr)) .- R)) < 1e-9 * maximum(abs, R)
+        # budgets of the sedimentation (fast part, msed!) and the slow rain sources: Σ V (sed + S) = -(ground flux) for
+        # mass and total water; energy: rain carries c_pl T
+        V(i, j, k) = g.Jc[i, j] * g.dx * g.dy * g.dz / g.invV[i, j, k]
+        Sr = zeros(m1.nq); TS.frozen_data!(C, Sr, m1, xr)
+        sed = F3.msed!(zeros(m1.nq), m1, C, xr; thermo = true, uv = true, w = true)
+        Sr .+= sed
+        tot(f) = sum(V(i, j, k) * f(i, j, k) for i in 1:8, j in 1:8, k in 1:6)
+        A(i, j) = g.dx * g.dy
+        Pg = F3.precipitation_rate(m1, xr)
+        ground = sum(A(i, j) * Pg[i, j] for i in 1:8, j in 1:8)
+        @test tot((i, j, k) -> Sr[F3.iρ(g, i, j, k)]) ≈ -ground rtol = 1e-12
+        @test tot((i, j, k) -> Sr[F3.iqv(m1, i, j, k)] + Sr[F3.iqc(m1, i, j, k)] + Sr[F3.iqr(m1, i, j, k)]) ≈ -ground rtol = 1e-12
+        if thv === :energy
+            Tg = [CM.moist_state(mg, xr[F3.iρ(g, i, j, 1)], xr[F3.iΘ(g, i, j, 1)], xr[F3.iqv(m1, i, j, 1)],
+                                 xr[F3.iqc(m1, i, j, 1)] + xr[F3.iqr(m1, i, j, 1)])[1] for i in 1:8, j in 1:8]
+            @test tot((i, j, k) -> Sr[F3.iΘ(g, i, j, k)]) ≈ -sum(A(i, j) * Pg[i, j] * mg.Cpl * Tg[i, j] for i in 1:8, j in 1:8) rtol = 1e-12
+        end
+        # momentum carried by the rain: the U part telescopes to the loss through the ground
+        uu(i, j) = xr[F3.iU(g, i, j, 1)] / (0.5 * (xr[F3.iρ(g, mod1(i - 1, 8), j, 1)] + xr[F3.iρ(g, i, j, 1)]))
+        Ploc(i, j) = (ρd1 = xr[F3.iρ(g, i, j, 1)] - xr[F3.iqv(m1, i, j, 1)] - xr[F3.iqc(m1, i, j, 1)] - xr[F3.iqr(m1, i, j, 1)];
+                      xr[F3.iqr(m1, i, j, 1)] * CM.rain_velocity(m1.kp, ρd1, xr[F3.iqr(m1, i, j, 1)], ρd1))
+        dU = sum(sed[F3.iU(g, i, j, k)] * g.Jx[i, j] * g.dz for i in 1:8, j in 1:8, k in 1:6)
+        @test dU ≈ -sum(0.5 * (Ploc(mod1(i - 1, 8), j) + Ploc(i, j)) * uu(i, j) for i in 1:8, j in 1:8) rtol = 1e-10
+        @test minimum(Sr[F3.iqc(m1, i, j, k)] for i in 1:8, j in 1:8, k in 1:3) < 0           # conversion
+        @test maximum(Sr[F3.iqv(m1, i, j, k)] for i in 1:8, j in 1:8, k in 4:6) > 0           # evaporation
+        # MIS steps without fall speed (cv = 0): conversion and evaporation conserve mass and total water exactly
+        # (the sedimentation fluxes telescope, budgets above; the explicit upwind rain reaches the ground in a few steps)
+        water(z) = F3.total3d(m1, z, :qv) + F3.total3d(m1, z, :qc) + F3.total3d(m1, z, :qr)
+        m1s = F3.MoistModel3D(b; mgas = mg, pvar, rain = true, kessler = CM.KesslerParams(cv = 0.0))
+        xa = xr
+        for fast in (:hevi, :cs)
+            y = TS.run_frozen(m1s, xa, 2.0, 2; tab = TS.mis_tableau(:MIS54), nsub = 6, fast)
+            @test abs(F3.total3d(m1, y, :ρ) / F3.total3d(m1, xa, :ρ) - 1) < 1e-13
+            @test abs(water(y) / water(xa) - 1) < 1e-13
+            @test all(isfinite, y) && minimum(F3.qr3d(m1, y)) >= 0
+        end
+        # with sedimentation: the rain leaves through the ground, mass and total water decrease by the same amount
+        y = TS.run_frozen(m1, xr, 2.0, 2; tab = TS.mis_tableau(:MIS54), nsub = 6, fast = :cs)
+        dM = F3.total3d(m1, y, :ρ) - F3.total3d(m1, xr, :ρ)
+        @test dM < 0 && abs(water(y) - water(xr) - dM) < 1e-8 * abs(dM)   # (dM: difference of totals ~1e12 kg)
+        @test 0 < F3.rain_courant(m1, xr, 5.0) < 1
+    end
+end
+
 @testset "FV3DKA: moist 3D model with KernelAbstractions, x-y tiles (one rank; MPI: test/fv3dka_mpi.jl)" begin
     F3 = MultiRate.FV3D; K = MultiRate.FV3DKA
     mgθ = CM.MoistGas()
@@ -1353,6 +1458,45 @@ end
         @test maximum(abs, K.global_state(mk, m3, Q) - y3) < 1e-8 * maximum(abs, y3 - x)
         @test abs(K.ka_total(mk, Q, K.VR) / F3.total3d(m3, x, :ρ) - 1) < 1e-13
         @test abs((K.ka_total(mk, Q, K.VQV) + K.ka_total(mk, Q, K.VQC)) / (F3.total3d(m3, x, :qv) + F3.total3d(m3, x, :qc)) - 1) < 1e-13
+    end
+end
+
+@testset "FV3DKA: warm rain (rain = true) equals FV3D" begin
+    F3 = MultiRate.FV3D; K = MultiRate.FV3DKA
+    mgθ = CM.MoistGas()
+    gas = CM.Gas(R = mgθ.Rd, γ = mgθ.Cpd / (mgθ.Cpd - mgθ.Rd), p00 = mgθ.p0)
+    ρr, Θr, θr = CM.stratified_reference(gas; θ0 = 300.0, N = 0.01)
+    hill(x, y) = 1200.0 * exp(-((x - 10e3)^2 + (y - 7e3)^2) / 4e3^2)
+    nx, ny, nz, L, Ly, H = 10, 8, 6, 20e3, 16e3, 6e3
+    for terr in (false, true), (thv, pvar, micro) in ((:thetarho, :p, :fast), (:energy, :pi, :slow))
+        g3 = terr ? F3.Grid3D(nx, ny, nz, L, Ly, H; zs = hill, terrain = :follow) : F3.Grid3D(nx, ny, nz, L, Ly, H)
+        b3 = F3.with_sponge(F3.Model3D(g3, gas, ρr, Θr), zeros(F3.nunknowns(g3)); zD = 4e3, αtop = 0.05)
+        mg = CM.MoistGas(thvar = thv)
+        mθ = F3.MoistModel3D(b3; mgas = mgθ, pvar, micro, rain = true)
+        m3 = F3.MoistModel3D(b3; mgas = mg, pvar, micro, rain = true)
+        fq(x, y, z) = (ρ = ρr(z) * (1 + 1e-3 * sin(x / 3e3) * cos(y / 4e3)); (ρ, 8ρ + sin(y / 3e3), 5ρ + cos(x / 4e3), 0.2ρ * sin(π * z / H) * cos((x + 2y) / 5e3), Θr(z) * (1 + 1e-3 * cos((x - y) / 3e3))))
+        q = F3.project3d(b3, fq)
+        x = F3.thermo_convert(mθ, m3, F3.moist_exner_state(mθ, q, [0.013 * q[F3.iρ(g3, i, j, k)] for i in 1:nx, j in 1:ny, k in 1:nz]))
+        for k in 1:nz, j in 1:ny, i in 1:nx
+            ρk = x[F3.iρ(g3, i, j, k)]
+            x[F3.iqr(m3, i, j, k)] = 2e-3 * ρk * (1 + 0.5 * sin(i + 2j + k))
+            k > 3 && (x[F3.iqv(m3, i, j, k)] *= 0.8)                            # subsaturated aloft: evaporation
+        end
+        TS.frozen_step_end!(m3, x)
+        gk = K.KAGrid(nx, ny, nz, L, Ly, H; zs = terr ? hill : nothing)
+        mk = K.MoistKA(gk; mgas = mg, pvar, micro, sponge = (4e3, 0.05), rain = true)
+        @test mk.nv == 9 && mk.nc == 31
+        Q = K.ka_state(mk, m3, x)
+        @test K.global_state(mk, m3, Q) == x
+        N3 = TS.rhs_nonlinear(m3, x)
+        out = K.ka_zeros(mk); K.ka_rhs!(out, mk, Q)
+        @test maximum(abs, K.global_state(mk, m3, out) - N3) < 1e-9 * maximum(abs, N3)
+        y3 = TS.run_frozen(m3, x, 3.0, 2; tab = TS.mis_tableau(:MIS54), nsub = 6, fast = :cs)
+        K.ka_run!(mk, Q, 3.0, 2; tab = TS.mis_tableau(:MIS54), nsub = 6)
+        @test maximum(abs, K.global_state(mk, m3, Q) - y3) < 1e-8 * maximum(abs, y3 - x)
+        @test abs(K.ka_total(mk, Q, K.VR) / F3.total3d(m3, y3, :ρ) - 1) < 1e-13
+        @test abs(K.ka_total(mk, Q, K.VQR) / F3.total3d(m3, y3, :qr) - 1) < 1e-10
+        @test K.ka_precipitation_rate(mk, Q) ≈ F3.precipitation_rate(m3, K.global_state(mk, m3, Q))
     end
 end
 

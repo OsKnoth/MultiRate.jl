@@ -32,10 +32,10 @@ Allocate the communication buffers of the decomposition for the tile grid g once
 per side one send and one receive buffer on the device of the grid, large enough for every exchange of the model
 (`exchange_length`); all exchanges use views of them. Serial: nothing to do.
 """
-init_exchange!(dec::SerialDecomp, g) = dec
-"""Values per side of the largest message: the halo of the state (NV variables, nz+1 levels) and of the four face
-velocities in one exchange (`ka_frozen_data!`)."""
-exchange_length(g) = HALO * max(g.nxh, g.nyh) * (g.nz + 1) * 12
+init_exchange!(dec::SerialDecomp, g, nfields::Int = 12) = dec
+"""Values per side of the largest message: the halo of `nfields` arrays of nz+1 levels, the state (NV = 8 variables,
+9 with rain) and the four face velocities in one exchange (`ka_frozen_data!`)."""
+exchange_length(g, nfields::Int = 12) = HALO * max(g.nxh, g.nyh) * (g.nz + 1) * nfields
 
 """4D view of a 3D array (one variable)."""
 _as4(A::AbstractArray{T,4}) where {T} = A

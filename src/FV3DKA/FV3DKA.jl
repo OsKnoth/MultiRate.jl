@@ -24,13 +24,14 @@ module FV3DKA
 using KernelAbstractions
 const KA = KernelAbstractions
 using ..Common: MoistGas, moist_state, moist_exner, _moist_p, fischer_burmeister, theta_phase_factor,
-                pressure_phase_factor, exner_derivatives, theta_e, _Θof
+                pressure_phase_factor, exner_derivatives, theta_e, _Θof, KesslerParams, kessler_rates,
+                rain_velocity, liquid_content
 using ..FV2D: recon3, shiftvel, shift_back
 using ..TimeStepping: MISTableau, fast_substeps, nstages
 import ..FV3D
 
 export KAGrid, SerialDecomp, MoistKA, ka_state, global_state, ka_rhs!, ka_mis_step!, ka_run!, ka_step_end!,
-       ka_total, ka_project, ka_fields, exchange!, mpi_decomp, HALO
+       ka_total, ka_project, ka_fields, ka_precipitation_rate, exchange!, mpi_decomp, HALO, VQR
 
 include("grid.jl")
 include("decomp.jl")

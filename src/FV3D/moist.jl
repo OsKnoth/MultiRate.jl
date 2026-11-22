@@ -14,7 +14,17 @@
 # from the equation of state after every MIS step. With ny = 1 the operator is the 2D one (tests).
 
 using ..Common: MoistGas, moist_state, moist_exner, _moist_p, _Θof, theta_e, fischer_burmeister, theta_phase_factor,
-                pressure_phase_factor, exner_derivatives
+                pressure_phase_factor, exner_derivatives, KesslerParams, kessler_rates, rain_velocity, liquid_content
+#
+# Warm rain (rain = true): state [ρ; U; V; W; X; ρq_v; ρq_c; π; ρq_r] (ρq_r appended, the other subscripts unchanged).
+# The equation of state and the phase factors use the total liquid ρ_l = ρq_c + ρq_r; ρq_r is transported in the
+# fast flux form like ρq_c (face value q_r,f, also in the column solve; κ_cell,f with q_c,f + q_r,f). The Kessler
+# processes (Common/kessler.jl: autoconversion, accretion, rain evaporation) are slow sources (every stage). The
+# sedimentation is part of the vertical velocity of the rain, w − V_r, in the fast part, explicit in every small step:
+# the upwind rain flux P = V_r ρq_r (V_r frozen at the stage, ρq_r of the fast state) through the η-faces removes ρ
+# and ρq_r, carries X with the liquid content ∂X/∂ρ_l|_T and the momentum of the air (U, V, W; frozen velocities); π
+# follows from the frozen ∂π/∂(ρ, X, ρ_l). Mass consistent, the ground is open for the rain. Cloud water ↔ vapour
+# stays the Fischer–Burmeister relaxation.
 
 """Vertical column system of the moist model (per column (i, j); η-faces k = 1 … nz+1)."""
 mutable struct MoistColumn3D
@@ -23,17 +33,18 @@ mutable struct MoistColumn3D
     cT::Array{Float64,3}           # κ of the cell above the face
     χB::Array{Float64,3}           # χ of the cell below / above the face
     χT::Array{Float64,3}
-    qz::Array{Float64,3}           # q_v, q_c at the faces
+    qz::Array{Float64,3}           # q_v, q_c (and q_r) at the faces
     cz::Array{Float64,3}
+    rz::Array{Float64,3}
     factors::Dict{Float64,NTuple{3,Array{Float64,3}}}
     W::Vector{Float64}
 end
 MoistColumn3D(g::Grid3D) = (z = () -> zeros(g.nx, g.ny, g.nz + 1);
-    MoistColumn3D(z(), z(), z(), z(), z(), z(), z(), Dict{Float64,NTuple{3,Array{Float64,3}}}(), zeros(g.nz + 1)))
+    MoistColumn3D(z(), z(), z(), z(), z(), z(), z(), z(), Dict{Float64,NTuple{3,Array{Float64,3}}}(), zeros(g.nz + 1)))
 
 """
     MoistModel3D(base::Model3D; mgas = MoistGas(), pvar = :p, micro = :fast, τfac = 0.25, cs = 350.0,
-                 wτ = nothing, τ = nothing)
+                 wτ = nothing, τ = nothing, rain = false, kessler = KesslerParams())
 
 Moist 3D FV model (flat or terrain following; no cut cells, `implicit = :column`), the 3D form of
 `FV2D.MoistExnerModel`: state `[ρ; U; V; W; X; ρq_v; ρq_c; p]` (pvar = :p, the default) or `[…; π]` (pvar = :pi)
@@ -44,6 +55,10 @@ state after every MIS step. Condensation by the explicit Fischer–Burmeister re
 τ = min(Δx, Δy, Δz)/wτ (Δz the thinnest physical layer), or by default τ = τfac Δτ_ac with the horizontal acoustic
 step Δτ_ac = 0.85·0.92 min(Δx, Δy)/cs of the HEVI fast loop (as in 2D). The base model provides grid, gravity
 (`gas.g`), momentum advection and sponge.
+
+`rain = true`: warm-rain Kessler microphysics after DCMIP 2016 with the additional variable ρq_r (`iqr`), constants
+`kessler::KesslerParams`; see the comment at the top of `FV3D/moist.jl`. The sedimentation is explicit (upwind) in
+the fast part: V_r h/Δz ≲ 1 for the small step h (`rain_courant`).
 """
 struct MoistModel3D
     base::Model3D
@@ -60,9 +75,13 @@ struct MoistModel3D
     Θh::Array{Float64,3}           # momentum coefficient c_pd Θ̂ (or 1) per cell (work)
     pc::Array{Float64,3}           # prognostic pressure per cell (work, :energy)
     column::MoistColumn3D
+    rain::Bool
+    kp::KesslerParams
+    φr::Array{Float64,3}           # q_r at the centres (work)
 end
 function MoistModel3D(base::Model3D; mgas::MoistGas = MoistGas(), pvar::Symbol = :p, micro::Symbol = :fast,
-                      τfac::Real = 0.25, cs::Real = 350.0, wτ = nothing, τ = nothing)
+                      τfac::Real = 0.25, cs::Real = 350.0, wτ = nothing, τ = nothing, rain::Bool = false,
+                      kessler::KesslerParams = KesslerParams())
     pvar in (:pi, :p) || error("pvar: :pi or :p")
     mgas.thvar in (:thetarho, :energy, :entropy) || error("thvar: :thetarho, :energy or :entropy")
     micro in (:slow, :fast, :none) || error("micro: :slow, :fast or :none")
@@ -72,14 +91,22 @@ function MoistModel3D(base::Model3D; mgas::MoistGas = MoistGas(), pvar::Symbol =
     N = ncell(g); sz = (g.nx, g.ny, g.nz)
     h = min(g.dx, g.dy, minimum(g.Jc) * g.dz)
     τv = τ !== nothing ? Float64(τ) : wτ !== nothing ? h / wτ : τfac * 0.85 * 0.92 * min(g.dx, g.dy) / cs
-    nc = 14N + 7 * g.nx * g.ny * (g.nz + 1)
-    return MoistModel3D(base, mgas, pvar, micro, τv, base.nq + 3N, zeros(nc), zeros(base.nq + 3N),
-                        zeros(sz), zeros(sz), zeros(4, sz...), zeros(sz), zeros(sz), MoistColumn3D(g))
+    Nz = g.nx * g.ny * (g.nz + 1)
+    nc = 14N + 7Nz + (rain ? 9N + Nz : 0)
+    nq = base.nq + (rain ? 4N : 3N)
+    return MoistModel3D(base, mgas, pvar, micro, τv, nq, zeros(nc), zeros(nq),
+                        zeros(sz), zeros(sz), zeros(4, sz...), zeros(sz), zeros(sz), MoistColumn3D(g),
+                        rain, kessler, zeros(sz))
 end
 
 @inline iqv(m::MoistModel3D, i, j, k) = m.base.nq + _c(m.base.grid, i, j, k)
 @inline iqc(m::MoistModel3D, i, j, k) = m.base.nq + ncell(m.base.grid) + _c(m.base.grid, i, j, k)
 @inline iπ(m::MoistModel3D, i, j, k) = m.base.nq + 2 * ncell(m.base.grid) + _c(m.base.grid, i, j, k)
+@inline iqr(m::MoistModel3D, i, j, k) = m.base.nq + 3 * ncell(m.base.grid) + _c(m.base.grid, i, j, k)
+"""ρq_r of cell (i, j, k) (0 without rain)."""
+@inline _ρr(m::MoistModel3D, z, i, j, k) = m.rain ? z[iqr(m, i, j, k)] : 0.0
+"""Total liquid ρq_c + ρq_r of cell (i, j, k)."""
+@inline _ρl(m::MoistModel3D, z, i, j, k) = z[iqc(m, i, j, k)] + _ρr(m, z, i, j, k)
 
 """The additional variable of the state: π (pvar = :pi) or p (pvar = :p) of the equation of state."""
 moist_pvar(m::MoistModel3D, ρ, X, ρv, ρc) = m.pvar === :p ? _moist_p(m.mgas, ρ, X, ρv, ρc) : moist_exner(m.mgas, ρ, X, ρv, ρc)
@@ -92,7 +119,7 @@ split into vapour and condensate of phase equilibrium (initial states only).
 """
 function moist_exner_state(m::MoistModel3D, q, Q)
     g = m.base.grid; mg = m.mgas; N = ncell(g)
-    x = vcat(q[1:m.base.nq], zeros(3N))
+    x = vcat(q[1:m.base.nq], zeros(m.nq - m.base.nq))     # ρq_r = 0
     @inbounds for k in 1:g.nz, j in 1:g.ny, i in 1:g.nx
         ρ, X = q[iρ(g, i, j, k)], q[iΘ(g, i, j, k)]
         ρc = moist_state(mg, ρ, X, Q[i, j, k])[3]
@@ -109,7 +136,7 @@ function thermo_convert(mfrom::MoistModel3D, mto::MoistModel3D, x)
     g = mfrom.base.grid
     y = copy(x)
     @inbounds for k in 1:g.nz, j in 1:g.ny, i in 1:g.nx
-        ρ, V, C = x[iρ(g, i, j, k)], x[iqv(mfrom, i, j, k)], x[iqc(mfrom, i, j, k)]
+        ρ, V, C = x[iρ(g, i, j, k)], x[iqv(mfrom, i, j, k)], _ρl(mfrom, x, i, j, k)
         T = moist_state(mfrom.mgas, ρ, x[iΘ(g, i, j, k)], V, C)[1]
         y[iΘ(g, i, j, k)] = _Θof(mto.mgas, ρ, T, V, C)
         y[iπ(mto, i, j, k)] = moist_pvar(mto, ρ, y[iΘ(g, i, j, k)], V, C)
@@ -117,10 +144,11 @@ function thermo_convert(mfrom::MoistModel3D, mto::MoistModel3D, x)
     return y
 end
 
-"""Discrete integral Σ J ΔV q_c of a cell variable (:ρ, :Θ, :qv, :qc) over the fluid cells."""
+"""Discrete integral Σ J ΔV q_c of a cell variable (:ρ, :Θ, :qv, :qc, :qr) over the fluid cells."""
 function total3d(m::MoistModel3D, q, var::Symbol)
     g = m.base.grid
     idx = var === :qv ? ((i, j, k) -> iqv(m, i, j, k)) : var === :qc ? ((i, j, k) -> iqc(m, i, j, k)) :
+          var === :qr ? ((i, j, k) -> iqr(m, i, j, k)) :
           var === :ρ ? ((i, j, k) -> iρ(g, i, j, k)) : ((i, j, k) -> iΘ(g, i, j, k))
     dV = g.dx * g.dy * g.dz
     return sum(q[idx(i, j, k)] * g.Jc[i, j] * dV / g.invV[i, j, k] for k in 1:g.nz, j in 1:g.ny, i in 1:g.nx if g.invV[i, j, k] > 0)
@@ -128,9 +156,11 @@ end
 
 """Equivalent potential temperature at the centres (nx, ny, nz)."""
 theta_e3d(m::MoistModel3D, q) = (g = m.base.grid;
-    [theta_e(m.mgas, q[iρ(g, i, j, k)], q[iΘ(g, i, j, k)], q[iqv(m, i, j, k)], q[iqc(m, i, j, k)]) for i in 1:g.nx, j in 1:g.ny, k in 1:g.nz])
+    [theta_e(m.mgas, q[iρ(g, i, j, k)], q[iΘ(g, i, j, k)], q[iqv(m, i, j, k)], _ρl(m, q, i, j, k)) for i in 1:g.nx, j in 1:g.ny, k in 1:g.nz])
 """q_c = ρq_c/ρ at the centres (nx, ny, nz)."""
 qc3d(m::MoistModel3D, q) = (g = m.base.grid; [q[iqc(m, i, j, k)] / q[iρ(g, i, j, k)] for i in 1:g.nx, j in 1:g.ny, k in 1:g.nz])
+"""q_r = ρq_r/ρ at the centres (nx, ny, nz)."""
+qr3d(m::MoistModel3D, q) = (g = m.base.grid; [_ρr(m, q, i, j, k) / q[iρ(g, i, j, k)] for i in 1:g.nx, j in 1:g.ny, k in 1:g.nz])
 vertical_velocity(m::MoistModel3D, q) = vertical_velocity(m.base, q)
 
 # ------------------------------------------------------------------ coefficient vector
@@ -143,21 +173,126 @@ frozen_ncoef(m::MoistModel3D) = length(m.C)
 @inline _sx(g, b, i, j, k) = b * ncell(g) + _c(g, i, j, k)
 @inline _sy(g, b, i, j, k) = (7 + b) * ncell(g) + _c(g, i, j, k)
 @inline _sz(g, b, i, j, k) = 14 * ncell(g) + b * _Nz(g) + _fz(g, i, j, k)
+# rain = true: q_r at the x-, y- and η-faces after the 7 slots
+@inline _rx(g, i, j, k) = 14 * ncell(g) + 7 * _Nz(g) + _c(g, i, j, k)
+@inline _ry(g, i, j, k) = 15 * ncell(g) + 7 * _Nz(g) + _c(g, i, j, k)
+@inline _rz(g, i, j, k) = 16 * ncell(g) + 7 * _Nz(g) + _fz(g, i, j, k)
+# rain = true, frozen sedimentation coefficients per cell (b = 0 … 6): V_r (0), liquid content x_r (1), ∂π/∂ρ + ∂π/∂ρ_l
+# (2), ∂π/∂X (3), u at the x-face (4), v at the y-face (5), w at the centre (6)
+@inline _rs(g, b, i, j, k) = (16 + b) * ncell(g) + 8 * _Nz(g) + _c(g, i, j, k)
 
 """Phase-change sources of cell (i, j, k) for the state z (factors at the live state, as in 2D)."""
 @inline function _phase!(out, m::MoistModel3D, z, i, j, k)
     g = m.base.grid; mg = m.mgas
     ρ, X, ρv, ρc = z[iρ(g, i, j, k)], z[iΘ(g, i, j, k)], z[iqv(m, i, j, k)], z[iqc(m, i, j, k)]
-    φ, T = fischer_burmeister(mg, ρ, X, ρv, ρc)
+    ρr = _ρr(m, z, i, j, k); ρl = ρc + ρr
+    φ, T = m.rain ? fischer_burmeister(mg, ρ, X, ρv, ρc, ρr) : fischer_burmeister(mg, ρ, X, ρv, ρc)
     Sc = -φ / m.τ
-    p = (mg.Rd * (ρ - ρv - ρc) + mg.Rv * ρv) * T
-    Qp = pressure_phase_factor(mg, ρ, T, ρv, ρc)
+    p = (mg.Rd * (ρ - ρv - ρl) + mg.Rv * ρv) * T
+    Qp = pressure_phase_factor(mg, ρ, T, ρv, ρl)
     κS = m.pvar === :p ? Qp : (mg.Rd / mg.Cpd) * (p / mg.p0)^(mg.Rd / mg.Cpd) / p * Qp
     out[iqc(m, i, j, k)] += Sc
     out[iqv(m, i, j, k)] -= Sc
-    out[iΘ(g, i, j, k)] += theta_phase_factor(mg, ρ, X, T, p, ρv, ρc) * Sc
+    out[iΘ(g, i, j, k)] += theta_phase_factor(mg, ρ, X, T, p, ρv, ρl) * Sc
     out[iπ(m, i, j, k)] += κS * Sc
     return out
+end
+
+"""
+    _rain!(S, C, m, q)
+
+Slow warm-rain sources (rain = true): Kessler conversion ρ_c → ρ_r and rain evaporation ρ_r → ρ_v with the phase
+factors of the total liquid; and the frozen coefficients of the sedimentation (`_rs`) for the fast part `msed!`.
+"""
+function _rain!(S, C, m::MoistModel3D, q)
+    b = m.base; g = b.grid; mg = m.mgas; kp = m.kp; c = b.cache
+    nx, ny, nz = g.nx, g.ny, g.nz
+    @inbounds for j in 1:ny, i in 1:nx
+        ρds = q[iρ(g, i, j, 1)] - q[iqv(m, i, j, 1)] - _ρl(m, q, i, j, 1)
+        for k in 1:nz
+            ρ, X, ρv = q[iρ(g, i, j, k)], q[iΘ(g, i, j, k)], q[iqv(m, i, j, k)]
+            ρc, ρr = q[iqc(m, i, j, k)], q[iqr(m, i, j, k)]
+            ρl = ρc + ρr
+            T, _, _, p = moist_state(mg, ρ, X, ρv, ρl)
+            Pc, E = kessler_rates(kp, mg, ρ, T, p, ρv, ρc, ρr)
+            S[iqc(m, i, j, k)] -= Pc; S[iqr(m, i, j, k)] += Pc            # autoconversion + accretion
+            if E > 0                                                       # rain evaporation (condensation -E)
+                S[iqv(m, i, j, k)] += E; S[iqr(m, i, j, k)] -= E
+                S[iΘ(g, i, j, k)] -= theta_phase_factor(mg, ρ, X, T, p, ρv, ρl) * E
+                Qp = pressure_phase_factor(mg, ρ, T, ρv, ρl)
+                S[iπ(m, i, j, k)] -= (m.pvar === :p ? Qp : (mg.Rd / mg.Cpd) * (p / mg.p0)^(mg.Rd / mg.Cpd) / p * Qp) * E
+            end
+            C[_rs(g, 0, i, j, k)] = rain_velocity(kp, ρ - ρv - ρl, ρr, ρds)
+            C[_rs(g, 1, i, j, k)] = liquid_content(mg, ρ, X, T, p, ρv, ρl)
+            C[_rs(g, 2, i, j, k)] = m.abc[1, i, j, k] + m.abc[4, i, j, k]
+            C[_rs(g, 3, i, j, k)] = m.abc[2, i, j, k]
+            C[_rs(g, 4, i, j, k)] = c.u[i, j, k]; C[_rs(g, 5, i, j, k)] = c.v[i, j, k]
+            C[_rs(g, 6, i, j, k)] = 0.5 * (c.w[i, j, k] + c.w[i, j, k+1])
+        end
+    end
+    return S
+end
+
+"""
+Sedimentation of the fast state z (rain = true): the rain flux P = V_r ρq_r ≥ 0 through the η-face below a cell is
+taken from that cell (upwind, the rain falls), P = 0 at the top, the ground is open. With F = −P as an additional
+vertical flux: ρ and ρq_r get +δ(P), X +δ(P x_r) (x_r of the cell above the face), π (∂π/∂ρ + ∂π/∂ρ_l) dρ + ∂π/∂X dX
+(thermodynamic rows, `thermo`), U, V, W the momentum of the air carried with P (U, V: P of the two columns, u, v of the
+cell above; W: P of the cells k, k − 1 with their centre w) (`uv`, `w`).
+"""
+function msed!(out, m::MoistModel3D, C, z; thermo::Bool = false, uv::Bool = false, w::Bool = false)
+    m.rain || return out
+    g = m.base.grid; nz = g.nz
+    P(i, j, k) = k > nz ? 0.0 : C[_rs(g, 0, i, j, k)] * z[iqr(m, i, j, k)]
+    @inbounds for k in 1:nz, j in 1:g.ny, i in 1:g.nx
+        if thermo
+            s = g.invV[i, j, k] / (g.Jc[i, j] * g.dz)
+            Pt = g.Az[i, j, k+1] * P(i, j, k + 1); Pb = P(i, j, k)          # the ground is open for the rain
+            Xt = k < nz ? Pt * C[_rs(g, 1, i, j, k + 1)] : 0.0; Xb = Pb * C[_rs(g, 1, i, j, k)]
+            dρ = s * (Pt - Pb); dX = s * (Xt - Xb)
+            out[iρ(g, i, j, k)] += dρ; out[iqr(m, i, j, k)] += dρ; out[iΘ(g, i, j, k)] += dX
+            out[iπ(m, i, j, k)] += C[_rs(g, 2, i, j, k)] * dρ + C[_rs(g, 3, i, j, k)] * dX
+        end
+        if uv
+            im, jm = ip(g, i - 1), jp(g, j - 1)
+            if g.Ax[i, j, k] > 0
+                Pxt = k < nz ? 0.5 * (P(im, j, k + 1) + P(i, j, k + 1)) * C[_rs(g, 4, i, j, k + 1)] : 0.0
+                Pxb = 0.5 * (P(im, j, k) + P(i, j, k)) * C[_rs(g, 4, i, j, k)]
+                out[iU(g, i, j, k)] += (Pxt - Pxb) / (g.Jx[i, j] * g.dz)
+            end
+            if g.Ay[i, j, k] > 0
+                Pyt = k < nz ? 0.5 * (P(i, jm, k + 1) + P(i, j, k + 1)) * C[_rs(g, 5, i, j, k + 1)] : 0.0
+                Pyb = 0.5 * (P(i, jm, k) + P(i, j, k)) * C[_rs(g, 5, i, j, k)]
+                out[iV(g, i, j, k)] += (Pyt - Pyb) / (g.Jy[i, j] * g.dz)
+            end
+        end
+        if w && k >= 2 && g.Az[i, j, k] > 0
+            out[iW(g, i, j, k)] += (P(i, j, k) * C[_rs(g, 6, i, j, k)] - P(i, j, k - 1) * C[_rs(g, 6, i, j, k - 1)]) /
+                                   (g.Jc[i, j] * g.dz)
+        end
+    end
+    return out
+end
+
+"""Surface precipitation rate (kg m⁻² s⁻¹ = mm/s) ρ_r V_r of the lowest cells (nx, ny), rain = true."""
+function precipitation_rate(m::MoistModel3D, q)
+    g = m.base.grid
+    return [(ρr = _ρr(m, q, i, j, 1); ρd = q[iρ(g, i, j, 1)] - q[iqv(m, i, j, 1)] - _ρl(m, q, i, j, 1);
+             ρr > 0 ? ρr * rain_velocity(m.kp, ρd, ρr, ρd) : 0.0) for i in 1:g.nx, j in 1:g.ny]
+end
+
+"""Maximal Courant number V_r h/(J Δη) of the explicit rain sedimentation (fast part) for the small step h."""
+function rain_courant(m::MoistModel3D, q, Δt)
+    g = m.base.grid; cmax = 0.0
+    for j in 1:g.ny, i in 1:g.nx
+        ρds = q[iρ(g, i, j, 1)] - q[iqv(m, i, j, 1)] - _ρl(m, q, i, j, 1)
+        for k in 1:g.nz
+            ρr = _ρr(m, q, i, j, k); ρr > 0 || continue
+            ρd = q[iρ(g, i, j, k)] - q[iqv(m, i, j, k)] - _ρl(m, q, i, j, k)
+            cmax = max(cmax, rain_velocity(m.kp, ρd, ρr, ρds) * Δt / (g.Jc[i, j] * g.dz))
+        end
+    end
+    return cmax
 end
 
 """C(y) and the slow part S(y) (momentum advection; phase change for micro = :slow)."""
@@ -167,10 +302,11 @@ function frozen_data!(C, S, m::MoistModel3D, q)
     f = m.pvar === :p ? _moist_p : moist_exner
     @inbounds for k in 1:nz, j in 1:ny, i in 1:nx
         ρ = q[iρ(g, i, j, k)]; X = q[iΘ(g, i, j, k)]; ρv = q[iqv(m, i, j, k)]; ρc = q[iqc(m, i, j, k)]
-        c.θ[i, j, k] = X / ρ; m.φq[i, j, k] = ρv / ρ; m.φc[i, j, k] = ρc / ρ
+        ρr = _ρr(m, q, i, j, k)
+        c.θ[i, j, k] = X / ρ; m.φq[i, j, k] = ρv / ρ; m.φc[i, j, k] = ρc / ρ; m.φr[i, j, k] = ρr / ρ
         c.u[i, j, k] = q[iU(g, i, j, k)] / (0.5 * (q[iρ(g, i - 1, j, k)] + ρ))
         c.v[i, j, k] = q[iV(g, i, j, k)] / (0.5 * (q[iρ(g, i, j - 1, k)] + ρ))
-        d = exner_derivatives(mg, ρ, X, ρv, ρc; f)
+        d = exner_derivatives(mg, ρ, X, ρv, ρc + ρr; f)      # ∂π/∂ρ_c = ∂π/∂ρ_r = ∂π/∂ρ_l
         for l in 1:4; m.abc[l, i, j, k] = d[l]; end
         πc = q[iπ(m, i, j, k)]
         if m.pvar === :p
@@ -199,7 +335,7 @@ function frozen_data!(C, S, m::MoistModel3D, q)
     pc(i, j, k) = m.pc[ip(g, i), jp(g, j), k]
     ρq(i, j, k) = q[iρ(g, i, j, k)]
     # one face between the cells l (left/below) and r (right/above): slots 0 … 6 at the index s(b)
-    function face!(s, F, θf, qf, cf, l, r)
+    function face!(s, F, θf, qf, cf, l, r, rf = 0.0, sr = 0)
         χl = χr = θf
         if en                                                  # χ = e_f + p_c/ρ̄_f
             ρf = 0.5 * (ρq(l...) + ρq(r...))
@@ -207,28 +343,33 @@ function frozen_data!(C, S, m::MoistModel3D, q)
         end
         C[s(0)] = χl; C[s(6)] = χr; C[s(1)] = qf; C[s(5)] = cf
         C[s(2)] = 0.5 * (Θh(l...) + Θh(r...))
-        C[s(3)] = κ(l..., χl, qf, cf); C[s(4)] = κ(r..., χr, qf, cf)
+        C[s(3)] = κ(l..., χl, qf, cf + rf); C[s(4)] = κ(r..., χr, qf, cf + rf)
+        sr > 0 && (C[sr] = rf)
         return nothing
     end
     @inbounds for k in 1:nz, j in 1:ny, i in 1:nx
         if ax(g, i, j, k) > 0
             F = c.Fx[i, j, k]
             face!(bb -> _sx(g, bb, i, j, k), F, face_x(g, c.θ, i, j, k, F), face_x(g, m.φq, i, j, k, F),
-                  face_x(g, m.φc, i, j, k, F), (i - 1, j, k), (i, j, k))
+                  face_x(g, m.φc, i, j, k, F), (i - 1, j, k), (i, j, k),
+                  m.rain ? face_x(g, m.φr, i, j, k, F) : 0.0, m.rain ? _rx(g, i, j, k) : 0)
         end
         if ay(g, i, j, k) > 0
             F = c.Fy[i, j, k]
             face!(bb -> _sy(g, bb, i, j, k), F, face_y(g, c.θ, i, j, k, F), face_y(g, m.φq, i, j, k, F),
-                  face_y(g, m.φc, i, j, k, F), (i, j - 1, k), (i, j, k))
+                  face_y(g, m.φc, i, j, k, F), (i, j - 1, k), (i, j, k),
+                  m.rain ? face_y(g, m.φr, i, j, k, F) : 0.0, m.rain ? _ry(g, i, j, k) : 0)
         end
         if k > 1 && az(g, i, j, k) > 0
             F = c.Fz[i, j, k]
             face!(bb -> _sz(g, bb, i, j, k), F, face_z(g, c.θ, i, j, k, F), face_z(g, m.φq, i, j, k, F),
-                  face_z(g, m.φc, i, j, k, F), (i, j, k - 1), (i, j, k))
+                  face_z(g, m.φc, i, j, k, F), (i, j, k - 1), (i, j, k),
+                  m.rain ? face_z(g, m.φr, i, j, k, F) : 0.0, m.rain ? _rz(g, i, j, k) : 0)
         end
         m.micro === :slow && _phase!(S, m, q, i, j, k)
     end
-    momentum_advection!(S, b)
+    momentum_advection!(S, b)                                # sets S of U, V, W
+    m.rain && _rain!(S, C, m, q)                             # adds the rain sources (after the momentum advection)
     return C, S
 end
 
@@ -249,6 +390,8 @@ function mthermo_h!(out, m::MoistModel3D, C, z)
         out[iqv(m, i, j, k)] -= s * flux(1, 1)
         out[iqc(m, i, j, k)] -= s * flux(5, 5)
         out[iπ(m, i, j, k)] -= s * flux(3, 4)
+        m.rain && (out[iqr(m, i, j, k)] -= s * ((C[_rx(g, i + 1, j, k)] * Fe - C[_rx(g, i, j, k)] * Fw) / g.dx +
+                                                (C[_ry(g, i, j + 1, k)] * Fn - C[_ry(g, i, j, k)] * Fs) / g.dy))
         if g.follow                                          # horizontal part of the vertical flux Ω
             Hb = g.Az[i, j, k] * Ωh(g, z, i, j, k); Ht = g.Az[i, j, k+1] * Ωh(g, z, i, j, k + 1)
             vflux(bb, bt) = (mcz(C, g, bb, i, j, k + 1) * Ht - mcz(C, g, bt, i, j, k) * Hb) / g.dz
@@ -257,6 +400,7 @@ function mthermo_h!(out, m::MoistModel3D, C, z)
             out[iqv(m, i, j, k)] -= s * vflux(1, 1)
             out[iqc(m, i, j, k)] -= s * vflux(5, 5)
             out[iπ(m, i, j, k)] -= s * vflux(3, 4)
+            m.rain && (out[iqr(m, i, j, k)] -= s * (C[_rz(g, i, j, k + 1)] * Ht - C[_rz(g, i, j, k)] * Hb) / g.dz)
         end
     end
     return out
@@ -274,6 +418,7 @@ function mthermo_v!(out, m::MoistModel3D, C, z)
         out[iqv(m, i, j, k)] -= s * vflux(1, 1)
         out[iqc(m, i, j, k)] -= s * vflux(5, 5)
         out[iπ(m, i, j, k)] -= s * vflux(3, 4)
+        m.rain && (out[iqr(m, i, j, k)] -= s * (C[_rz(g, i, j, k + 1)] * Ft - C[_rz(g, i, j, k)] * Fb))
     end
     return out
 end
@@ -335,8 +480,8 @@ function mforcing_thermo!(out, m::MoistModel3D, F)
         out[n] += F[n]                                   # ρ
         out[nb - N + n] += F[nb - N + n]                 # X
     end
-    @inbounds for n in nb+1:nb+3N
-        out[n] += F[n]                                   # ρq_v, ρq_c, π
+    @inbounds for n in nb+1:m.nq
+        out[n] += F[n]                                   # ρq_v, ρq_c, π (, ρq_r)
     end
     return out
 end
@@ -353,15 +498,18 @@ end
 
 # parts as in 2D: :all, :thermo / :momentum (Verlet), :hthermo / :hmomentum / :vertical (HEVI, EI, WRF, :cs)
 _mfast!(::Val{:all}, out, m, C, z, F) = (mthermo_h!(out, m, C, z); mthermo_v!(out, m, C, z); mphase!(out, m, z);
-    mmomentum_h!(out, m, C, z); mmomentum_v!(out, m, C, z);
+    msed!(out, m, C, z; thermo = true, uv = true, w = true); mmomentum_h!(out, m, C, z); mmomentum_v!(out, m, C, z);
     mforcing_thermo!(out, m, F); forcing_UV!(out, m.base, F); forcing_W!(out, m.base, F); sponge!(out, m.base, z))
 _mfast!(::Val{:thermo}, out, m, C, z, F) = (mthermo_h!(out, m, C, z); mthermo_v!(out, m, C, z); mphase!(out, m, z);
-    mforcing_thermo!(out, m, F))
+    msed!(out, m, C, z; thermo = true); mforcing_thermo!(out, m, F))
 _mfast!(::Val{:momentum}, out, m, C, z, F) = (mmomentum_h!(out, m, C, z); mmomentum_v!(out, m, C, z);
+    msed!(out, m, C, z; uv = true, w = true);
     forcing_UV!(out, m.base, F); forcing_W!(out, m.base, F); sponge!(out, m.base, z))
-_mfast!(::Val{:hthermo}, out, m, C, z, F) = (mthermo_h!(out, m, C, z); mphase!(out, m, z); mforcing_thermo!(out, m, F);
+_mfast!(::Val{:hthermo}, out, m, C, z, F) = (mthermo_h!(out, m, C, z); mphase!(out, m, z);
+    msed!(out, m, C, z; thermo = true, w = true); mforcing_thermo!(out, m, F);
     forcing_W!(out, m.base, F); sponge!(out, m.base, z))
-_mfast!(::Val{:hmomentum}, out, m, C, z, F) = (mmomentum_h!(out, m, C, z); forcing_UV!(out, m.base, F))
+_mfast!(::Val{:hmomentum}, out, m, C, z, F) = (mmomentum_h!(out, m, C, z); msed!(out, m, C, z; uv = true);
+    forcing_UV!(out, m.base, F))
 _mfast!(::Val{:vertical}, out, m, C, z, F) = (mthermo_v!(out, m, C, z); mmomentum_v!(out, m, C, z))
 _mfast!(::Val{P}, out, m, C, z, F) where {P} = error("frozen_fast!: unknown part $P")
 
@@ -388,7 +536,7 @@ end
 function frozen_step_end!(m::MoistModel3D, q)
     g = m.base.grid
     @inbounds for k in 1:g.nz, j in 1:g.ny, i in 1:g.nx
-        q[iπ(m, i, j, k)] = moist_pvar(m, q[iρ(g, i, j, k)], q[iΘ(g, i, j, k)], q[iqv(m, i, j, k)], q[iqc(m, i, j, k)])
+        q[iπ(m, i, j, k)] = moist_pvar(m, q[iρ(g, i, j, k)], q[iΘ(g, i, j, k)], q[iqv(m, i, j, k)], _ρl(m, q, i, j, k))
     end
     return q
 end
@@ -406,6 +554,7 @@ function frozen_stage_begin!(m::MoistModel3D, C, z)
         s.χB[i, j, k] = mcz(C, g, 0, i, j, k); s.qz[i, j, k] = mcz(C, g, 1, i, j, k); s.P[i, j, k] = mcz(C, g, 2, i, j, k)
         s.cB[i, j, k] = mcz(C, g, 3, i, j, k); s.cT[i, j, k] = mcz(C, g, 4, i, j, k); s.cz[i, j, k] = mcz(C, g, 5, i, j, k)
         s.χT[i, j, k] = mcz(C, g, 6, i, j, k)
+        m.rain && (s.rz[i, j, k] = C[_rz(g, i, j, k)])
     end
     empty!(s.factors)
     return s
@@ -454,6 +603,7 @@ function moist_column_solve!(Y, m::MoistModel3D, c, R, cw = c)
             Y[iΘ(g, i, j, k)] = R[iΘ(g, i, j, k)] - r * (s.χB[i, j, k+1] * W[k+1] - s.χT[i, j, k] * W[k])
             Y[iqv(m, i, j, k)] = R[iqv(m, i, j, k)] - r * (s.qz[i, j, k+1] * W[k+1] - s.qz[i, j, k] * W[k])
             Y[iqc(m, i, j, k)] = R[iqc(m, i, j, k)] - r * (s.cz[i, j, k+1] * W[k+1] - s.cz[i, j, k] * W[k])
+            m.rain && (Y[iqr(m, i, j, k)] = R[iqr(m, i, j, k)] - r * (s.rz[i, j, k+1] * W[k+1] - s.rz[i, j, k] * W[k]))
             Y[iπ(m, i, j, k)] = R[iπ(m, i, j, k)] - r * (s.cB[i, j, k+1] * W[k+1] - s.cT[i, j, k] * W[k])
         end
         for k in 2:nz

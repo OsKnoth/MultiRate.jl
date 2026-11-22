@@ -112,5 +112,6 @@ Makie figure of output fields; needs a Makie backend, e.g. `using CairoMakie` (p
 function plot_fields end
 
 include("moist_thermo.jl")
+include("kessler.jl")
 
 end # module
