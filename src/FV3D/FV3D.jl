@@ -31,7 +31,8 @@ import ..TimeStepping: rhs_nonlinear!, frozen_ncoef, frozen_data!, frozen_fast!,
 export Grid3D, Model3D, project3d, total3d, with_sponge, sponge!, sound_speed_max, theta_prime,
        vertical_velocity, hydrostatic_column, balanced_state, level, FV3D_PRESSURE_FORM, iρ, iU, iV, iW, iΘ, nunknowns,
        MoistModel3D, iqv, iqc, iπ, iqr, moist_exner_state, base_state, thermo_convert, theta_e3d, qc3d, qr3d,
-       moist_column_solve!, precipitation_rate, rain_courant, msed!
+       moist_column_solve!, precipitation_rate, rain_courant, msed!, Smagorinsky, smagorinsky!, eddy_viscosity,
+       filter_length
 
 include("grid.jl")
 include("lsq.jl")
@@ -41,6 +42,7 @@ include("operator.jl")
 include("advection.jl")
 include("advection_jacobian.jl")
 include("column.jl")
+include("smagorinsky.jl")
 include("moist.jl")
 
 end

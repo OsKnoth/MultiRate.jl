@@ -1500,6 +1500,118 @@ end
     end
 end
 
+@testset "FV3D: Smagorinsky–Lilly subgrid-scale model (MoistModel3D, smagorinsky = …)" begin
+    F3 = MultiRate.FV3D
+    mgθ = CM.MoistGas()
+    gas = CM.Gas(R = mgθ.Rd, γ = mgθ.Cpd / (mgθ.Cpd - mgθ.Rd), p00 = mgθ.p0)
+    ρr, Θr, θr = CM.stratified_reference(gas; θ0 = 300.0, N = 0.01)
+    Lx, Ly, H = 20e3, 16e3, 6e3
+    kx, ky, kz = 2π / Lx, 2π / Ly, π / H
+    hill(x, y) = 600.0 * ((1 + cos(kx * (x - 10e3))) * (1 + cos(ky * (y - 8e3))) / 4)^2      # periodic
+    grid(n, terr) = terr ? F3.Grid3D(2n, 2n, n, Lx, Ly, H; zs = hill, terrain = :follow) : F3.Grid3D(2n, 2n, n, Lx, Ly, H)
+    function sgs(m, m0, x)                       # the subgrid-scale part of S
+        TS.frozen_step_end!(m, x)
+        C = zeros(TS.frozen_ncoef(m)); S = zeros(m.nq); S0 = zeros(m.nq)
+        TS.frozen_data!(C, S, m, x); TS.frozen_data!(C, S0, m0, x)
+        return S - S0
+    end
+    # constant viscosity (cs = 0, ν0, Pr = 1), ρ = 1: ν ∇²q_v, q_v = f(x, y, η) with ∂η f = 0 at the walls; the ground
+    # flux of f (zero in the model) is added to the reference of the lowest cells
+    ν = 50.0; sm = F3.Smagorinsky(cs = 0.0, ν0 = ν, Pr = 1.0)
+    function escalar(n, terr)
+        g = grid(n, terr); b = F3.Model3D(g, gas, ρr, Θr)
+        m = F3.MoistModel3D(b; mgas = mgθ, smagorinsky = sm); m0 = F3.MoistModel3D(b; mgas = mgθ)
+        zs(x, y) = terr ? hill(x, y) : 0.0
+        f(x, y, z) = 0.001 * cos(kx * x) * cos(ky * y + 0.3) * cos(kz * H * (z - zs(x, y)) / (H - zs(x, y)))
+        d1(x, y, z, a; h = 0.5) = (e = h .* (a == 1, a == 2, a == 3); (f((x, y, z) .+ e...) - f((x, y, z) .- e...)) / 2h)
+        lap(x, y, z; h = 1.0) = sum(f((x, y, z) .+ h .* (a == 1, a == 2, a == 3)...) + f((x, y, z) .- h .* (a == 1, a == 2, a == 3)...) for a in 1:3) / h^2 - 6f(x, y, z) / h^2
+        x = vcat(F3.project3d(b, (x, y, z) -> (1.0, 0.0, 0.0, 0.0, 300.0)), zeros(m.nq - b.nq))
+        for k in 1:n, j in 1:2n, i in 1:2n
+            x[F3.iqv(m, i, j, k)] = 0.005 + f(g.xc[i], g.yc[j], g.Zc[i, j, k])
+        end
+        d = sgs(m, m0, x)
+        function ex(i, j, k)
+            xx, yy = g.xc[i], g.yc[j]; r = ν * lap(xx, yy, g.Zc[i, j, k])
+            k > 1 && return r
+            z = g.Zf[i, j, 1]
+            return r + ν * (d1(xx, yy, z, 3) - g.zxf[i, j, 1] * d1(xx, yy, z, 1) - g.zyf[i, j, 1] * d1(xx, yy, z, 2)) / (g.Jc[i, j] * g.dz)
+        end
+        ref = maximum(abs(ν * lap(g.xc[i], g.yc[j], g.Zc[i, j, k])) for i in 1:2n, j in 1:2n, k in 1:n)
+        @test abs(sum(g.Jc[i, j] * d[F3.iqv(m, i, j, k)] for i in 1:2n, j in 1:2n, k in 1:n)) < 1e-14 * sum(abs, d)   # conservative
+        @test all(d[F3.iρ(g, i, j, k)] == 0 for i in 1:2n, j in 1:2n, k in 1:n)
+        return maximum(abs(d[F3.iqv(m, i, j, k)] - ex(i, j, k)) for i in 1:2n, j in 1:2n, k in 1:n) / ref
+    end
+    e8, e16, e32 = escalar(8, false), escalar(16, false), escalar(32, false)
+    @test e16 < 0.3 * e8 && e32 < 0.3 * e16 && e32 < 1e-3                         # second order
+    t16, t32 = escalar(16, true), escalar(32, true)
+    @test t32 < 0.6 * t16 && t32 < 4e-3                                                   # terrain following
+    # momentum, flat: u = cos(kz z) cos(ky y), w = cos(kx x) sin(kz z): ∂t(ρu) = ν(∇²u + ∂x ∇·u), ∂t(ρw) = ν(∇²w + ∂z ∇·u)
+    function emom(n)
+        g = grid(n, false); b = F3.Model3D(g, gas, ρr, Θr)
+        m = F3.MoistModel3D(b; mgas = mgθ, smagorinsky = sm); m0 = F3.MoistModel3D(b; mgas = mgθ)
+        x = vcat(F3.project3d(b, (x, y, z) -> (1.0, cos(kz * z) * cos(ky * y), 0.0, cos(kx * x) * sin(kz * z), 300.0)), zeros(m.nq - b.nq))
+        for k in 1:n, j in 1:2n, i in 1:2n; x[F3.iqv(m, i, j, k)] = 0.005; end
+        d = sgs(m, m0, x)
+        eu = maximum(abs(d[F3.iU(g, i, j, k)] + ν * ((ky^2 + kz^2) * cos(ky * g.yc[j]) + kx * kz * sin(kx * g.xf[i])) * cos(kz * g.zc[k]))
+                     for i in 1:2n, j in 1:2n, k in 1:n) / (ν * (ky^2 + kz^2))
+        ew = maximum(abs(d[F3.iW(g, i, j, k)] + ν * (kx^2 + 2kz^2) * cos(kx * g.xc[i]) * sin(kz * g.zf[k]))
+                     for i in 1:2n, j in 1:2n, k in 3:n-1) / (ν * (kx^2 + 2kz^2))
+        return eu, ew
+    end
+    (u8, w8), (u16, w16) = emom(8), emom(16)
+    @test u16 < 0.3 * u8 && w16 < 0.3 * w8 && u16 < 0.015 && w16 < 0.015
+    # full model (cs = 0.2, Lilly's stability correction, Scotti length), moist state with rain
+    @test F3.filter_length(F3.Smagorinsky(), grid(4, false), 1, 1) ≈ (l1 = log(0.6); l2 = log(0.8); cbrt(2500.0 * 2000.0 * 1500.0) * cosh(sqrt(4 / 27 * (l1^2 - l1 * l2 + l2^2))))
+    # neutral background with shear (stable layers keep ν = 0)
+    ρn, Θn, _ = CM.stratified_reference(gas; θ0 = 300.0, N = 0.0)
+    fq(x, y, z) = (ρ = ρn(z) * (1 + 1e-3 * sin(x / 3e3) * cos(y / 4e3)); (ρ, ρ * (8 + 10 * sin(y / 3e3) * z / H), ρ * (5 + 4 * cos(x / 4e3)), 2ρ * sin(π * z / H) * cos((x + 2y) / 5e3), Θn(z) * (1 + 1e-3 * cos((x - y) / 3e3))))
+    for terr in (false, true)
+        g = grid(4, terr); b = F3.Model3D(g, gas, ρr, Θr)
+        q = F3.project3d(b, fq)
+        mθ0 = F3.MoistModel3D(b; mgas = mgθ, rain = true)
+        x = F3.moist_exner_state(mθ0, q, [0.004 * q[F3.iρ(g, i, j, k)] for i in 1:8, j in 1:8, k in 1:4])
+        for k in 1:4, j in 1:8, i in 1:8
+            x[F3.iqr(mθ0, i, j, k)] = 1e-4 * x[F3.iρ(g, i, j, k)] * (1 + sin(i + j))
+            x[F3.iqc(mθ0, i, j, k)] = 1e-4 * x[F3.iρ(g, i, j, k)] * (1 + cos(i - 2j + k))
+        end
+        dθ = nothing
+        # stable stratification (N = 0.01), uniform flow: Lilly's correction switches the model off
+        xs = F3.moist_exner_state(mθ0, F3.balanced_state(b, Θr, ρr; U = 10.0), [0.004 * ρr(g.Zc[i, j, k]) for i in 1:8, j in 1:8, k in 1:4])
+        ms = F3.MoistModel3D(b; mgas = mgθ, rain = true, smagorinsky = F3.Smagorinsky())
+        terr || @test maximum(abs, sgs(ms, mθ0, xs)) == 0
+        for thv in (:thetarho, :energy, :entropy)
+            mg = CM.MoistGas(thvar = thv)
+            m = F3.MoistModel3D(b; mgas = mg, rain = true, smagorinsky = F3.Smagorinsky())
+            m0 = F3.MoistModel3D(b; mgas = mg, rain = true)
+            xt = F3.thermo_convert(mθ0, m, x)
+            d = sgs(m, m0, xt)
+            νc = F3.eddy_viscosity(m, xt)
+            @test maximum(νc) > 0 && minimum(νc) >= 0
+            tot(f) = sum(g.Jc[i, j] * f(i, j, k) for i in 1:8, j in 1:8, k in 1:4)
+            for idx in (F3.iqv, F3.iqc, F3.iqr)
+                @test abs(tot((i, j, k) -> d[idx(m, i, j, k)])) < 1e-13 * tot((i, j, k) -> abs(d[idx(m, i, j, k)]))
+            end
+            # the tendency of ρθ_ρ is the same for all thermodynamic variables
+            ε = 1.0
+            mθ = F3.MoistModel3D(b; mgas = mgθ, rain = true)
+            Θρ(z) = F3.thermo_convert(m, mθ, z)[[F3.iΘ(g, i, j, k) for i in 1:8, j in 1:8, k in 1:4]]
+            dt = (Θρ(xt .+ ε .* d) .- Θρ(xt .- ε .* d)) ./ 2ε
+            thv === :thetarho ? (dθ = dt; @test abs(tot((i, j, k) -> d[F3.iΘ(g, i, j, k)])) < 1e-12 * tot((i, j, k) -> abs(d[F3.iΘ(g, i, j, k)]))) :
+                                @test maximum(abs, dt - dθ) < 1e-6 * maximum(abs, dθ)
+            # π (or p) follows the equation of state
+            dπ = [(F3.moist_pvar(m, (xt[F3.iρ(g, i, j, k)], xt[F3.iΘ(g, i, j, k)] + ε * d[F3.iΘ(g, i, j, k)], xt[F3.iqv(m, i, j, k)] + ε * d[F3.iqv(m, i, j, k)],
+                    xt[F3.iqc(m, i, j, k)] + xt[F3.iqr(m, i, j, k)] + ε * (d[F3.iqc(m, i, j, k)] + d[F3.iqr(m, i, j, k)]))...) - F3.moist_pvar(m, xt[F3.iρ(g, i, j, k)], xt[F3.iΘ(g, i, j, k)], xt[F3.iqv(m, i, j, k)],
+                    xt[F3.iqc(m, i, j, k)] + xt[F3.iqr(m, i, j, k)])) / ε for i in 1:8, j in 1:8, k in 1:4]
+            @test maximum(abs, dπ .- [d[F3.iπ(m, i, j, k)] for i in 1:8, j in 1:8, k in 1:4]) < 1e-3 * maximum(abs, dπ)
+            # MIS steps
+            water(z) = F3.total3d(m, z, :qv) + F3.total3d(m, z, :qc) + F3.total3d(m, z, :qr)
+            y = TS.run_frozen(m, xt, 2.0, 2; tab = TS.mis_tableau(:MIS54), nsub = 6, fast = :cs)
+            dM = F3.total3d(m, y, :ρ) - F3.total3d(m, xt, :ρ)          # rain leaves through the ground
+            @test all(isfinite, y) && abs(water(y) - water(xt) - dM) < 1e-8 * abs(dM)
+        end
+    end
+end
+
 @testset "MethodDesign: bicoloured B-series of MIS with frozen first argument" begin
     BC = Main.BiColourMIS
     @test [length(BC.trees(n)) for n in 1:4] == [1, 2, 7, 26]

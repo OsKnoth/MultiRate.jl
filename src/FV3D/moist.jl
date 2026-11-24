@@ -44,7 +44,7 @@ MoistColumn3D(g::Grid3D) = (z = () -> zeros(g.nx, g.ny, g.nz + 1);
 
 """
     MoistModel3D(base::Model3D; mgas = MoistGas(), pvar = :p, micro = :fast, τfac = 0.25, cs = 350.0,
-                 wτ = nothing, τ = nothing, rain = false, kessler = KesslerParams())
+                 wτ = nothing, τ = nothing, rain = false, kessler = KesslerParams(), smagorinsky = nothing)
 
 Moist 3D FV model (flat or terrain following; no cut cells, `implicit = :column`), the 3D form of
 `FV2D.MoistExnerModel`: state `[ρ; U; V; W; X; ρq_v; ρq_c; p]` (pvar = :p, the default) or `[…; π]` (pvar = :pi)
@@ -59,6 +59,9 @@ step Δτ_ac = 0.85·0.92 min(Δx, Δy)/cs of the HEVI fast loop (as in 2D). The
 `rain = true`: warm-rain Kessler microphysics after DCMIP 2016 with the additional variable ρq_r (`iqr`), constants
 `kessler::KesslerParams`; see the comment at the top of `FV3D/moist.jl`. The sedimentation is explicit (upwind) in
 the fast part: V_r h/Δz ≲ 1 for the small step h (`rain_courant`).
+
+`smagorinsky = Smagorinsky(…)`: Smagorinsky–Lilly subgrid-scale model (Jähn et al. 2015, Sect. 3.1) as a slow
+tendency, see `FV3D/smagorinsky.jl`; `eddy_viscosity(m, q)` after `frozen_data!`.
 """
 struct MoistModel3D
     base::Model3D
@@ -78,10 +81,12 @@ struct MoistModel3D
     rain::Bool
     kp::KesslerParams
     φr::Array{Float64,3}           # q_r at the centres (work)
+    smag::Union{Nothing,Smagorinsky}   # subgrid-scale model (smagorinsky.jl)
+    sw::Union{Nothing,SmagWork}
 end
 function MoistModel3D(base::Model3D; mgas::MoistGas = MoistGas(), pvar::Symbol = :p, micro::Symbol = :fast,
                       τfac::Real = 0.25, cs::Real = 350.0, wτ = nothing, τ = nothing, rain::Bool = false,
-                      kessler::KesslerParams = KesslerParams())
+                      kessler::KesslerParams = KesslerParams(), smagorinsky::Union{Nothing,Smagorinsky} = nothing)
     pvar in (:pi, :p) || error("pvar: :pi or :p")
     mgas.thvar in (:thetarho, :energy, :entropy) || error("thvar: :thetarho, :energy or :entropy")
     micro in (:slow, :fast, :none) || error("micro: :slow, :fast or :none")
@@ -96,7 +101,7 @@ function MoistModel3D(base::Model3D; mgas::MoistGas = MoistGas(), pvar::Symbol =
     nq = base.nq + (rain ? 4N : 3N)
     return MoistModel3D(base, mgas, pvar, micro, τv, nq, zeros(nc), zeros(nq),
                         zeros(sz), zeros(sz), zeros(4, sz...), zeros(sz), zeros(sz), MoistColumn3D(g),
-                        rain, kessler, zeros(sz))
+                        rain, kessler, zeros(sz), smagorinsky, smagorinsky === nothing ? nothing : SmagWork(g))
 end
 
 @inline iqv(m::MoistModel3D, i, j, k) = m.base.nq + _c(m.base.grid, i, j, k)
@@ -370,6 +375,7 @@ function frozen_data!(C, S, m::MoistModel3D, q)
     end
     momentum_advection!(S, b)                                # sets S of U, V, W
     m.rain && _rain!(S, C, m, q)                             # adds the rain sources (after the momentum advection)
+    smagorinsky!(S, m, q)                                    # subgrid-scale tendencies (smagorinsky = …)
     return C, S
 end
 

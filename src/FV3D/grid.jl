@@ -99,7 +99,7 @@ const _GW = (0.3478548451374538, 0.6521451548625462, 0.6521451548625462, 0.34785
 @inline _ov(a0, a1, b0, b1) = max(0.0, min(a1, b1) - max(a0, b0))
 
 function Grid3D(nx, ny, nz, Lx, Ly, H; zs = nothing, terrain::Symbol = :cut, box = nothing, mask_width = 1,
-                recon::Symbol = :ash)
+                recon::Symbol = :ash, qsub::Int = 1)
     recon in (:ash, :lin, :lsq) || error("recon: :ash, :lin or :lsq")
     zs !== nothing && box !== nothing && error("Grid3D: give zs or box, not both")
     terrain in (:cut, :follow) || error("terrain: :cut or :follow")
@@ -113,16 +113,20 @@ function Grid3D(nx, ny, nz, Lx, Ly, H; zs = nothing, terrain::Symbol = :cut, box
     zs = zcut
     if zs !== nothing
         # quadrature points of a cell footprint and of the faces
+        # composite Gauss quadrature: qsub × qsub parts of the cell footprint, 4 × 4 points each (qsub = 1: 4 × 4)
+        Q = qsub
+        sx(i, a, p) = xf[i] + (p - 0.5 + _GX[a] / 2) * dx / Q
+        sy(j, b, p) = yf[j] + (p - 0.5 + _GX[b] / 2) * dy / Q
         for k in 1:nz, j in 1:ny, i in 1:nx
             zb, zt = zf[k], zf[k+1]
-            Vf[i, j, k] = sum(_GW[a] * _GW[b] * _wet(zs(xc[i] + _GX[a] * dx / 2, yc[j] + _GX[b] * dy / 2), zb, zt)
-                              for a in 1:4, b in 1:4) / 4
-            Ax[i, j, k] = sum(_GW[b] * _wet(zs(xf[i], yc[j] + _GX[b] * dy / 2), zb, zt) for b in 1:4) / 2
-            Ay[i, j, k] = sum(_GW[a] * _wet(zs(xc[i] + _GX[a] * dx / 2, yf[j]), zb, zt) for a in 1:4) / 2
+            Vf[i, j, k] = sum(_GW[a] * _GW[b] * _wet(zs(sx(i, a, p), sy(j, b, r)), zb, zt)
+                              for a in 1:4, b in 1:4, p in 1:Q, r in 1:Q) / (4Q^2)
+            Ax[i, j, k] = sum(_GW[b] * _wet(zs(xf[i], sy(j, b, r)), zb, zt) for b in 1:4, r in 1:Q) / (2Q)
+            Ay[i, j, k] = sum(_GW[a] * _wet(zs(sx(i, a, p), yf[j]), zb, zt) for a in 1:4, p in 1:Q) / (2Q)
         end
         for k in 1:nz+1, j in 1:ny, i in 1:nx
-            Az[i, j, k] = sum(_GW[a] * _GW[b] * (zs(xc[i] + _GX[a] * dx / 2, yc[j] + _GX[b] * dy / 2) < zf[k])
-                              for a in 1:4, b in 1:4) / 4
+            Az[i, j, k] = sum(_GW[a] * _GW[b] * (zs(sx(i, a, p), sy(j, b, r)) < zf[k])
+                              for a in 1:4, b in 1:4, p in 1:Q, r in 1:Q) / (4Q^2)
         end
     end
     if box !== nothing
