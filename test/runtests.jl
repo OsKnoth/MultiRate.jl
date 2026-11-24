@@ -1549,7 +1549,7 @@ end
             m3 = F3.with_sponge(F3.Model3D(g3, gas, ρr, Θr), zeros(F3.nunknowns(g3)); zD = 4e3, αtop = 0.02)
             ρa = F3.hydrostatic_column(m3, Θr; ρbottom = ρr(g3.zc[1]))
             q0 = F3.project3d(m3, (x, y, z) -> (k = F3.level(g3, z); (ρa[k], 10ρa[k], -3ρa[k], 0.0, Θr(g3.zc[k]))))
-            m = K.CutKA(K.CutGrid(g3); gas, sponge = (4e3, 0.02), jform = jf)
+            m = K.CutKA(K.CutGrid(g3); gas, sponge = (4e3, 0.02), jform = jf, prec = :amf)
             # N(q) and the implicit part G_v(v) at a perturbed state
             q = q0 .* (1 .+ 1e-3 .* randn(length(q0)))
             Q = K.ka_state(m, g3, q)
@@ -1576,8 +1576,8 @@ end
             Q = K.ka_state(m, g3, q0)
             K.ka_run!(m, Q, 20.0, 6; tab, nsub = 4, tol = 1e-12, krylov = :bicgstab)
             @test maximum(abs, K.global_state(m, g3, Q) .- q3) < 1e-10 * maximum(abs, q3)
-            # column preconditioner instead of the tile AMF (default): the same run, more iterations
-            mc = K.CutKA(K.CutGrid(g3); gas, sponge = (4e3, 0.02), jform = jf, prec = :columns)
+            # column preconditioner (default) instead of the tile AMF: the same run, more iterations
+            mc = K.CutKA(K.CutGrid(g3); gas, sponge = (4e3, 0.02), jform = jf)
             Q = K.ka_state(mc, g3, q0)
             K.ka_run!(mc, Q, 20.0, 6; tab, nsub = 4, tol = 1e-12)
             @test maximum(abs, K.global_state(mc, g3, Q) .- q3) < 1e-10 * maximum(abs, q3)

@@ -84,13 +84,15 @@ struct CutWork{A3,A4}
 end
 
 """
-    CutKA(grid::CutGrid, dec = SerialDecomp(); gas = Gas(), sponge = nothing, jform = :partial, prec = :amf)
+    CutKA(grid::CutGrid, dec = SerialDecomp(); gas = Gas(), sponge = nothing, jform = :partial, prec = :columns)
 
 The dry cut-cell model of `FV3D.Model3D(…; implicit = :amf)` with FV3D_PRESSURE_FORM = :product on the tile `grid`.
 `sponge = (zD, αtop)` damps W above zD (as `FV3D.with_sponge`, target 0); `jform` the masked advection Jacobian
-(:partial or :conservative, FV3D_MASK_JFORM); `prec` the preconditioner of the implicit solve: `:amf` the approximate
-matrix factorization of the tile (with one halo column as overlap in decomposed directions, restricted additive
-Schwarz; host sparse LU), `:columns` the column solve (no assembly, no communication).
+(:partial or :conservative, FV3D_MASK_JFORM); `prec` the preconditioner of the implicit solve: `:columns` (default) the
+column solve (no matrix, no communication; with the matrix-free product J v = G_v(v) the implicit solve uses no
+assembled matrix at all), `:amf` the approximate matrix factorization of the tile (with one halo column as overlap in
+decomposed directions, restricted additive Schwarz; host assembly and sparse LU per stage: fewer iterations, but on
+the bell hill 42 s against 24 s per step).
 """
 struct CutKA{G<:CutGrid,D<:AbstractDecomp,A1,W<:CutWork}
     grid::G
@@ -101,11 +103,11 @@ struct CutKA{G<:CutGrid,D<:AbstractDecomp,A1,W<:CutWork}
     work::W
     its::Vector{Int}                               # Krylov iterations per implicit solve
     mv::Vector{Int}                                # matrix-vector products per implicit solve
-    prec::Symbol                                   # preconditioner: :amf (tile AMF, default) or :columns
+    prec::Symbol                                   # preconditioner: :columns (default) or :amf (tile AMF)
     amf::Any                                       # CutAMF (prec = :amf)
 end
 function CutKA(g::CutGrid, dec::AbstractDecomp = SerialDecomp(); gas::Gas = Gas(), sponge = nothing, jform::Symbol = :partial,
-               prec::Symbol = :amf)
+               prec::Symbol = :columns)
     jform in (:partial, :conservative) || error("jform: :partial or :conservative")
     prec in (:amf, :columns) || error("prec: :amf or :columns")
     be = KA.get_backend(g)
@@ -737,7 +739,7 @@ function _cut_apply!(out, m::CutKA, Cf, c, x, W::CutGMRES)
     @. out = x - c * out
     return out
 end
-"""z = M⁻¹ r (packed): tile AMF (prec = :amf) or column solve."""
+"""z = M⁻¹ r (packed): column solve (prec = :columns) or tile AMF (:amf)."""
 function _cut_prec!(z, m::CutKA, Cf, c, r, W::CutGMRES)
     _unpack!(W.X, m, r)
     if m.prec === :amf
