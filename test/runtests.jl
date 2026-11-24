@@ -1572,6 +1572,10 @@ end
             @test abs(F3.total3d(m3, qk, :ρ) / F3.total3d(m3, q0, :ρ) - 1) < 1e-13
             @test abs(F3.total3d(m3, qk, :Θ) / F3.total3d(m3, q0, :Θ) - 1) < 1e-13
             @test maximum(m.its) < 60
+            # BiCGStab instead of GMRES: the same run
+            Q = K.ka_state(m, g3, q0)
+            K.ka_run!(m, Q, 20.0, 6; tab, nsub = 4, tol = 1e-12, krylov = :bicgstab)
+            @test maximum(abs, K.global_state(m, g3, Q) .- q3) < 1e-10 * maximum(abs, q3)
         end
     finally
         F3.FV3D_PRESSURE_FORM[] = pf; F3.FV3D_MASK_JFORM[] = jf0; F3.FV3D_MASK_SOLVER[] = sol0; F3.FV3D_MASK_TOL[] = tol0

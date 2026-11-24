@@ -95,7 +95,8 @@ struct CutKA{G<:CutGrid,D<:AbstractDecomp,A1,W<:CutWork}
     damp::A1
     complete::Bool
     work::W
-    its::Vector{Int}                               # GMRES iterations per implicit solve
+    its::Vector{Int}                               # Krylov iterations per implicit solve
+    mv::Vector{Int}                                # matrix-vector products per implicit solve
 end
 function CutKA(g::CutGrid, dec::AbstractDecomp = SerialDecomp(); gas::Gas = Gas(), sponge = nothing, jform::Symbol = :partial)
     jform in (:partial, :conservative) || error("jform: :partial or :conservative")
@@ -113,7 +114,7 @@ function CutKA(g::CutGrid, dec::AbstractDecomp = SerialDecomp(); gas::Gas = Gas(
     work = CutWork(z3(), z3(), z3(), z3(), z3(), z4(4), z4(6), z4(6), z4(7), z4(7), z4(6), z4(6), z3(), z3(), z3())
     dd = KA.allocate(be, Float64, g.nz + 1); copyto!(dd, damp)
     init_exchange!(dec, g, max(NVC + 4, NCC))
-    return CutKA(g, dec, gas, dd, jform === :conservative, work, Int[])
+    return CutKA(g, dec, gas, dd, jform === :conservative, work, Int[], Int[])
 end
 KA.get_backend(m::CutKA) = KA.get_backend(m.grid)
 """A zero state (or a coefficient array, nv = NCC) on the device of the model."""
@@ -600,6 +601,7 @@ struct CutGMRES{V,Mx}
     V::Mx; Z::Mx
     H::Matrix{Float64}; cs::Vector{Float64}; sn::Vector{Float64}; e::Vector{Float64}
     r::V; w::V; x::V; b::V
+    rh::V; p::V; v::V; s::V; t::V; ph::V; sh::V    # BiCGStab
     X::Any; Y::Any                     # state-shaped work arrays
 end
 function CutGMRES(m::CutKA, restart::Int = 30)
@@ -608,7 +610,8 @@ function CutGMRES(m::CutKA, restart::Int = 30)
     be = KA.get_backend(m)
     vz() = KA.zeros(be, Float64, n)
     return CutGMRES(KA.zeros(be, Float64, n, restart + 1), KA.zeros(be, Float64, n, restart), zeros(restart + 1, restart),
-                    zeros(restart), zeros(restart), zeros(restart + 1), vz(), vz(), vz(), vz(), ka_zeros(m), ka_zeros(m))
+                    zeros(restart), zeros(restart), zeros(restart + 1), vz(), vz(), vz(), vz(),
+                    vz(), vz(), vz(), vz(), vz(), vz(), vz(), ka_zeros(m), ka_zeros(m))
 end
 
 _dot(m::CutKA, a, b) = allreduce_sum(m.dec, dot(a, b))
@@ -630,23 +633,24 @@ function _cut_prec!(z, m::CutKA, Cf, c, r, W::CutGMRES)
     return _pack!(z, m, W.Y)
 end
 
-"""Right-preconditioned restarted GMRES for (I - c J) x = b, x the initial guess; returns the iterations."""
+"""Right-preconditioned restarted GMRES for (I - c J) x = b, x the initial guess; returns (iterations, matrix-vector
+products)."""
 function _cut_gmres!(x, m::CutKA, Cf, c, b, W::CutGMRES; tol = 1e-8, maxit = 300)
     mr = size(W.H, 2)
     V, Z, H, cs, sn, e, r, w = W.V, W.Z, W.H, W.cs, W.sn, W.e, W.r, W.w
-    nb = _norm(m, b); nb == 0 && (fill!(x, 0.0); return 0)
-    it = 0
+    nb = _norm(m, b); nb == 0 && (fill!(x, 0.0); return 0, 0)
+    it = 0; nmv = 0
     while true
-        _cut_apply!(r, m, Cf, c, x, W); @. r = b - r
+        _cut_apply!(r, m, Cf, c, x, W); @. r = b - r; nmv += 1
         β = _norm(m, r)
-        (β <= tol * nb || it >= maxit) && return it
+        (β <= tol * nb || it >= maxit) && return it, nmv
         @views V[:, 1] .= r ./ β
         fill!(e, 0.0); e[1] = β
         j = 0
         for jj in 1:mr
             j = jj; it += 1
             @views _cut_prec!(Z[:, jj], m, Cf, c, V[:, jj], W)
-            @views _cut_apply!(w, m, Cf, c, Z[:, jj], W)
+            @views _cut_apply!(w, m, Cf, c, Z[:, jj], W); nmv += 1
             for i in 1:jj
                 @views H[i, jj] = _dot(m, V[:, i], w)
                 @views w .-= H[i, jj] .* V[:, i]
@@ -669,6 +673,39 @@ function _cut_gmres!(x, m::CutKA, Cf, c, b, W::CutGMRES; tol = 1e-8, maxit = 300
     end
 end
 
+"""
+Right-preconditioned BiCGStab (van der Vorst 1992) for (I - c J) x = b, x the initial guess; returns (iterations,
+matrix-vector products). Two products and two preconditioner solves per iteration, eight vectors.
+"""
+function _cut_bicgstab!(x, m::CutKA, Cf, c, b, W::CutGMRES; tol = 1e-8, maxit = 300)
+    r, rh, p, v, s, t, ph, sh = W.r, W.rh, W.p, W.v, W.s, W.t, W.ph, W.sh
+    nb = _norm(m, b); nb == 0 && (fill!(x, 0.0); return 0, 0)
+    _cut_apply!(r, m, Cf, c, x, W); @. r = b - r; nmv = 1
+    _norm(m, r) <= tol * nb && return 0, nmv
+    rh .= r; fill!(p, 0.0); fill!(v, 0.0)
+    ρ = α = ω = 1.0
+    for it in 1:maxit
+        ρn = _dot(m, rh, r)
+        β = (ρn / ρ) * (α / ω); ρ = ρn
+        @. p = r + β * (p - ω * v)
+        _cut_prec!(ph, m, Cf, c, p, W)
+        _cut_apply!(v, m, Cf, c, ph, W); nmv += 1
+        α = ρ / _dot(m, rh, v)
+        @. s = r - α * v
+        if _norm(m, s) <= tol * nb
+            @. x += α * ph
+            return it, nmv
+        end
+        _cut_prec!(sh, m, Cf, c, s, W)
+        _cut_apply!(t, m, Cf, c, sh, W); nmv += 1
+        ω = _dot(m, t, s) / _dot(m, t, t)
+        @. x += α * ph + ω * sh
+        @. r = s - ω * t
+        _norm(m, r) <= tol * nb && return it, nmv
+    end
+    return maxit, nmv
+end
+
 """Interior update Z += a k (the halo is exchanged before every use)."""
 _axpy!(Z, m::CutKA, a, k) = (_interior(m, Z) .+= a .* _interior(m, k); Z)
 
@@ -682,20 +719,23 @@ _axpy!(Z, m::CutKA, a, k) = (_interior(m, Z) .+= a .* _interior(m, k); Z)
 end
 
 """
-    ka_vertical_step!(Z, m, Cf, h, k, y, W; tol)
+    ka_vertical_step!(Z, m, Cf, h, k, y, W; tol, krylov = :gmres)
 
 Linearly implicit Crank–Nicolson step z ← z + (I - h/2 J)⁻¹ h G_v(z) (FV3D `frozen_vertical_step!` with
-FV3D_MASK_SOLVER = :gmres): GMRES on all unknowns of the tile, column preconditioner, initial guess the column solve;
-ρ and Θ afterwards from the fluxes of the solution (conserved for any tolerance).
+FV3D_MASK_SOLVER = :gmres): GMRES (`krylov = :gmres`) or BiCGStab (`:bicgstab`) on all unknowns of the tile, column
+preconditioner, initial guess the column solve; ρ and Θ afterwards from the fluxes of the solution (conserved for any
+tolerance).
 """
-function ka_vertical_step!(Z, m::CutKA, Cf, h, k, y, W::CutGMRES; tol = 1e-8)
+function ka_vertical_step!(Z, m::CutKA, Cf, h, k, y, W::CutGMRES; tol = 1e-8, krylov::Symbol = :gmres)
     g = m.grid
     c = h / 2
     exchange!(m.dec, Z, g)
     ka_vertical!(k, m, Cf, Z); _interior(m, k) .*= h
     _pack!(W.b, m, k)
     _cut_prec!(W.x, m, Cf, c, W.b, W)
-    push!(m.its, _cut_gmres!(W.x, m, Cf, c, W.b, W; tol))
+    krylov in (:gmres, :bicgstab) || error("krylov: :gmres or :bicgstab")
+    it, nmv = krylov === :gmres ? _cut_gmres!(W.x, m, Cf, c, W.b, W; tol) : _cut_bicgstab!(W.x, m, Cf, c, W.b, W; tol)
+    push!(m.its, it); push!(m.mv, nmv)
     fill!(y, 0.0); _unpack!(y, m, W.x)
     exchange!(m.dec, y, g)
     ka_vertical!(W.Y, m, Cf, y)
@@ -715,23 +755,24 @@ CutMISWork(m::CutKA, s::Int; restart::Int = 30) =
 
 """HEVI small steps (TimeStepping `frozen_fast_solve!` with method = :hevi): Strang splitting, horizontal Verlet half
 steps on the unmasked faces, the implicit Crank–Nicolson step in the middle."""
-function _cut_hevi_loop!(Z, m::CutKA, Cf, F, h, N, w::CutMISWork; tol)
+function _cut_hevi_loop!(Z, m::CutKA, Cf, F, h, N, w::CutMISWork; tol, krylov = :gmres)
     g, dec, k = m.grid, m.dec, w.k
     for _ in 1:N, half in 1:2
         exchange!(dec, Z, g); ka_hthermo!(k, m, Cf, Z, F); _axpy!(Z, m, h / 4, k)
         exchange!(dec, Z, g); ka_hmomentum!(k, m, Cf, Z, F); _axpy!(Z, m, h / 2, k)
         exchange!(dec, Z, g); ka_hthermo!(k, m, Cf, Z, F); _axpy!(Z, m, h / 4, k)
-        half == 1 && ka_vertical_step!(Z, m, Cf, h, k, w.y, w.gm; tol)
+        half == 1 && ka_vertical_step!(Z, m, Cf, h, k, w.y, w.gm; tol, krylov)
     end
     return Z
 end
 
 """
-    ka_mis_step!(m::CutKA, q, Δt, tab, w::CutMISWork; nsub = 12, tol = 1e-8)
+    ka_mis_step!(m::CutKA, q, Δt, tab, w::CutMISWork; nsub = 12, tol = 1e-8, krylov = :gmres)
 
 One MIS step (TimeStepping `frozen_mis_step!` with fast = :hevi) of the cut-cell model, in place.
 """
-function ka_mis_step!(m::CutKA, q, Δt, tab::MISTableau, w::CutMISWork; nsub::Int = 12, tol::Real = 1e-8)
+function ka_mis_step!(m::CutKA, q, Δt, tab::MISTableau, w::CutMISWork; nsub::Int = 12, tol::Real = 1e-8,
+                      krylov::Symbol = :gmres)
     for i in 1:nstages(tab)
         i == 1 ? (w.Y .= q) : (@. w.Y = q + w.ΔY[i-1])
         ka_frozen_data!(w.C[i], w.S[i], m, w.Y)
@@ -751,7 +792,7 @@ function ka_mis_step!(m::CutKA, q, Δt, tab::MISTableau, w::CutMISWork; nsub::In
             end
         end
         n = fast_substeps(d, nsub)
-        _cut_hevi_loop!(w.Z, m, w.c, w.F, d * Δt / n, n, w; tol = Float64(tol))
+        _cut_hevi_loop!(w.Z, m, w.c, w.F, d * Δt / n, n, w; tol = Float64(tol), krylov)
         @. w.ΔY[i] = w.Z - q
     end
     q .= w.Z
@@ -759,11 +800,11 @@ function ka_mis_step!(m::CutKA, q, Δt, tab::MISTableau, w::CutMISWork; nsub::In
 end
 
 """nsteps MIS steps of the cut-cell model (in place); `monitor(n, q)` every `every` steps."""
-function ka_run!(m::CutKA, q, Δt, nsteps; tab::MISTableau, nsub::Int = 12, tol::Real = 1e-8, monitor = nothing,
-                 every::Int = 1)
+function ka_run!(m::CutKA, q, Δt, nsteps; tab::MISTableau, nsub::Int = 12, tol::Real = 1e-8, krylov::Symbol = :gmres,
+                 monitor = nothing, every::Int = 1)
     w = CutMISWork(m, nstages(tab))
     for n in 1:nsteps
-        ka_mis_step!(m, q, Δt, tab, w; nsub, tol)
+        ka_mis_step!(m, q, Δt, tab, w; nsub, tol, krylov)
         monitor !== nothing && n % every == 0 && monitor(n, q)
     end
     return q
