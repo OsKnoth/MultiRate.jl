@@ -22,7 +22,7 @@
 # FV3D_MASK_JFORM (operator.jl) selects the momentum rows:
 #   :partial       a± δM (default; with the approximate factorization stable on the 1500 m bell hill, Δt = 30 s)
 #   :conservative  also δF u_up - a± u δρ (`_mom_complete!`): the exact Jacobian of the masked upwind advection. Needs
-#                  the coupled solve of I - c (J_ac + J_adv) (FV3D_MASK_COUPLED); with the factorization the ρ and
+#                  the coupled solve of I - c (J_ac + J_adv) (FV3D_MASK_SOLVER = :lu or :gmres); with the factorization the ρ and
 #                  cross-direction columns lag and the run becomes unstable.
 #   :advective     the simplified Jacobian of Jebens, Knoth, Weiner (JCP 2011): upwind transport of ρ, Θ and the momenta,
 #                  no ρ columns in the Θ and momentum rows. In the frozen MIS step the slow part then holds +div F(y) on

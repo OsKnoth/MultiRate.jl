@@ -24,10 +24,11 @@ mutable struct Column3D
     lu::Dict{Float64,Any}                           # LU factors of the restricted systems per c
     idx::Vector{Int}                                # unknowns of the columns at masked faces (+ masked U, V)
     ridx::Vector{Int}                               # rows of Jadv (masked faces)
+    its::Vector{Int}                                # FV3D_MASK_SOLVER = :gmres: iterations per solve
 end
 Column3D(g::Grid3D) = Column3D(zeros(g.nx, g.ny, g.nz + 1), zeros(g.nx, g.ny, g.nz + 1), zeros(g.nx, g.ny, g.nz + 1),
                                Dict{Float64,NTuple{3,Array{Float64,3}}}(), zeros(g.nz + 1),
-                               spzeros(0, 0), spzeros(0, 0), Dict{Float64,Any}(), Int[], Int[])
+                               spzeros(0, 0), spzeros(0, 0), Dict{Float64,Any}(), Int[], Int[], Int[])
 
 function _column(m::Model3D)
     s = m.cache.column[]
@@ -208,25 +209,52 @@ end
 
 """Linearly implicit Crank–Nicolson step of the implicit part: z ← z + P⁻¹ dt G(z),
 G = `frozen_fast!(…, :vertical, …)`; P = I - dt/2 J with J the column systems (:column) or the
-sparse matrix (:mask), P = (I - dt/2 J)(I - dt/2 J_adv) (:amf, approximate matrix factorization),."""
+sparse matrix (:mask), P = (I - dt/2 J)(I - dt/2 J_adv) (:amf, approximate matrix factorization), or with
+FV3D_MASK_SOLVER = :lu / :gmres the coupled P = I - dt/2 (J + J_adv) on the masked unknowns."""
 function frozen_vertical_step!(z, m::Model3D, C, dt, k, y)
     s = _column(m)
     frozen_fast!(k, m, C, z, :vertical, k)
     @. k *= dt
     β = FV3D_HEVI_BETA[]                               # 1/2: Crank–Nicolson; > 1/2 off-centred (experimental)
-    if m.implicit === :amf && FV3D_MASK_COUPLED[]
-        # I - c (J_ac + J_adv) exactly on the masked unknowns ∪ the masked advection rows (no AMF)
+    solver = m.implicit === :amf ? FV3D_MASK_SOLVER[] : :amf
+    solver in (:amf, :lu, :gmres) || error("FV3D_MASK_SOLVER: :amf, :lu or :gmres")
+    if solver !== :amf
+        # I - c (J_ac + J_adv) on the masked unknowns ∪ the masked advection rows (no AMF); the other unknowns
+        # are the independent columns, solved first
         c = β * dt
-        column_solve!(y, s, m, c, k)                   # the unmasked columns (and a first guess)
+        column_solve!(y, s, m, c, k)
         isempty(s.idx) && isempty(s.ridx) && (@. z += y; return z)
         F = get!(s.lu, Float64(c)) do
+            g = m.grid
             id2 = sort!(union(s.idx, s.ridx))
             Jt = s.J + s.Jadv
             out = setdiff(1:m.nq, id2)
-            (lu(I - c * Jt[id2, id2]), id2, Jt[id2, out], out)
+            A = sparse(1.0I, length(id2), length(id2)) - c * Jt[id2, id2]
+            if solver === :lu
+                (lu(A), id2, Jt[id2, out], out, nothing, nothing, nothing, nothing)
+            else
+                tx, ty = FV3D_MASK_TILES[]
+                sets, own = ras_sets(g, id2, min(tx, g.nx), min(ty, g.ny), FV3D_MASK_OVERLAP[])
+                loc = FV3D_MASK_LOCAL[]
+                loc in (:amf, :lu) || error("FV3D_MASK_LOCAL: :amf or :lu")
+                Id = sparse(1.0I, length(id2), length(id2))
+                As = loc === :lu ? (A,) : (Id - c * s.J[id2, id2], Id - c * s.Jadv[id2, id2])
+                N = ncell(g); nW = g.nx * g.ny * (g.nz - 1)
+                rc = [n for n in id2 if n <= N || n > 3N + nW]           # ρ, Θ rows (flux form)
+                (RAS(As, sets, own), id2, Jt[id2, out], out, A, GMRESWork(length(id2), 30), rc, Jt[rc, :])
+            end
         end
-        Fa, id2, Jo, out = F
-        y[id2] = Fa \ (k[id2] .+ c .* (Jo * y[out]))
+        P, id2, Jo, out, A, W, rc, Jr = F
+        rhs = k[id2] .+ c .* (Jo * y[out])
+        if solver === :lu
+            y[id2] = P \ rhs
+        else
+            x = y[id2]                                 # initial guess: the column solve
+            push!(s.its, gmres!(x, A, rhs, P, W; tol = FV3D_MASK_TOL[]))
+            y[id2] = x
+            # ρ, Θ from the fluxes of the iterate: conservative to roundoff whatever the GMRES residual
+            y[rc] = k[rc] .+ c .* (Jr * y)
+        end
     elseif m.implicit in (:mask, :amf)
         c = β * dt
         F = get!(s.lu, Float64(c)) do

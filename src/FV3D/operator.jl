@@ -14,9 +14,20 @@
 
 """Pressure form of the 3D FV operator (read in every call): `:gradp` or `:product`."""
 const FV3D_PRESSURE_FORM = Ref(:gradp)
-"""implicit = :amf: solve I - c (J_ac + J_adv) on the masked unknowns exactly (sparse LU) instead of the approximate
-matrix factorization (needed with FV3D_MASK_JFORM = :conservative)."""
-const FV3D_MASK_COUPLED = Ref(false)
+"""Linear solve of implicit = :amf: `:amf` the approximate matrix factorization (I - c J_ac)(I - c J_adv) (default),
+`:lu` the coupled system I - c (J_ac + J_adv) on the masked unknowns by a sparse LU, `:gmres` the coupled system by
+GMRES with a restricted additive Schwarz preconditioner (krylov.jl; FV3D_MASK_TILES, FV3D_MASK_OVERLAP, FV3D_MASK_LOCAL,
+FV3D_MASK_TOL).
+The coupled solve is needed with FV3D_MASK_JFORM = :conservative."""
+const FV3D_MASK_SOLVER = Ref(:amf)
+"""Tiles of columns (tx, ty) of the Schwarz preconditioner (capped at (nx, ny): block Jacobi over the columns with overlap 0)."""
+const FV3D_MASK_TILES = Ref((8, 8))
+"""Overlap of the Schwarz subdomains in columns."""
+const FV3D_MASK_OVERLAP = Ref(1)
+"""Local solver of the Schwarz subdomains: `:amf` (I - c J_ac)(I - c J_adv) (default) or `:lu` the coupled matrix."""
+const FV3D_MASK_LOCAL = Ref(:amf)
+"""Relative tolerance of GMRES."""
+const FV3D_MASK_TOL = Ref(1e-8)
 """HEVI implicit step z ← z + (I - β dt J)⁻¹ dt G(z): β = 1/2 Crank–Nicolson (default), β = 1 linearly implicit Euler."""
 const FV3D_HEVI_BETA = Ref(0.5)
 """Form of the masked advection Jacobian (advection_jacobian.jl): `:partial` (θ rows complete: -a± θ δρ; momentum rows a± δM),

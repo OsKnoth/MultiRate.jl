@@ -1172,13 +1172,31 @@ end
         @test all(isfinite, qa) && abs(F3.total3d(ma, qa, :ρ) / F3.total3d(ma, qa0, :ρ) - 1) < 1e-12
         # exact masked Jacobian (:conservative) with the coupled sparse solve: the same short run
         try
-            F3.FV3D_MASK_JFORM[] = :conservative; F3.FV3D_MASK_COUPLED[] = true
+            F3.FV3D_MASK_JFORM[] = :conservative; F3.FV3D_MASK_SOLVER[] = :lu
             mc2 = F3.Model3D(gc, gas, ρr, Θr)
             qc2 = TS.run_frozen(mc2, qa0, 20.0, 10; tab = TS.mis_tableau(:MIS54), nsub = 4, fast = :hevi)
             @test all(isfinite, qc2) && abs(F3.total3d(mc2, qc2, :ρ) / F3.total3d(mc2, qa0, :ρ) - 1) < 1e-12
             @test maximum(abs, F3.vertical_velocity(mc2, qc2)) < 2maximum(abs, F3.vertical_velocity(ma, qa)) + 1
+            # GMRES with the Schwarz preconditioner (2×2 tiles, overlap 1, local AMF or LU; block Jacobi over the columns) = sparse LU
+            for (tiles, ov, loc) in (((2, 2), 1, :amf), ((2, 2), 1, :lu), ((8, 8), 0, :amf))
+                F3.FV3D_MASK_SOLVER[] = :gmres; F3.FV3D_MASK_TILES[] = tiles; F3.FV3D_MASK_OVERLAP[] = ov; F3.FV3D_MASK_TOL[] = 1e-12
+                F3.FV3D_MASK_LOCAL[] = loc
+                mc3 = F3.Model3D(gc, gas, ρr, Θr)
+                qc3 = TS.run_frozen(mc3, qa0, 20.0, 10; tab = TS.mis_tableau(:MIS54), nsub = 4, fast = :hevi)
+                @test maximum(abs, qc3 .- qc2) < 1e-9 * maximum(abs, qc2)
+                F3.FV3D_MASK_TOL[] = 1e-3                                # inexact solve: ρ, Θ still conserved
+                mc4 = F3.Model3D(gc, gas, ρr, Θr)
+                qc4 = TS.run_frozen(mc4, qa0, 20.0, 10; tab = TS.mis_tableau(:MIS54), nsub = 4, fast = :hevi)
+                @test abs(F3.total3d(mc4, qc4, :ρ) / F3.total3d(mc4, qa0, :ρ) - 1) < 1e-13
+                @test abs(F3.total3d(mc4, qc4, :Θ) / F3.total3d(mc4, qa0, :Θ) - 1) < 1e-13
+                F3.FV3D_MASK_TOL[] = 1e-12
+                @test abs(F3.total3d(mc3, qc3, :ρ) / F3.total3d(mc3, qa0, :ρ) - 1) < 1e-12
+                its = mc3.cache.column[].its
+                @test !isempty(its) && maximum(its) < 40
+            end
         finally
-            F3.FV3D_MASK_JFORM[] = :partial; F3.FV3D_MASK_COUPLED[] = false
+            F3.FV3D_MASK_JFORM[] = :partial; F3.FV3D_MASK_SOLVER[] = :amf
+            F3.FV3D_MASK_TILES[] = (8, 8); F3.FV3D_MASK_OVERLAP[] = 1; F3.FV3D_MASK_TOL[] = 1e-8; F3.FV3D_MASK_LOCAL[] = :amf
         end
         g0 = F3.Grid3D(8, 8, 6, 20e3, 20e3, 6e3; zs = (x, y) -> -1.0); gf = F3.Grid3D(8, 8, 6, 20e3, 20e3, 6e3)
         qf = F3.project3d(F3.Model3D(gf, gas, ρr, Θr), (x, y, z) -> (ρr(z), 10ρr(z), 5ρr(z), 0.0, Θr(z)))
