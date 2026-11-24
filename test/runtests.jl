@@ -1194,6 +1194,20 @@ end
                 its = mc3.cache.column[].its
                 @test !isempty(its) && maximum(its) < 40
             end
+            # :cs small steps with the mask (face weights: h/2 on the ρ, Θ fluxes, (1-β)h, βh on the momenta; the faces of the
+            # masked cells linearly implicit Euler with h): the small-step limit of :hevi (first order), ρ and Θ conserved
+            for (sol, jf) in ((:amf, :partial), (:gmres, :conservative))
+                F3.FV3D_MASK_SOLVER[] = sol; F3.FV3D_MASK_JFORM[] = jf; F3.FV3D_MASK_TILES[] = (2, 2); F3.FV3D_MASK_TOL[] = 1e-12
+                mcs = F3.Model3D(gc, gas, ρr, Θr)
+                rf(fast, nsub) = TS.run_frozen(mcs, qa0, 20.0, 5; tab = TS.mis_tableau(:MIS54), nsub, fast)
+                qh = rf(:hevi, 256)
+                e16, e64 = (maximum(abs, rf(:cs, n) .- qh) / maximum(abs, qh) for n in (16, 64))
+                @test e64 < 1e-2 && e64 < e16 / 2.5
+                q4 = TS.run_frozen(mcs, qa0, 20.0, 10; tab = TS.mis_tableau(:MIS54), nsub = 4, fast = :cs)
+                @test all(isfinite, q4)
+                @test abs(F3.total3d(mcs, q4, :ρ) / F3.total3d(mcs, qa0, :ρ) - 1) < 1e-13
+                @test abs(F3.total3d(mcs, q4, :Θ) / F3.total3d(mcs, qa0, :Θ) - 1) < 1e-13
+            end
         finally
             F3.FV3D_MASK_JFORM[] = :partial; F3.FV3D_MASK_SOLVER[] = :amf
             F3.FV3D_MASK_TILES[] = (8, 8); F3.FV3D_MASK_OVERLAP[] = 1; F3.FV3D_MASK_TOL[] = 1e-8; F3.FV3D_MASK_LOCAL[] = :amf

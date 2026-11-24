@@ -17,18 +17,18 @@ mutable struct Column3D
     α::Array{Float64,3}
     β::Array{Float64,3}
     θz::Array{Float64,3}
-    factors::Dict{Float64,NTuple{3,Array{Float64,3}}}
+    factors::Dict{NTuple{3,Float64},NTuple{3,Array{Float64,3}}}   # Thomas factors per (ct, cw, wm)
     W::Vector{Float64}
     J::SparseMatrixCSC{Float64,Int}                 # implicit = :mask, :amf: matrix of the implicit acoustics
     Jadv::SparseMatrixCSC{Float64,Int}              # implicit = :amf: masked advection (simple upwind)
-    lu::Dict{Float64,Any}                           # LU factors of the restricted systems per c
+    lu::Dict{Any,Any}                               # factors of the restricted systems per (ct, cw, wm), weights, work
     idx::Vector{Int}                                # unknowns of the columns at masked faces (+ masked U, V)
     ridx::Vector{Int}                               # rows of Jadv (masked faces)
     its::Vector{Int}                                # FV3D_MASK_SOLVER = :gmres: iterations per solve
 end
 Column3D(g::Grid3D) = Column3D(zeros(g.nx, g.ny, g.nz + 1), zeros(g.nx, g.ny, g.nz + 1), zeros(g.nx, g.ny, g.nz + 1),
-                               Dict{Float64,NTuple{3,Array{Float64,3}}}(), zeros(g.nz + 1),
-                               spzeros(0, 0), spzeros(0, 0), Dict{Float64,Any}(), Int[], Int[], Int[])
+                               Dict{NTuple{3,Float64},NTuple{3,Array{Float64,3}}}(), zeros(g.nz + 1),
+                               spzeros(0, 0), spzeros(0, 0), Dict{Any,Any}(), Int[], Int[], Int[])
 
 function _column(m::Model3D)
     s = m.cache.column[]
@@ -150,23 +150,35 @@ function masked_unknowns(m::Model3D)
     return sort!(vcat(idx, uv))
 end
 
-"""LU factors (Thomas) of the column systems for c, cached per stage."""
-function _factor(s::Column3D, m::Model3D, c)
-    get!(s.factors, Float64(c)) do
+"""
+Face weights of the implicit part: a flux through a face has one weight for both cells (conservative). wt for the
+ρ, Θ fluxes and wf for the momentum rows of the face: (ct, cw), or wm on the faces of masked cells (`_row`) if wm is
+not NaN (:cs with FV3D_CS_MASK_EULER).
+"""
+@inline _wt(g, ct, wm, d, i, j, k) = (!isnan(wm) && _row(g, d, i, j, k)) ? wm : ct
+@inline _wf(g, cw, wm, d, i, j, k) = (!isnan(wm) && _row(g, d, i, j, k)) ? wm : cw
+
+"""LU factors (Thomas) of the column systems for the weights (ct, cw, wm), cached per stage."""
+function _factor(s::Column3D, m::Model3D, ct, cw, wm = NaN)
+    get!(s.factors, (Float64(ct), Float64(cw), Float64(wm))) do
         g = m.grid
         nz = g.nz
-        r = c / g.dz; cg = c * m.gas.g / 2
         sub = zeros(nz + 1, g.nx, g.ny); cp = zeros(nz + 1, g.nx, g.ny); iden = zeros(nz + 1, g.nx, g.ny)
         @inbounds for j in 1:g.ny, i in 1:g.nx, k in 2:nz
             A = g.Az[i, j, k]
             if A == 0
                 a, d, b = 0.0, 1.0, 0.0
             else
-                sk, sm = c * g.invV[i, j, k] / (g.Jc[i, j] * g.dz), c * g.invV[i, j, k-1] / (g.Jc[i, j] * g.dz)
+                cwk = _wf(g, cw, wm, 3, i, j, k)
+                r = cwk / g.dz; cg = cwk * m.gas.g / 2
+                vk, vm = g.invV[i, j, k] / (g.Jc[i, j] * g.dz), g.invV[i, j, k-1] / (g.Jc[i, j] * g.dz)
+                t0 = _wt(g, ct, wm, 3, i, j, k)                         # flux weight of the face k
+                tm = k > 2 ? _wt(g, ct, wm, 3, i, j, k - 1) : 0.0       # … of the faces k - 1, k + 1
+                tp = k < nz ? _wt(g, ct, wm, 3, i, j, k + 1) : 0.0
                 Am, Ap = g.Az[i, j, k-1], g.Az[i, j, k+1]
-                a = k > 2 ? -r * s.β[i, j, k] * sm * Am * s.θz[i, j, k-1] + cg * sm * Am : 0.0
-                d = 1 + r * A * s.θz[i, j, k] * (s.α[i, j, k] * sk + s.β[i, j, k] * sm) + cg * A * (sk - sm)
-                b = k < nz ? -r * s.α[i, j, k] * sk * Ap * s.θz[i, j, k+1] - cg * sk * Ap : 0.0
+                a = k > 2 ? (-r * s.β[i, j, k] * s.θz[i, j, k-1] + cg) * tm * vm * Am : 0.0
+                d = 1 + t0 * (r * A * s.θz[i, j, k] * (s.α[i, j, k] * vk + s.β[i, j, k] * vm) + cg * A * (vk - vm))
+                b = k < nz ? (-r * s.α[i, j, k] * s.θz[i, j, k+1] - cg) * tp * vk * Ap : 0.0
             end
             den = k == 2 ? d : d - a * cp[k-1, i, j]
             sub[k, i, j] = a; iden[k, i, j] = 1 / den; cp[k, i, j] = b / den
@@ -175,16 +187,18 @@ function _factor(s::Column3D, m::Model3D, c)
     end
 end
 
-"""Y = (I - c J_v)⁻¹ R (U, V rows: identity)."""
-function column_solve!(Y, s::Column3D, m::Model3D, c, R)
+"""Y = (I - D J_v)⁻¹ R, D the face weights (ct, cw, wm) (`_wt`, `_wf`; U, V rows: identity)."""
+column_solve!(Y, s::Column3D, m::Model3D, c, R) = column_solve!(Y, s, m, c, c, R)
+function column_solve!(Y, s::Column3D, m::Model3D, ct, cw, R, wm = NaN)
     g = m.grid
     nz, dz = g.nz, g.dz
-    r = c / dz; cg = c * m.gas.g / 2
-    sub, cp, iden = _factor(s, m, c)
+    sub, cp, iden = _factor(s, m, ct, cw, wm)
     W = s.W
     Y .= R
     @inbounds for j in 1:g.ny, i in 1:g.nx
         for k in 2:nz
+            cwk = _wf(g, cw, wm, 3, i, j, k)
+            r = cwk / dz; cg = cwk * m.gas.g / 2
             rhs = g.Az[i, j, k] == 0 ? R[iW(g, i, j, k)] :
                   R[iW(g, i, j, k)] - r * (s.α[i, j, k] * R[iΘ(g, i, j, k)] - s.β[i, j, k] * R[iΘ(g, i, j, k - 1)]) -
                   cg * (R[iρ(g, i, j, k - 1)] + R[iρ(g, i, j, k)])
@@ -195,10 +209,11 @@ function column_solve!(Y, s::Column3D, m::Model3D, c, R)
         end
         W[1] = 0.0; W[nz+1] = 0.0
         for k in 1:nz
-            sk = c * g.invV[i, j, k] / (g.Jc[i, j] * dz)
-            Fb = g.Az[i, j, k] * W[k]; Ft = g.Az[i, j, k+1] * W[k+1]
-            Y[iρ(g, i, j, k)] = R[iρ(g, i, j, k)] - sk * (Ft - Fb)
-            Y[iΘ(g, i, j, k)] = R[iΘ(g, i, j, k)] - sk * (s.θz[i, j, k+1] * Ft - s.θz[i, j, k] * Fb)
+            vk = g.invV[i, j, k] / (g.Jc[i, j] * dz)
+            Fb = (k > 1 ? _wt(g, ct, wm, 3, i, j, k) : 0.0) * g.Az[i, j, k] * W[k]
+            Ft = (k < nz ? _wt(g, ct, wm, 3, i, j, k + 1) : 0.0) * g.Az[i, j, k+1] * W[k+1]
+            Y[iρ(g, i, j, k)] = R[iρ(g, i, j, k)] - vk * (Ft - Fb)
+            Y[iΘ(g, i, j, k)] = R[iΘ(g, i, j, k)] - vk * (s.θz[i, j, k+1] * Ft - s.θz[i, j, k] * Fb)
         end
         for k in 2:nz
             Y[iW(g, i, j, k)] = W[k]
@@ -207,45 +222,78 @@ function column_solve!(Y, s::Column3D, m::Model3D, c, R)
     return Y
 end
 
-"""Linearly implicit Crank–Nicolson step of the implicit part: z ← z + P⁻¹ dt G(z),
-G = `frozen_fast!(…, :vertical, …)`; P = I - dt/2 J with J the column systems (:column) or the
-sparse matrix (:mask), P = (I - dt/2 J)(I - dt/2 J_adv) (:amf, approximate matrix factorization), or with
-FV3D_MASK_SOLVER = :lu / :gmres the coupled P = I - dt/2 (J + J_adv) on the masked unknowns."""
-function frozen_vertical_step!(z, m::Model3D, C, dt, k, y)
+"""(kind, i, j, k) of unknown n: kind 0 ρ, 1 U, 2 V, 3 W, 4 Θ."""
+@inline function _unknown(g::Grid3D, n)
+    N = ncell(g); nW = g.nx * g.ny * (g.nz - 1)
+    kind, c = n <= N ? (0, n - 1) : n <= 2N ? (1, n - N - 1) : n <= 3N ? (2, n - 2N - 1) :
+              n <= 3N + nW ? (3, n - 3N - 1) : (4, n - 3N - nW - 1)
+    kind == 3 && return (3, c % g.nx + 1, (c ÷ g.nx) % g.ny + 1, c ÷ (g.nx * g.ny) + 2)
+    return (kind, c % g.nx + 1, (c ÷ g.nx) % g.ny + 1, c ÷ (g.nx * g.ny) + 1)
+end
+
+"""
+Weight vectors of D G_v for (ct, cw, wm): dr on the momentum rows (wf of the face; 1 on ρ, Θ), dc on the momentum
+columns of the ρ, Θ fluxes (wt of the face; 1 on ρ, Θ), da on the rows of the masked advection (ρ, Θ: wm or ct;
+momentum: dr). D G_v(z) = thermo(dc .* z) + dr .* momentum(z) + da .* adv(z), D J = Dr J_ac Dc + Da J_adv.
+"""
+function _weights(m::Model3D, ct, cw, wm)
+    g = m.grid
+    n = m.nq
+    dr = ones(n); dc = ones(n); da = ones(n)
+    @inbounds for l in 1:n
+        kind, i, j, k = _unknown(g, l)
+        if kind in (0, 4)
+            da[l] = isnan(wm) ? ct : wm
+        else
+            dr[l] = da[l] = _wf(g, cw, wm, kind, i, j, k); dc[l] = _wt(g, ct, wm, kind, i, j, k)
+        end
+    end
+    return dr, dc, da
+end
+_weights(s::Column3D, m::Model3D, key) = get!(() -> _weights(m, key...), s.lu, (:w, key...))
+
+"""
+    implicit_solve!(y, m::Model3D, ct, cw, k, wm = NaN)
+
+y = P⁻¹ k with P ≈ I - D J of the stage, D the face weights (`_weights`; ct on the ρ, Θ fluxes and cw on the momentum
+rows, wm on the faces of masked cells if not NaN): J the column systems (:column), the sparse matrix (:mask),
+P = (I - D J)(I - D J_adv) (:amf, approximate matrix factorization), or with FV3D_MASK_SOLVER = :lu / :gmres the
+coupled P = I - D (J + J_adv) on the masked unknowns.
+"""
+function implicit_solve!(y, m::Model3D, ct, cw, k, wm = NaN)
     s = _column(m)
-    frozen_fast!(k, m, C, z, :vertical, k)
-    @. k *= dt
-    β = FV3D_HEVI_BETA[]                               # 1/2: Crank–Nicolson; > 1/2 off-centred (experimental)
     solver = m.implicit === :amf ? FV3D_MASK_SOLVER[] : :amf
     solver in (:amf, :lu, :gmres) || error("FV3D_MASK_SOLVER: :amf, :lu or :gmres")
+    key = (Float64(ct), Float64(cw), Float64(wm))
+    column_solve!(y, s, m, ct, cw, k, wm)             # the independent columns (and a first guess)
+    m.implicit in (:mask, :amf) || return y
+    isempty(s.idx) && isempty(s.ridx) && return y
     if solver !== :amf
-        # I - c (J_ac + J_adv) on the masked unknowns ∪ the masked advection rows (no AMF); the other unknowns
-        # are the independent columns, solved first
-        c = β * dt
-        column_solve!(y, s, m, c, k)
-        isempty(s.idx) && isempty(s.ridx) && (@. z += y; return z)
-        F = get!(s.lu, Float64(c)) do
+        # I - D (J_ac + J_adv) on the masked unknowns ∪ the masked advection rows (no AMF)
+        F = get!(s.lu, key) do
             g = m.grid
+            dr, dc, da = _weights(s, m, key)
+            DJa = Diagonal(dr) * s.J * Diagonal(dc); DJd = Diagonal(da) * s.Jadv
+            DJ = DJa + DJd
             id2 = sort!(union(s.idx, s.ridx))
-            Jt = s.J + s.Jadv
             out = setdiff(1:m.nq, id2)
-            A = sparse(1.0I, length(id2), length(id2)) - c * Jt[id2, id2]
+            Id = sparse(1.0I, length(id2), length(id2))
+            A = Id - DJ[id2, id2]
             if solver === :lu
-                (lu(A), id2, Jt[id2, out], out, nothing, nothing, nothing, nothing)
+                (lu(A), id2, DJ[id2, out], out, nothing, nothing, nothing, nothing)
             else
                 tx, ty = FV3D_MASK_TILES[]
                 sets, own = ras_sets(g, id2, min(tx, g.nx), min(ty, g.ny), FV3D_MASK_OVERLAP[])
                 loc = FV3D_MASK_LOCAL[]
                 loc in (:amf, :lu) || error("FV3D_MASK_LOCAL: :amf or :lu")
-                Id = sparse(1.0I, length(id2), length(id2))
-                As = loc === :lu ? (A,) : (Id - c * s.J[id2, id2], Id - c * s.Jadv[id2, id2])
+                As = loc === :lu ? (A,) : (Id - DJa[id2, id2], Id - DJd[id2, id2])
                 N = ncell(g); nW = g.nx * g.ny * (g.nz - 1)
                 rc = [n for n in id2 if n <= N || n > 3N + nW]           # ρ, Θ rows (flux form)
-                (RAS(As, sets, own), id2, Jt[id2, out], out, A, GMRESWork(length(id2), 30), rc, Jt[rc, :])
+                (RAS(As, sets, own), id2, DJ[id2, out], out, A, GMRESWork(length(id2), 30), rc, DJ[rc, :])
             end
         end
-        P, id2, Jo, out, A, W, rc, Jr = F
-        rhs = k[id2] .+ c .* (Jo * y[out])
+        P, id2, DJo, out, A, W, rc, DJr = F
+        rhs = k[id2] .+ DJo * y[out]
         if solver === :lu
             y[id2] = P \ rhs
         else
@@ -253,28 +301,82 @@ function frozen_vertical_step!(z, m::Model3D, C, dt, k, y)
             push!(s.its, gmres!(x, A, rhs, P, W; tol = FV3D_MASK_TOL[]))
             y[id2] = x
             # ρ, Θ from the fluxes of the iterate: conservative to roundoff whatever the GMRES residual
-            y[rc] = k[rc] .+ c .* (Jr * y)
-        end
-    elseif m.implicit in (:mask, :amf)
-        c = β * dt
-        F = get!(s.lu, Float64(c)) do
-            Fac = isempty(s.idx) ? nothing : lu(I - c * s.J[s.idx, s.idx])
-            amf = m.implicit === :amf && !isempty(s.ridx)
-            Arow = amf ? s.Jadv[s.ridx, :] : nothing; Arr = amf ? s.Jadv[s.ridx, s.ridx] : nothing
-            (Fac, amf ? lu(I - c * Arr) : nothing, Arow, Arr)
-        end
-        # acoustic factor: independent columns tridiagonal, the masked block sparse
-        column_solve!(y, s, m, c, k)
-        isempty(s.idx) || (y[s.idx] = F[1] \ k[s.idx])
-        # advection factor (rows r = masked faces): x_r = (I - c A_rr)⁻¹ (y_r + c A_ru y_u), x_u = y_u
-        if F[2] !== nothing
-            yr = y[s.ridx]
-            b = yr .+ c .* (F[3] * y .- F[4] * yr)
-            y[s.ridx] = F[2] \ b
+            y[rc] = k[rc] .+ DJr * y
         end
     else
-        column_solve!(y, s, m, β * dt, k)
+        F = get!(s.lu, key) do
+            dr, dc, da = _weights(s, m, key)
+            Fac = isempty(s.idx) ? nothing : lu(I - (Diagonal(dr) * s.J * Diagonal(dc))[s.idx, s.idx])
+            amf = m.implicit === :amf && !isempty(s.ridx)
+            DJd = amf ? Diagonal(da) * s.Jadv : nothing
+            Arow = amf ? DJd[s.ridx, :] : nothing; Arr = amf ? DJd[s.ridx, s.ridx] : nothing
+            (Fac, amf ? lu(I - Arr) : nothing, Arow, Arr)
+        end
+        # acoustic factor: independent columns tridiagonal, the masked block sparse
+        isempty(s.idx) || (y[s.idx] = F[1] \ k[s.idx])
+        # advection factor (rows r = masked faces): x_r = (I - D A_rr)⁻¹ (y_r + D A_ru y_u), x_u = y_u
+        if F[2] !== nothing
+            yr = y[s.ridx]
+            b = yr .+ (F[3] * y .- F[4] * yr)
+            y[s.ridx] = F[2] \ b
+        end
     end
+    return y
+end
+
+"""Linearly implicit Crank–Nicolson step of the implicit part (:hevi): z ← z + P⁻¹ dt G(z),
+G = `frozen_fast!(…, :vertical, …)`, P ≈ I - β dt J (`implicit_solve!` with ct = cw = β dt, β = FV3D_HEVI_BETA)."""
+function frozen_vertical_step!(z, m::Model3D, C, dt, k, y)
+    frozen_fast!(k, m, C, z, :vertical, k)
+    @. k *= dt
+    c = FV3D_HEVI_BETA[] * dt                          # β = 1/2: Crank–Nicolson; > 1/2 off-centred (experimental)
+    implicit_solve!(y, m, c, c, k)
     @. z += y
     return z
 end
+
+"""Faces of the masked cells in the :cs hooks linearly implicit Euler (FV3D_CS_MASK_EULER and a masked model)?"""
+_cs_euler(m::Model3D) = FV3D_CS_MASK_EULER[] && m.implicit in (:mask, :amf)
+
+"""out = D G_v(z) with the face weights (ct, cw, wm) (`_weights`): ρ, Θ fluxes of the weighted momenta, weighted
+momentum rows and masked advection."""
+function _vertical_weighted!(out, m::Model3D, C, z, ct, cw, wm)
+    s = _column(m)
+    dr, dc, da = _weights(s, m, (Float64(ct), Float64(cw), Float64(wm)))
+    c = m.cache
+    zs = get!(() -> similar(z), s.lu, :zs)::Vector{Float64}
+    t = get!(() -> similar(z), s.lu, :t)::Vector{Float64}
+    pf = pressure_form()
+    fill!(out, 0.0)
+    @. zs = dc * z                                     # momenta weighted by the face weights of the fluxes
+    thermo_v!(out, m, C, zs)
+    m.implicit in (:mask, :amf) && thermo_h!(out, m, C, zs, Masked())
+    fill!(t, 0.0)
+    prepare_pressure!(pf, m, z); momentum_v!(t, m, C, z, pf)
+    m.implicit in (:mask, :amf) && momentum_h!(t, m, C, z, pf, Masked())
+    @. out += dr * t
+    fill!(t, 0.0)
+    _adv!(t, m, C, z); _advθ!(t, m, C, z)
+    @. out += da * t
+    return out
+end
+
+"""
+out = D G_v(z) (:cs, :ei, :wrf): the implicit part with the ρ, Θ fluxes weighted by ct, the momentum rows by cw. With
+FV3D_CS_MASK_EULER (masked models) the faces of the masked cells have the weight 0: there the implicit part is
+integrated by `frozen_vertical_implicit!` alone (linearly implicit Euler).
+"""
+frozen_vertical_rhs!(out, m::Model3D, C, z, ct, cw) = _vertical_weighted!(out, m, C, z, ct, cw, _cs_euler(m) ? 0.0 : NaN)
+"""
+z ← z + Y, P Y = D G_v(z) (`implicit_solve!`). With FV3D_CS_MASK_EULER (masked models) the faces of the masked cells
+have the weight 2ct, the full small step h of the merged :cs loop (ct = h/2): linearly implicit Euler there.
+"""
+function frozen_vertical_implicit!(z, m::Model3D, C, ct, cw, k, y)
+    wm = _cs_euler(m) ? 2ct : NaN
+    _vertical_weighted!(k, m, C, z, ct, cw, wm)
+    implicit_solve!(y, m, ct, cw, k, wm)
+    @. z += y
+    return z
+end
+"""y = P⁻¹ R (:wrf)."""
+frozen_vertical_solve!(y, m::Model3D, C, ct, cw, R) = implicit_solve!(y, m, ct, cw, R)

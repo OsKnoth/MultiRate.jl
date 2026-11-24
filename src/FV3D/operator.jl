@@ -28,6 +28,10 @@ const FV3D_MASK_OVERLAP = Ref(1)
 const FV3D_MASK_LOCAL = Ref(:amf)
 """Relative tolerance of GMRES."""
 const FV3D_MASK_TOL = Ref(1e-8)
+"""Small step :cs with the mask: no explicit part of the implicit part on the rows of the masked cells and faces, there
+linearly implicit Euler with the full step h (true, default); false: the :cs weights on all rows (explicit h/2 on a,
+(1-β)h on b; unstable on steep hills: the explicit half of the stiff cut-cell terms enters the state a½)."""
+const FV3D_CS_MASK_EULER = Ref(true)
 """HEVI implicit step z ← z + (I - β dt J)⁻¹ dt G(z): β = 1/2 Crank–Nicolson (default), β = 1 linearly implicit Euler."""
 const FV3D_HEVI_BETA = Ref(0.5)
 """Form of the masked advection Jacobian (advection_jacobian.jl): `:partial` (θ rows complete: -a± θ δρ; momentum rows a± δM),
