@@ -191,3 +191,22 @@ function Grid3D(nx, ny, nz, Lx, Ly, H; zs = nothing, terrain::Symbol = :cut, box
     end
     return g
 end
+
+"""
+    subgrid(g, i0, j0, nxt, nyt)
+
+The cells i0+1 … i0+nxt, j0+1 … j0+nyt (periodic indices) of the Cartesian grid g as a grid of their own (periodic in
+its turn; the couplings across its edges are not those of g): fractions, mask and faces copied, so that operators
+on the subgrid equal those of g away from its edges (tile models of FV3DKA).
+"""
+function subgrid(g::Grid3D, i0::Int, j0::Int, nxt::Int, nyt::Int)
+    (g.follow || g.recon !== :ash) && error("subgrid: Cartesian grids with recon = :ash")
+    gi(i) = mod1(i0 + i, g.nx); gj(j) = mod1(j0 + j, g.ny)
+    sl(A) = A[[gi(i) for i in 1:nxt], [gj(j) for j in 1:nyt], :]
+    sl2(A) = A[[gi(i) for i in 1:nxt], [gj(j) for j in 1:nyt]]
+    xc = [g.xc[1] + (i0 + i - 1) * g.dx for i in 1:nxt]; yc = [g.yc[1] + (j0 + j - 1) * g.dy for j in 1:nyt]
+    return Grid3D(nxt, nyt, g.nz, nxt * g.dx, nyt * g.dy, g.H, g.dx, g.dy, g.dz, xc, yc, copy(g.zc), xc .- g.dx / 2, yc .- g.dy / 2,
+                  copy(g.zf), sl(g.Vf), sl(g.invV), sl(g.Ax), sl(g.Ay), sl(g.Az), sl(g.full), sl(g.mask), sl(g.Mx), sl(g.My),
+                  g.cut, g.follow, sl2(g.Jc), sl2(g.Jx), sl2(g.Jy), sl(g.zxf), sl(g.zyf), sl(g.zxx), sl(g.zyy), sl(g.Zc), sl(g.Zf),
+                  g.zs, g.recon, zeros(Int, nxt, nyt, g.nz), LSQCell[])
+end

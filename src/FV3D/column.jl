@@ -260,9 +260,9 @@ rows, wm on the faces of masked cells if not NaN): J the column systems (:column
 P = (I - D J)(I - D J_adv) (:amf, approximate matrix factorization), or with FV3D_MASK_SOLVER = :lu / :gmres the
 coupled P = I - D (J + J_adv) on the masked unknowns.
 """
-function implicit_solve!(y, m::Model3D, ct, cw, k, wm = NaN)
+function implicit_solve!(y, m::Model3D, ct, cw, k, wm = NaN; solver::Symbol = FV3D_MASK_SOLVER[])
     s = _column(m)
-    solver = m.implicit === :amf ? FV3D_MASK_SOLVER[] : :amf
+    solver = m.implicit === :amf ? solver : :amf
     solver in (:amf, :lu, :gmres) || error("FV3D_MASK_SOLVER: :amf, :lu or :gmres")
     key = (Float64(ct), Float64(cw), Float64(wm))
     column_solve!(y, s, m, ct, cw, k, wm)             # the independent columns (and a first guess)

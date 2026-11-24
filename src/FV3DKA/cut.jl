@@ -37,6 +37,8 @@ struct CutGrid{M3} <: AbstractTileGrid
     Mx::M3; My::M3                           # 1 on the x-, y-faces of masked cells
     gr::M3                                   # gr[I, J, 1]: ground area of the shift (1 full, 0 below a cut cell)
     zf::Vector{Float64}
+    px::Int; py::Int
+    g3::FV3D.Grid3D                          # the global grid (host; tile models of the AMF preconditioner)
 end
 
 function CutGrid(g3::FV3D.Grid3D; px::Int = 1, py::Int = 1, cx::Int = 0, cy::Int = 0, backend = CPU())
@@ -54,7 +56,7 @@ function CutGrid(g3::FV3D.Grid3D; px::Int = 1, py::Int = 1, cx::Int = 0, cy::Int
     return CutGrid(nx, ny, nz, nxl, nyl, i0, j0, nxh, nyh, g3.dx, g3.dy, g3.dz, g3.H,
                    dev(slab(g3.Vf, nz)), dev(slab(g3.invV, nz)), dev(slab(g3.Ax, nz)), dev(slab(g3.Ay, nz)),
                    dev(slab(g3.Az, nz + 1)), dev(slab(g3.mask, nz)), dev(slab(g3.Mx, nz)), dev(slab(g3.My, nz)), dev(gr),
-                   collect(g3.zf))
+                   collect(g3.zf), px, py, g3)
 end
 KA.get_backend(g::CutGrid) = KA.get_backend(g.Vf)
 """The geometry arrays as a named tuple (kernel argument)."""
@@ -82,11 +84,13 @@ struct CutWork{A3,A4}
 end
 
 """
-    CutKA(grid::CutGrid, dec = SerialDecomp(); gas = Gas(), sponge = nothing, jform = :partial)
+    CutKA(grid::CutGrid, dec = SerialDecomp(); gas = Gas(), sponge = nothing, jform = :partial, prec = :amf)
 
 The dry cut-cell model of `FV3D.Model3D(…; implicit = :amf)` with FV3D_PRESSURE_FORM = :product on the tile `grid`.
 `sponge = (zD, αtop)` damps W above zD (as `FV3D.with_sponge`, target 0); `jform` the masked advection Jacobian
-(:partial or :conservative, FV3D_MASK_JFORM).
+(:partial or :conservative, FV3D_MASK_JFORM); `prec` the preconditioner of the implicit solve: `:amf` the approximate
+matrix factorization of the tile (with one halo column as overlap in decomposed directions, restricted additive
+Schwarz; host sparse LU), `:columns` the column solve (no assembly, no communication).
 """
 struct CutKA{G<:CutGrid,D<:AbstractDecomp,A1,W<:CutWork}
     grid::G
@@ -97,9 +101,13 @@ struct CutKA{G<:CutGrid,D<:AbstractDecomp,A1,W<:CutWork}
     work::W
     its::Vector{Int}                               # Krylov iterations per implicit solve
     mv::Vector{Int}                                # matrix-vector products per implicit solve
+    prec::Symbol                                   # preconditioner: :amf (tile AMF, default) or :columns
+    amf::Any                                       # CutAMF (prec = :amf)
 end
-function CutKA(g::CutGrid, dec::AbstractDecomp = SerialDecomp(); gas::Gas = Gas(), sponge = nothing, jform::Symbol = :partial)
+function CutKA(g::CutGrid, dec::AbstractDecomp = SerialDecomp(); gas::Gas = Gas(), sponge = nothing, jform::Symbol = :partial,
+               prec::Symbol = :amf)
     jform in (:partial, :conservative) || error("jform: :partial or :conservative")
+    prec in (:amf, :columns) || error("prec: :amf or :columns")
     be = KA.get_backend(g)
     damp = zeros(g.nz + 1)
     if sponge !== nothing
@@ -114,7 +122,7 @@ function CutKA(g::CutGrid, dec::AbstractDecomp = SerialDecomp(); gas::Gas = Gas(
     work = CutWork(z3(), z3(), z3(), z3(), z3(), z4(4), z4(6), z4(6), z4(7), z4(7), z4(6), z4(6), z3(), z3(), z3())
     dd = KA.allocate(be, Float64, g.nz + 1); copyto!(dd, damp)
     init_exchange!(dec, g, max(NVC + 4, NCC))
-    return CutKA(g, dec, gas, dd, jform === :conservative, work, Int[], Int[])
+    return CutKA(g, dec, gas, dd, jform === :conservative, work, Int[], Int[], prec, prec === :amf ? CutAMF(g, gas) : nothing)
 end
 KA.get_backend(m::CutKA) = KA.get_backend(m.grid)
 """A zero state (or a coefficient array, nv = NCC) on the device of the model."""
@@ -591,6 +599,109 @@ end
 ka_column_solve!(Y, m::CutKA, Cf, c, R) = (g = m.grid; w = m.work;
     _launch!(m, _kc_csolve!, (g.nxl, g.nyl), Y, R, Cf, _geo(g), w.Wc, w.cpw, w.idw, Float64(c), g.dz, g.nz, m.gas.g); Y)
 
+# ------------------------------------------------------------------ AMF preconditioner of the tile (host)
+
+"""
+Tile model of the AMF preconditioner: FV3D.Model3D on the subgrid of the tile (decomposed directions: the tile with its
+halo column on each side as overlap; others: the whole periodic direction), its coefficient vector and work vectors.
+The couplings across the edges of the subgrid (its own periodicity) are removed from the matrices.
+"""
+struct CutAMF
+    mt::FV3D.Model3D
+    ox::Bool; oy::Bool                 # decomposed (overlap) in x, y
+    C::Vector{Float64}
+    rt::Vector{Float64}; zt::Vector{Float64}; z0::Vector{Float64}
+end
+function CutAMF(g::CutGrid, gas::Gas)
+    ox, oy = g.px > 1, g.py > 1
+    nxt = ox ? g.nxh : g.nx; nyt = oy ? g.nyh : g.ny
+    gt = FV3D.subgrid(g.g3, ox ? g.i0 - HALO : 0, oy ? g.j0 - HALO : 0, nxt, nyt)
+    mt = FV3D.Model3D(gt, gas, z -> 1.0, z -> 300.0; implicit = :amf)
+    return CutAMF(mt, ox, oy, zeros(FV3D._ncoef(gt)), zeros(mt.nq), zeros(mt.nq), zeros(mt.nq))
+end
+"""Tile array index (I, J) of the subgrid cell (it, jt)."""
+@inline _tI(P::CutAMF, it) = P.ox ? it : it + HALO
+@inline _tJ(P::CutAMF, jt) = P.oy ? jt : jt + HALO
+
+"""Remove the entries of A that couple unknowns across an edge of the subgrid (column distance > 3)."""
+function _cut_edges(A, gt, ox, oy)
+    (ox || oy) || return A
+    I, J, V = findnz(A)
+    keep = [(!ox || abs(FV3D.homecol(gt, r)[1] - FV3D.homecol(gt, c)[1]) <= 3) &&
+            (!oy || abs(FV3D.homecol(gt, r)[2] - FV3D.homecol(gt, c)[2]) <= 3) for (r, c) in zip(I, J)]
+    return sparse(I[keep], J[keep], V[keep], size(A)...)
+end
+
+"""
+    ka_prec_stage!(m, Cf)
+
+Preconditioner of the stage with the (combined) coefficients Cf: for prec = :amf the matrices J_ac, J_adv of the tile
+model (FV3D `frozen_stage_begin!`); the factors follow per c in the first solve.
+"""
+function ka_prec_stage!(m::CutKA, Cf)
+    m.prec === :amf || return nothing
+    exchange!(m.dec, Cf, m.grid)
+    return _amf_stage!(m.amf::CutAMF, Array(Cf), m.complete)
+end
+function _amf_stage!(P::CutAMF, A::Array{Float64,4}, complete::Bool)
+    mt = P.mt; gt = mt.grid
+    C = P.C; fill!(C, 0.0)
+    for k in 1:gt.nz+1, jt in 1:gt.ny, it in 1:gt.nx
+        I, J = _tI(P, it), _tJ(P, jt)
+        if k <= gt.nz
+            C[FV3D.cθx(gt, it, jt, k)] = A[I, J, k, KθX]; C[FV3D.cθy(gt, it, jt, k)] = A[I, J, k, KθY]
+            C[FV3D.cPx(gt, it, jt, k)] = A[I, J, k, KPX]; C[FV3D.cPy(gt, it, jt, k)] = A[I, J, k, KPY]
+            C[FV3D.caxp(gt, it, jt, k)] = A[I, J, k, KAXP]; C[FV3D.caxm(gt, it, jt, k)] = A[I, J, k, KAXM]
+            C[FV3D.cayp(gt, it, jt, k)] = A[I, J, k, KAYP]; C[FV3D.caym(gt, it, jt, k)] = A[I, J, k, KAYM]
+            for d in 1:3, sd in 1:2
+                C[FV3D.cvel(gt, d, sd, it, jt, k)] = A[I, J, k, kvel(d, sd)]
+            end
+        end
+        C[FV3D.cθz(gt, it, jt, k)] = A[I, J, k, KθZ]; C[FV3D.cPz(gt, it, jt, k)] = A[I, J, k, KPZ]
+        C[FV3D.cazp(gt, it, jt, k)] = A[I, J, k, KAZP]; C[FV3D.cazm(gt, it, jt, k)] = A[I, J, k, KAZM]
+    end
+    pf, jf = FV3D.FV3D_PRESSURE_FORM[], FV3D.FV3D_MASK_JFORM[]
+    try
+        FV3D.FV3D_PRESSURE_FORM[] = :product; FV3D.FV3D_MASK_JFORM[] = complete ? :conservative : :partial
+        s = FV3D.frozen_stage_begin!(mt, C, P.z0)
+        s.J = _cut_edges(s.J, gt, P.ox, P.oy); s.Jadv = _cut_edges(s.Jadv, gt, P.ox, P.oy)
+        s.ridx = unique(s.Jadv.rowval)
+    finally
+        FV3D.FV3D_PRESSURE_FORM[] = pf; FV3D.FV3D_MASK_JFORM[] = jf
+    end
+    return nothing
+end
+
+"""Y = AMF⁻¹ X on the interior (restricted additive Schwarz over the tiles: X on the tile with its halo, the result on
+the interior)."""
+function _amf_solve!(Y, m::CutKA, c, X)
+    P = m.amf::CutAMF
+    (P.ox || P.oy) && exchange!(m.dec, X, m.grid)
+    B = _amf_host!(P, m.grid.nxl, m.grid.nyl, Float64(c), Array(X))
+    copyto!(Y, B)
+    return Y
+end
+function _amf_host!(P::CutAMF, nxl::Int, nyl::Int, c::Float64, A::Array{Float64,4})
+    mt = P.mt; gt = mt.grid
+    rt = P.rt
+    for k in 1:gt.nz, jt in 1:gt.ny, it in 1:gt.nx
+        I, J = _tI(P, it), _tJ(P, jt)
+        rt[FV3D.iρ(gt, it, jt, k)] = A[I, J, k, CR]; rt[FV3D.iU(gt, it, jt, k)] = A[I, J, k, CU]
+        rt[FV3D.iV(gt, it, jt, k)] = A[I, J, k, CV]; rt[FV3D.iΘ(gt, it, jt, k)] = A[I, J, k, CT]
+        k >= 2 && (rt[FV3D.iW(gt, it, jt, k)] = A[I, J, k, CW])
+    end
+    FV3D.implicit_solve!(P.zt, mt, c, c, rt; solver = :amf)
+    B = zeros(size(A))
+    for k in 1:gt.nz, j in 1:nyl, i in 1:nxl
+        I, J = i + HALO, j + HALO
+        it, jt = P.ox ? I : i, P.oy ? J : j
+        B[I, J, k, CR] = P.zt[FV3D.iρ(gt, it, jt, k)]; B[I, J, k, CU] = P.zt[FV3D.iU(gt, it, jt, k)]
+        B[I, J, k, CV] = P.zt[FV3D.iV(gt, it, jt, k)]; B[I, J, k, CT] = P.zt[FV3D.iΘ(gt, it, jt, k)]
+        k >= 2 && (B[I, J, k, CW] = P.zt[FV3D.iW(gt, it, jt, k)])
+    end
+    return B
+end
+
 """Interior of a state array as a vector (view of the packed block (nxl, nyl, nz+1, NVC))."""
 _interior(m::CutKA, Q) = (g = m.grid; view(Q, HALO+1:HALO+g.nxl, HALO+1:HALO+g.nyl, :, :))
 _pack!(v, m::CutKA, Q) = (g = m.grid; reshape(v, g.nxl, g.nyl, g.nz + 1, NVC) .= _interior(m, Q); v)
@@ -626,10 +737,14 @@ function _cut_apply!(out, m::CutKA, Cf, c, x, W::CutGMRES)
     @. out = x - c * out
     return out
 end
-"""z = M⁻¹ r (column solve, packed)."""
+"""z = M⁻¹ r (packed): tile AMF (prec = :amf) or column solve."""
 function _cut_prec!(z, m::CutKA, Cf, c, r, W::CutGMRES)
     _unpack!(W.X, m, r)
-    ka_column_solve!(W.Y, m, Cf, c, W.X)
+    if m.prec === :amf
+        _amf_solve!(W.Y, m, c, W.X)
+    else
+        ka_column_solve!(W.Y, m, Cf, c, W.X)
+    end
     return _pack!(z, m, W.Y)
 end
 
@@ -757,6 +872,7 @@ CutMISWork(m::CutKA, s::Int; restart::Int = 30) =
 steps on the unmasked faces, the implicit Crank–Nicolson step in the middle."""
 function _cut_hevi_loop!(Z, m::CutKA, Cf, F, h, N, w::CutMISWork; tol, krylov = :gmres)
     g, dec, k = m.grid, m.dec, w.k
+    ka_prec_stage!(m, Cf)
     for _ in 1:N, half in 1:2
         exchange!(dec, Z, g); ka_hthermo!(k, m, Cf, Z, F); _axpy!(Z, m, h / 4, k)
         exchange!(dec, Z, g); ka_hmomentum!(k, m, Cf, Z, F); _axpy!(Z, m, h / 2, k)

@@ -1534,7 +1534,7 @@ end
     end
 end
 
-@testset "FV3DKA: dry cut cells (CutKA) equal FV3D Model3D, implicit = :amf, :hevi with GMRES" begin
+@testset "FV3DKA: dry cut cells (CutKA) equal FV3D Model3D, implicit = :amf, :hevi with GMRES (tile AMF, columns)" begin
     K = MultiRate.FV3DKA; F3 = MultiRate.FV3D
     gas = CM.Gas(); ρr, Θr, θr = CM.stratified_reference(gas)
     pf, jf0, sol0, tol0, til0 = F3.FV3D_PRESSURE_FORM[], F3.FV3D_MASK_JFORM[], F3.FV3D_MASK_SOLVER[], F3.FV3D_MASK_TOL[], F3.FV3D_MASK_TILES[]
@@ -1571,11 +1571,17 @@ end
             @test maximum(abs, qk .- q3) < 1e-11 * maximum(abs, q3)
             @test abs(F3.total3d(m3, qk, :ρ) / F3.total3d(m3, q0, :ρ) - 1) < 1e-13
             @test abs(F3.total3d(m3, qk, :Θ) / F3.total3d(m3, q0, :Θ) - 1) < 1e-13
-            @test maximum(m.its) < 60
+            @test maximum(m.its) < 20
             # BiCGStab instead of GMRES: the same run
             Q = K.ka_state(m, g3, q0)
             K.ka_run!(m, Q, 20.0, 6; tab, nsub = 4, tol = 1e-12, krylov = :bicgstab)
             @test maximum(abs, K.global_state(m, g3, Q) .- q3) < 1e-10 * maximum(abs, q3)
+            # column preconditioner instead of the tile AMF (default): the same run, more iterations
+            mc = K.CutKA(K.CutGrid(g3); gas, sponge = (4e3, 0.02), jform = jf, prec = :columns)
+            Q = K.ka_state(mc, g3, q0)
+            K.ka_run!(mc, Q, 20.0, 6; tab, nsub = 4, tol = 1e-12)
+            @test maximum(abs, K.global_state(mc, g3, Q) .- q3) < 1e-10 * maximum(abs, q3)
+            @test sum(m.its) < sum(mc.its) / 2
         end
     finally
         F3.FV3D_PRESSURE_FORM[] = pf; F3.FV3D_MASK_JFORM[] = jf0; F3.FV3D_MASK_SOLVER[] = sol0; F3.FV3D_MASK_TOL[] = tol0

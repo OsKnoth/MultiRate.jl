@@ -22,7 +22,7 @@ local indices I = H + i (i = 1 … nxl the interior), k = 1 … nz for cells and
 module FV3DKA
 
 using KernelAbstractions
-using LinearAlgebra
+using LinearAlgebra, SparseArrays
 const KA = KernelAbstractions
 using ..Common: Gas, pressure, MoistGas, moist_state, moist_exner, _moist_p, fischer_burmeister, theta_phase_factor,
                 pressure_phase_factor, exner_derivatives, theta_e, _Θof, KesslerParams, kessler_rates,
