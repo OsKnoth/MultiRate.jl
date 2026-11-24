@@ -14,6 +14,15 @@
 
 """Pressure form of the 3D FV operator (read in every call): `:gradp` or `:product`."""
 const FV3D_PRESSURE_FORM = Ref(:gradp)
+"""implicit = :amf: solve I - c (J_ac + J_adv) on the masked unknowns exactly (sparse LU) instead of the approximate
+matrix factorization (needed with FV3D_MASK_JFORM = :conservative)."""
+const FV3D_MASK_COUPLED = Ref(false)
+"""HEVI implicit step z ← z + (I - β dt J)⁻¹ dt G(z): β = 1/2 Crank–Nicolson (default), β = 1 linearly implicit Euler."""
+const FV3D_HEVI_BETA = Ref(0.5)
+"""Form of the masked advection Jacobian (advection_jacobian.jl): `:partial` (θ rows complete: -a± θ δρ; momentum rows a± δM),
+`:conservative` (also the momentum rows complete: δF u_up - a± u δρ), `:advective` (Jebens, Knoth, Weiner 2011: transport
+a± δφ of ρ, Θ and the momenta, no ρ columns in the Θ and momentum rows)."""
+const FV3D_MASK_JFORM = Ref(:partial)
 
 struct GradP end
 struct Product end
@@ -27,7 +36,7 @@ pressure_form() = FV3D_PRESSURE_FORM[] === :product ? Product() :
 # [θx (N); θy (N); θz (Nz); Px (N); Py (N); Pz (Nz); a⁺x, a⁻x, a⁺y, a⁻y (N each); a⁺z, a⁻z (Nz each)],
 # N = nx ny nz, Nz = nx ny (nz+1); a± the upwind coefficients of the masked advection (implicit = :amf)
 
-_ncoef(g::Grid3D) = 8 * ncell(g) + 4 * g.nx * g.ny * (g.nz + 1)
+_ncoef(g::Grid3D) = 14 * ncell(g) + 4 * g.nx * g.ny * (g.nz + 1)
 @inline _fz(g::Grid3D, i, j, k) = ip(g, i) + (jp(g, j) - 1) * g.nx + (k - 1) * g.nx * g.ny
 @inline _Nz(g::Grid3D) = g.nx * g.ny * (g.nz + 1)
 @inline cθx(g, i, j, k) = _c(g, i, j, k)
@@ -43,6 +52,8 @@ _ncoef(g::Grid3D) = 8 * ncell(g) + 4 * g.nx * g.ny * (g.nz + 1)
 @inline caym(g, i, j, k) = _ca0(g) + 3 * ncell(g) + _c(g, i, j, k)
 @inline cazp(g, i, j, k) = _ca0(g) + 4 * ncell(g) + _fz(g, i, j, k)
 @inline cazm(g, i, j, k) = _ca0(g) + 4 * ncell(g) + _Nz(g) + _fz(g, i, j, k)
+"""Cell velocity M_side/ρ of the shifted momentum (direction d, side 1 = L, 2 = R) of y (masked advection Jacobian)."""
+@inline cvel(g, d, side, i, j, k) = _ca0(g) + 4 * ncell(g) + 2 * _Nz(g) + (2 * (d - 1) + side - 1) * ncell(g) + _c(g, i, j, k)
 
 frozen_ncoef(m::Model3D) = _ncoef(m.grid)
 
@@ -90,6 +101,14 @@ function frozen_data!(C, S, m::Model3D, q)
         ay(g, i, j, k) > 0 && (C[cθy(g, i, j, k)] = face_y(g, θ, i, j, k, c.Fy[i, j, k]))
         k > 1 && az(g, i, j, k) > 0 && (C[cθz(g, i, j, k)] = face_z(g, θ, i, j, k, c.Fz[i, j, k]))
     end
+    if m.implicit === :amf                                       # first-order upwind θ on the faces of masked cells
+        @inbounds for k in 1:nz, j in 1:ny, i in 1:nx
+            im, jm = ip(g, i - 1), jp(g, j - 1)
+            (g.mask[i, j, k] || g.mask[im, j, k]) && ax(g, i, j, k) > 0 && (C[cθx(g, i, j, k)] = c.Fx[i, j, k] >= 0 ? θ[im, j, k] : θ[i, j, k])
+            (g.mask[i, j, k] || g.mask[i, jm, k]) && ay(g, i, j, k) > 0 && (C[cθy(g, i, j, k)] = c.Fy[i, j, k] >= 0 ? θ[i, jm, k] : θ[i, j, k])
+            k > 1 && (g.mask[i, j, k] || g.mask[i, j, k-1]) && az(g, i, j, k) > 0 && (C[cθz(g, i, j, k)] = c.Fz[i, j, k] >= 0 ? θ[i, j, k-1] : θ[i, j, k])
+        end
+    end
     # momentum advection: shift technique (advection.jl)
     momentum_advection!(S, m)
     pressure_coefficients!(pressure_form(), C, m, q)
@@ -98,8 +117,13 @@ function frozen_data!(C, S, m::Model3D, q)
     upwind_coefficients!(C, m, q)
     if m.implicit === :amf
         t = m.cache.tmp; fill!(t, 0.0)
-        adv_masked!(t, m, C, q)
+        _adv!(t, m, C, q); _advθ!(t, m, C, q)                        # momentum and θ in the mask
         S .-= t
+        # masked momentum rows: first-order upwind only (A1 z fast, no high-order remainder; S holds only the momentum
+        # advection here)
+        for d in 1:3, k in 1:nz, j in 1:ny, i in 1:nx
+            _row(g, d, i, j, k) && (S[_ilo(g, d, i, j, k)] = 0.0)
+        end
     end
     return C, S
 end
@@ -285,16 +309,21 @@ end
 # :hmomentum  momentum h (explicit faces), forcing U, V              half steps, with all forcing)
 # :vertical   thermo v, momentum v, + thermo h, momentum h on the masked faces (implicit = :mask, :amf)
 #             + the masked momentum advection A1 z (implicit = :amf, also in :all and :momentum)
+#             + the masked θ advection Aθ z (implicit = :amf, also in :all and :thermo)
 # explicit faces: all (implicit = :column) or the unmasked ones (implicit = :mask, :amf).
 
 _hsel(m::Model3D) = m.implicit in (:mask, :amf) ? Unmasked() : AllFaces()
 """Masked momentum advection A1(C) z of the fast part (implicit = :amf; else nothing)."""
 _adv!(out, m, C, z) = (m.implicit === :amf && adv_masked!(out, m, C, z); out)
+"""Masked θ advection Aθ(C) z of the fast part (implicit = :amf; Θ rows of the masked cells)."""
+_advθ!(out, m, C, z) = (m.implicit === :amf && (adv_theta_masked!(out, m, C, z);
+    FV3D_MASK_JFORM[] === :advective && adv_rho_masked!(out, m, C, z)); out)
 
 _fast!(::Val{:all}, out, m, C, z, F, pf) = (thermo_h!(out, m, C, z); thermo_v!(out, m, C, z);
     prepare_pressure!(pf, m, z); momentum_h!(out, m, C, z, pf); momentum_v!(out, m, C, z, pf); _adv!(out, m, C, z);
-    forcing_thermo!(out, m, F); forcing_UV!(out, m, F); forcing_W!(out, m, F); sponge!(out, m, z))
-_fast!(::Val{:thermo}, out, m, C, z, F, pf) = (thermo_h!(out, m, C, z); thermo_v!(out, m, C, z); forcing_thermo!(out, m, F))
+    _advθ!(out, m, C, z); forcing_thermo!(out, m, F); forcing_UV!(out, m, F); forcing_W!(out, m, F); sponge!(out, m, z))
+_fast!(::Val{:thermo}, out, m, C, z, F, pf) = (thermo_h!(out, m, C, z); thermo_v!(out, m, C, z); _advθ!(out, m, C, z);
+    forcing_thermo!(out, m, F))
 _fast!(::Val{:momentum}, out, m, C, z, F, pf) = (prepare_pressure!(pf, m, z); momentum_h!(out, m, C, z, pf);
     momentum_v!(out, m, C, z, pf); _adv!(out, m, C, z); forcing_UV!(out, m, F); forcing_W!(out, m, F); sponge!(out, m, z))
 _fast!(::Val{:hthermo}, out, m, C, z, F, pf) = (thermo_h!(out, m, C, z, _hsel(m)); forcing_thermo!(out, m, F);
@@ -306,7 +335,7 @@ function _fast!(::Val{:vertical}, out, m, C, z, F, pf)
     if m.implicit in (:mask, :amf)
         thermo_h!(out, m, C, z, Masked()); momentum_h!(out, m, C, z, pf, Masked())
     end
-    _adv!(out, m, C, z)
+    _adv!(out, m, C, z); _advθ!(out, m, C, z)
     return out
 end
 _fast!(::Val{P}, out, m, C, z, F, pf) where {P} = error("frozen_fast!: unknown part $P")

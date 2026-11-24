@@ -1124,21 +1124,62 @@ end
         @test el < 1e-9 * 6e3
         @test maximum(abs, TS.frozen_fast!(zeros(mq.nq), mq, (Cq = zeros(TS.frozen_ncoef(mq)); Sq = zeros(mq.nq);
               TS.frozen_data!(Cq, Sq, mq, q); Cq), q, :all, Sq) - TS.rhs_nonlinear(mq, q)) < 1e-12 * maximum(abs, N)
-        # implicit = :amf (default with cut cells): masked momentum advection (simple upwind) in the
-        # fast part; N unchanged, parts consistent, assembled matrix = matrix-free operator, short run
+        # implicit = :amf (default with cut cells): first-order upwind θ and momentum advection in the mask, in the
+        # fast part with its complete Jacobian; mass rows unchanged, conservative, parts consistent, assembled matrix =
+        # matrix-free operator = the exact derivative of the masked upwind advection, short run
         ma = F3.Model3D(gc, gas, ρr, Θr); @test ma.implicit === :amf
-        @test maximum(abs, TS.rhs_nonlinear(ma, q) - N) < 1e-12 * maximum(abs, N)
+        Na = TS.rhs_nonlinear(ma, q)
+        @test maximum(abs(Na[F3.iρ(gc, i, j, k)] - N[F3.iρ(gc, i, j, k)]) for i in 1:8, j in 1:8, k in 1:6) < 1e-13 * maximum(abs, N)
+        @test abs(F3.total3d(ma, Na, :Θ)) < 1e-13 * F3.total3d(ma, q, :Θ)
         Ca = zeros(TS.frozen_ncoef(ma)); Sa = zeros(ma.nq); TS.frozen_data!(Ca, Sa, ma, q)
         oa(p) = TS.frozen_fast!(zeros(ma.nq), ma, Ca, q, p, Sa)
+        @test maximum(abs, oa(:all) - Na) < 1e-13 * maximum(abs, N)
         @test maximum(abs, oa(:thermo) + oa(:momentum) - oa(:all)) < 1e-13 * maximum(abs, N)
         @test maximum(abs, oa(:hthermo) + oa(:hmomentum) + oa(:vertical) - oa(:all)) < 1e-13 * maximum(abs, N)
-        va = 1e-3 .* cos.(1:ma.nq)
+        va = 1e-3 .* cos.(1:ma.nq) .* abs.(q)
+        F3.FV3D_MASK_JFORM[] = :conservative                         # complete momentum rows
         Aa = F3.adv_matrix(ma, Ca)
-        @test length(Aa.nzval) > 0 && maximum(abs, Aa * va - F3.adv_masked!(zeros(ma.nq), ma, Ca, va)) < 1e-12 * maximum(abs, Aa * va)
+        Ava = F3.adv_theta_masked!(F3.adv_masked!(zeros(ma.nq), ma, Ca, va), ma, Ca, va)
+        @test length(Aa.nzval) > 0 && maximum(abs, Aa * va - Ava) < 1e-12 * maximum(abs, Ava)
+        # exact Jacobian: masked upwind advection U(y) = A(C(y)) y without the completion terms, and on the Θ rows the
+        # upwind Θ flux through the faces of the masked cells (both cells), central differences
+        function Uadv(y)
+            C = zeros(TS.frozen_ncoef(ma)); TS.frozen_data!(C, zeros(ma.nq), ma, y)
+            o = F3.adv_masked!(zeros(ma.nq), ma, C, y)               # the completion terms vanish for z = y
+            T = F3.masked_face_transport!(zeros(8, 8, 6), ma, C, y, F3.iΘ, false)
+            for k in 1:6, j in 1:8, i in 1:8
+                o[F3.iΘ(gc, i, j, k)] += T[i, j, k]
+            end
+            return o
+        end
+        rows = unique(Aa.rowval)
+        θrows = [F3.iΘ(gc, i, j, k) for i in 1:8, j in 1:8, k in 1:6]
+        mrows = setdiff(rows, θrows); trows = intersect(rows, θrows)
+        @test length(trows) > count(gc.mask)                           # Θ rows: masked cells and their neighbours
+        ε = 1e-5
+        # momentum rows: general perturbation (the ρ and mass-flux columns of the complete rows)
+        dU = (Uadv(q .+ ε .* va) .- Uadv(q .- ε .* va)) ./ (2ε)
+        @test norm((Aa * va .- dU)[mrows]) < 1e-7 * norm(dU[mrows])
+        # Θ rows: perturbation of ρ and Θ only (δF = 0): the derivative a± (δΘ - θ δρ) of the upwind Θ flux
+        vθ = copy(va); N3 = F3.ncell(gc); vθ[N3+1:end-N3] .= 0
+        dθ = (Uadv(q .+ ε .* vθ) .- Uadv(q .- ε .* vθ)) ./ (2ε)
+        @test norm((Aa * vθ .- dθ)[trows]) < 1e-7 * norm(dθ[trows])
+        @test abs(F3.total3d(ma, Aa * va, :Θ)) < 1e-13 * F3.total3d(ma, abs.(Aa * va), :Θ)   # conservative Θ rows
+        F3.FV3D_MASK_JFORM[] = :partial
         ρa = F3.hydrostatic_column(ma, Θr; ρbottom = ρr(gc.zc[1]))
         qa0 = F3.project3d(ma, (x, y, z) -> (ρ = ρa[F3.level(gc, z)]; (ρ, 10ρ, 0.0, 0.0, Θr(gc.zc[F3.level(gc, z)]))))
         qa = TS.run_frozen(ma, qa0, 20.0, 10; tab = TS.mis_tableau(:MIS54), nsub = 4, fast = :hevi)
         @test all(isfinite, qa) && abs(F3.total3d(ma, qa, :ρ) / F3.total3d(ma, qa0, :ρ) - 1) < 1e-12
+        # exact masked Jacobian (:conservative) with the coupled sparse solve: the same short run
+        try
+            F3.FV3D_MASK_JFORM[] = :conservative; F3.FV3D_MASK_COUPLED[] = true
+            mc2 = F3.Model3D(gc, gas, ρr, Θr)
+            qc2 = TS.run_frozen(mc2, qa0, 20.0, 10; tab = TS.mis_tableau(:MIS54), nsub = 4, fast = :hevi)
+            @test all(isfinite, qc2) && abs(F3.total3d(mc2, qc2, :ρ) / F3.total3d(mc2, qa0, :ρ) - 1) < 1e-12
+            @test maximum(abs, F3.vertical_velocity(mc2, qc2)) < 2maximum(abs, F3.vertical_velocity(ma, qa)) + 1
+        finally
+            F3.FV3D_MASK_JFORM[] = :partial; F3.FV3D_MASK_COUPLED[] = false
+        end
         g0 = F3.Grid3D(8, 8, 6, 20e3, 20e3, 6e3; zs = (x, y) -> -1.0); gf = F3.Grid3D(8, 8, 6, 20e3, 20e3, 6e3)
         qf = F3.project3d(F3.Model3D(gf, gas, ρr, Θr), (x, y, z) -> (ρr(z), 10ρr(z), 5ρr(z), 0.0, Θr(z)))
         @test TS.rhs_nonlinear(F3.Model3D(g0, gas, ρr, Θr), qf) == TS.rhs_nonlinear(F3.Model3D(gf, gas, ρr, Θr), qf)

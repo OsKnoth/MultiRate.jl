@@ -208,13 +208,27 @@ end
 
 """Linearly implicit Crank–Nicolson step of the implicit part: z ← z + P⁻¹ dt G(z),
 G = `frozen_fast!(…, :vertical, …)`; P = I - dt/2 J with J the column systems (:column) or the
-sparse matrix (:mask), P = (I - dt/2 J)(I - dt/2 J_adv) (:amf, approximate matrix factorization)."""
+sparse matrix (:mask), P = (I - dt/2 J)(I - dt/2 J_adv) (:amf, approximate matrix factorization),."""
 function frozen_vertical_step!(z, m::Model3D, C, dt, k, y)
     s = _column(m)
     frozen_fast!(k, m, C, z, :vertical, k)
     @. k *= dt
-    if m.implicit in (:mask, :amf)
-        c = dt / 2
+    β = FV3D_HEVI_BETA[]                               # 1/2: Crank–Nicolson; > 1/2 off-centred (experimental)
+    if m.implicit === :amf && FV3D_MASK_COUPLED[]
+        # I - c (J_ac + J_adv) exactly on the masked unknowns ∪ the masked advection rows (no AMF)
+        c = β * dt
+        column_solve!(y, s, m, c, k)                   # the unmasked columns (and a first guess)
+        isempty(s.idx) && isempty(s.ridx) && (@. z += y; return z)
+        F = get!(s.lu, Float64(c)) do
+            id2 = sort!(union(s.idx, s.ridx))
+            Jt = s.J + s.Jadv
+            out = setdiff(1:m.nq, id2)
+            (lu(I - c * Jt[id2, id2]), id2, Jt[id2, out], out)
+        end
+        Fa, id2, Jo, out = F
+        y[id2] = Fa \ (k[id2] .+ c .* (Jo * y[out]))
+    elseif m.implicit in (:mask, :amf)
+        c = β * dt
         F = get!(s.lu, Float64(c)) do
             Fac = isempty(s.idx) ? nothing : lu(I - c * s.J[s.idx, s.idx])
             amf = m.implicit === :amf && !isempty(s.ridx)
@@ -231,7 +245,7 @@ function frozen_vertical_step!(z, m::Model3D, C, dt, k, y)
             y[s.ridx] = F[2] \ b
         end
     else
-        column_solve!(y, s, m, dt / 2, k)
+        column_solve!(y, s, m, β * dt, k)
     end
     @. z += y
     return z
