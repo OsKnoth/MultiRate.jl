@@ -14,7 +14,7 @@ using KernelAbstractions
 const KA = KernelAbstractions
 import MultiRate.FV3DKA: exchange!, merge_faces!, allreduce_sum, allreduce_max, allreduce_min, mpi_decomp,
                          decomp_dims, decomp_coords, start_halo!, finish_halo!, init_exchange!
-using MultiRate.FV3DKA: AbstractDecomp, HALO, KAGrid, _as4, exchange_length
+using MultiRate.FV3DKA: AbstractDecomp, HALO, KAGrid, AbstractTileGrid, _as4, exchange_length
 
 const W_, E_, S_, N_ = 1, 2, 3, 4
 const OPP = (E_, W_, N_, S_)
@@ -51,7 +51,7 @@ allreduce_max(d::MPIDecomp, x) = MPI.Allreduce(x, max, d.comm)
 allreduce_min(d::MPIDecomp, x) = MPI.Allreduce(x, min, d.comm)
 
 """The buffers for the tile grid g, once (a later call with a larger grid enlarges them)."""
-function init_exchange!(d::MPIDecomp, g::KAGrid, nfields::Int = 12)
+function init_exchange!(d::MPIDecomp, g::AbstractTileGrid, nfields::Int = 12)
     L = exchange_length(g, nfields)
     b = d.buf[]
     (b !== nothing && length(b.send[1]) >= L) && return d
@@ -107,7 +107,7 @@ function _unpack!(B, items, r1, r2)
     return nothing
 end
 
-function _exchange_items!(d::MPIDecomp, items, g::KAGrid)
+function _exchange_items!(d::MPIDecomp, items, g::AbstractTileGrid)
     H, nxl, nyl = HALO, g.nxl, g.nyl
     b = _buffers(d)
     A1 = _as4(first(items)[1])
@@ -128,18 +128,18 @@ function _exchange_items!(d::MPIDecomp, items, g::KAGrid)
     return nothing
 end
 
-function exchange!(d::MPIDecomp, A, g::KAGrid, vars::Tuple = Tuple(1:size(_as4(A), 4)))
+function exchange!(d::MPIDecomp, A, g::AbstractTileGrid, vars::Tuple = Tuple(1:size(_as4(A), 4)))
     _exchange_items!(d, [(A, v) for v in vars], g)
     return A
 end
-function exchange!(d::MPIDecomp, As::Tuple, g::KAGrid)
+function exchange!(d::MPIDecomp, As::Tuple, g::AbstractTileGrid)
     _exchange_items!(d, [(A, v) for A in As for v in 1:size(_as4(A), 4)], g)
     return As
 end
 
 # ------------------------------------------------------------------ tile-boundary faces
 """Tile-boundary faces: the value of the upwind tile on both tiles (x-faces by the sign of Fx, then y-faces)."""
-function merge_faces!(d::MPIDecomp, Ax, Fx, Ay, Fy, g::KAGrid)
+function merge_faces!(d::MPIDecomp, Ax, Fx, Ay, Fy, g::AbstractTileGrid)
     H, nxl, nyl = HALO, g.nxl, g.nyl
     b = _buffers(d)
     n = zeros(Int, 4)
@@ -188,12 +188,12 @@ end
 struct HaloHandle{A,V}
     A::A
     vars::V
-    g::KAGrid
+    g::AbstractTileGrid
 end
 """The side slabs (x-sides (nyl, nk, nv), y-sides (nxl, nk, nv)) of the buffers bufs."""
 _sides(bufs, g, nk, nv) = ntuple(s -> _slab(bufs[s], 0, (s <= 2 ? g.nyl : g.nxl, nk, nv)), 4)
 
-function start_halo!(d::MPIDecomp, A, g::KAGrid, vars::Tuple)
+function start_halo!(d::MPIDecomp, A, g::AbstractTileGrid, vars::Tuple)
     H, nxl, nyl = HALO, g.nxl, g.nyl
     nk, nv = size(A, 3), length(vars)
     be = KA.get_backend(A)

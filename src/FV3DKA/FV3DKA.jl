@@ -22,8 +22,9 @@ local indices I = H + i (i = 1 … nxl the interior), k = 1 … nz for cells and
 module FV3DKA
 
 using KernelAbstractions
+using LinearAlgebra
 const KA = KernelAbstractions
-using ..Common: MoistGas, moist_state, moist_exner, _moist_p, fischer_burmeister, theta_phase_factor,
+using ..Common: Gas, pressure, MoistGas, moist_state, moist_exner, _moist_p, fischer_burmeister, theta_phase_factor,
                 pressure_phase_factor, exner_derivatives, theta_e, _Θof, KesslerParams, kessler_rates,
                 rain_velocity, liquid_content
 using ..FV2D: recon3, shiftvel, shift_back
@@ -31,7 +32,8 @@ using ..TimeStepping: MISTableau, fast_substeps, nstages
 import ..FV3D
 
 export KAGrid, SerialDecomp, MoistKA, ka_state, global_state, ka_rhs!, ka_mis_step!, ka_run!, ka_step_end!,
-       ka_total, ka_project, ka_fields, ka_precipitation_rate, exchange!, mpi_decomp, HALO, VQR
+       ka_total, ka_project, ka_fields, ka_precipitation_rate, exchange!, mpi_decomp, HALO, VQR, CutGrid, CutKA,
+       ka_frozen_data!, ka_vertical!
 
 include("grid.jl")
 include("decomp.jl")
@@ -40,5 +42,6 @@ include("data.jl")
 include("fast.jl")
 include("mis.jl")
 include("convert.jl")
+include("cut.jl")
 
 end

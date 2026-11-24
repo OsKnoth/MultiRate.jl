@@ -1534,6 +1534,51 @@ end
     end
 end
 
+@testset "FV3DKA: dry cut cells (CutKA) equal FV3D Model3D, implicit = :amf, :hevi with GMRES" begin
+    K = MultiRate.FV3DKA; F3 = MultiRate.FV3D
+    gas = CM.Gas(); ρr, Θr, θr = CM.stratified_reference(gas)
+    pf, jf0, sol0, tol0, til0 = F3.FV3D_PRESSURE_FORM[], F3.FV3D_MASK_JFORM[], F3.FV3D_MASK_SOLVER[], F3.FV3D_MASK_TOL[], F3.FV3D_MASK_TILES[]
+    try
+        F3.FV3D_PRESSURE_FORM[] = :product
+        hill(x, y) = 1500.0 * exp(-((x - 10e3)^2 + (y - 8e3)^2) / 3e3^2)
+        g3 = F3.Grid3D(10, 8, 6, 20e3, 16e3, 6e3; zs = hill)
+        tab = TS.mis_tableau(:MIS54)
+        Random.seed!(3)
+        for jf in (:partial, :conservative)
+            F3.FV3D_MASK_JFORM[] = jf
+            m3 = F3.with_sponge(F3.Model3D(g3, gas, ρr, Θr), zeros(F3.nunknowns(g3)); zD = 4e3, αtop = 0.02)
+            ρa = F3.hydrostatic_column(m3, Θr; ρbottom = ρr(g3.zc[1]))
+            q0 = F3.project3d(m3, (x, y, z) -> (k = F3.level(g3, z); (ρa[k], 10ρa[k], -3ρa[k], 0.0, Θr(g3.zc[k]))))
+            m = K.CutKA(K.CutGrid(g3); gas, sponge = (4e3, 0.02), jform = jf)
+            # N(q) and the implicit part G_v(v) at a perturbed state
+            q = q0 .* (1 .+ 1e-3 .* randn(length(q0)))
+            Q = K.ka_state(m, g3, q)
+            N = K.global_state(m, g3, K.ka_rhs!(K.ka_zeros(m), m, Q))
+            N3 = TS.rhs_nonlinear(m3, q)
+            @test maximum(abs, N .- N3) < 1e-13 * maximum(abs, N3)
+            C3 = zeros(TS.frozen_ncoef(m3)); S3 = zeros(m3.nq); TS.frozen_data!(C3, S3, m3, q)
+            v = 1e-3 .* randn(length(q)) .* abs.(q)
+            Cf = K.ka_zeros(m, K.NCC); K.ka_frozen_data!(Cf, K.ka_zeros(m), m, Q)
+            V = K.ka_state(m, g3, v); K.exchange!(m.dec, V, m.grid)
+            G3 = TS.frozen_fast!(zeros(m3.nq), m3, C3, v, :vertical, S3)
+            @test maximum(abs, K.global_state(m, g3, K.ka_vertical!(K.ka_zeros(m), m, Cf, V)) .- G3) < 1e-13 * maximum(abs, G3)
+            # MIS54 with the HEVI small steps: GMRES (column preconditioner) = FV3D (GMRES, Schwarz), ρ and Θ conserved
+            F3.FV3D_MASK_SOLVER[] = :gmres; F3.FV3D_MASK_TOL[] = 1e-12; F3.FV3D_MASK_TILES[] = (2, 2)
+            q3 = TS.run_frozen(m3, q0, 20.0, 6; tab, nsub = 4, fast = :hevi)
+            Q = K.ka_state(m, g3, q0)
+            K.ka_run!(m, Q, 20.0, 6; tab, nsub = 4, tol = 1e-12)
+            qk = K.global_state(m, g3, Q)
+            @test maximum(abs, qk .- q3) < 1e-11 * maximum(abs, q3)
+            @test abs(F3.total3d(m3, qk, :ρ) / F3.total3d(m3, q0, :ρ) - 1) < 1e-13
+            @test abs(F3.total3d(m3, qk, :Θ) / F3.total3d(m3, q0, :Θ) - 1) < 1e-13
+            @test maximum(m.its) < 60
+        end
+    finally
+        F3.FV3D_PRESSURE_FORM[] = pf; F3.FV3D_MASK_JFORM[] = jf0; F3.FV3D_MASK_SOLVER[] = sol0; F3.FV3D_MASK_TOL[] = tol0
+        F3.FV3D_MASK_TILES[] = til0
+    end
+end
+
 @testset "FV3DKA: warm rain (rain = true) equals FV3D" begin
     F3 = MultiRate.FV3D; K = MultiRate.FV3DKA
     mgθ = CM.MoistGas()

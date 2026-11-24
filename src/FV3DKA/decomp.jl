@@ -60,7 +60,7 @@ end
 Fill the halo cells of the variables `vars` (indices into the last dimension of a 4D array A; a 3D array is one
 variable).
 """
-function exchange!(::SerialDecomp, A, g::KAGrid, vars::Tuple = Tuple(1:size(_as4(A), 4)))
+function exchange!(::SerialDecomp, A, g::AbstractTileGrid, vars::Tuple = Tuple(1:size(_as4(A), 4)))
     B = _as4(A)
     be = KA.get_backend(B)
     nk = size(B, 3)
@@ -78,11 +78,11 @@ loop needs the halo cells next to the faces only). Between start and finish the 
 that are sent (first and last interior column and row) must be final at the start. Serial: periodic copies at the
 start, finish does nothing.
 """
-start_halo!(dec::SerialDecomp, A, g::KAGrid, vars::Tuple) = (exchange!(dec, A, g, vars); nothing)
+start_halo!(dec::SerialDecomp, A, g::AbstractTileGrid, vars::Tuple) = (exchange!(dec, A, g, vars); nothing)
 finish_halo!(::SerialDecomp, h) = nothing
 
 """Exchange of several arrays in one communication (MPI: one message per neighbour)."""
-exchange!(dec::SerialDecomp, As::Tuple, g::KAGrid) = (foreach(A -> exchange!(dec, A, g), As); As)
+exchange!(dec::SerialDecomp, As::Tuple, g::AbstractTileGrid) = (foreach(A -> exchange!(dec, A, g), As); As)
 
 # Face arrays are stored at the left (lower) face of each cell: index I is the face between the cells I-1 and I.
 # The tile-boundary faces are I = HALO+1 (left) and I = HALO+nxl+1 (right; the left boundary face of the right
@@ -114,7 +114,7 @@ end
 Tile-boundary faces of the face arrays Ax (x-faces, 4D: the last dimension enumerates the arrays) and Ay (y-faces):
 the value of the tile upwind of the face (by the sign of the mass flux Fx, Fy) on both tiles.
 """
-function merge_faces!(::SerialDecomp, Ax, Fx, Ay, Fy, g::KAGrid)
+function merge_faces!(::SerialDecomp, Ax, Fx, Ay, Fy, g::AbstractTileGrid)
     be = KA.get_backend(Ax)
     nk = size(Ax, 3)
     _k_mergex!(be)(Ax, Fx, g.nxl; ndrange = (g.nyh, nk, size(Ax, 4)))

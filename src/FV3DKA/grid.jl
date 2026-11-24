@@ -7,6 +7,9 @@ exchanged (`merge_faces!`); the shift technique of the momentum advection exchan
 cell tendencies (data.jl)."""
 const HALO = 1
 
+"""Tile grids of the decomposition (halo exchange: `nxl`, `nyl`, `nxh`, `nyh`, `nz`)."""
+abstract type AbstractTileGrid end
+
 """
     KAGrid(nx, ny, nz, Lx, Ly, H; zs = nothing, px = 1, py = 1, cx = 0, cy = 0, backend = CPU())
 
@@ -14,7 +17,7 @@ Tile (cx, cy) (0-based) of a px × py decomposition of the periodic C-grid with 
 [0, Lx] × [0, Ly] × [0, H], flat or terrain following (Gal-Chen) with the terrain `zs(x, y)`. nx, ny must be
 divisible by px, py. Metric arrays on the device of `backend` (with halo).
 """
-struct KAGrid{M2,M3}
+struct KAGrid{M2,M3} <: AbstractTileGrid
     nx::Int; ny::Int; nz::Int                  # global
     nxl::Int; nyl::Int                         # interior of the tile
     i0::Int; j0::Int                           # global index of the first interior cell minus 1
