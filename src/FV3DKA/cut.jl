@@ -72,6 +72,45 @@ _geo(g::CutGrid) = (Vf = g.Vf, iV = g.iV, Ax = g.Ax, Ay = g.Ay, Az = g.Az, msk =
 @inline _mfy(G, I, J, k) = G.msk[I, J-1, k] > 0 || G.msk[I, J, k] > 0
 @inline _mfz(G, I, J, k) = G.msk[I, J, k-1] > 0 || G.msk[I, J, k] > 0
 
+"""
+Columns of the tile on which a kernel runs (overlap of communication and computation): `:all` the interior, `:core`
+the columns 2 … nxl-1 × 2 … nyl-1 (their ±1 stencils need no halo), `:ring` the rest (first and last row and column),
+run after the receive. Tiles narrower than 3 columns: core empty, ring = all.
+"""
+struct CutRegion
+    kind::Int                                      # 0 all, 1 core, 2 ring
+    nxl::Int
+    nyl::Int
+end
+function CutRegion(g::AbstractTileGrid, kind::Symbol)
+    small = min(g.nxl, g.nyl) < 3
+    k = kind === :all ? 0 : kind === :core ? (small ? 3 : 1) : kind === :ring ? (small ? 0 : 2) :
+        error("region: :all, :core or :ring")
+    return CutRegion(k, g.nxl, g.nyl)
+end
+"""Number of columns of the region (kind 3: empty core of a narrow tile)."""
+ncols(R::CutRegion) = R.kind == 0 ? R.nxl * R.nyl : R.kind == 1 ? (R.nxl - 2) * (R.nyl - 2) :
+                      R.kind == 2 ? 2 * (R.nxl + R.nyl) - 4 : 0
+"""Tile indices (I, J) (halo included) of the r-th column of the region (along i where possible)."""
+@inline function _cIJ(R::CutRegion, r)
+    if R.kind == 1
+        ni = R.nxl - 2
+        return ((r - 1) % ni + 2 + HALO, (r - 1) ÷ ni + 2 + HALO)
+    elseif R.kind == 2
+        r <= R.nxl && return (r + HALO, 1 + HALO)                                  # first row
+        r <= 2 * R.nxl && return (r - R.nxl + HALO, R.nyl + HALO)                  # last row
+        q = r - 2 * R.nxl                                                          # columns, rows 2 … nyl-1
+        return q <= R.nyl - 2 ? (1 + HALO, q + 1 + HALO) : (R.nxl + HALO, q - (R.nyl - 2) + 1 + HALO)
+    end
+    return ((r - 1) % R.nxl + 1 + HALO, (r - 1) ÷ R.nxl + 1 + HALO)
+end
+"""Launch a cell kernel (index (column, level)) over the columns of the region and nk levels (nothing if empty)."""
+function _launch_r!(m, kernel!, R::CutRegion, nk, args...)
+    n = ncols(R)
+    n == 0 && return nothing
+    return _launch!(m, kernel!, (n, nk), args..., R)
+end
+
 # ------------------------------------------------------------------ model
 
 struct CutWork{A3,A4}
@@ -353,9 +392,9 @@ end
 end
 
 """out = :hthermo (ρ, Θ: fluxes through the unmasked faces, forcing; W: forcing, sponge) on the interior."""
-@kernel function _kc_hthermo!(out, @Const(Z), @Const(Cf), @Const(F), G, damp, dx, dy, nz)
-    i, j, k = @index(Global, NTuple)
-    I, J = i + HALO, j + HALO
+@kernel function _kc_hthermo!(out, @Const(Z), @Const(Cf), @Const(F), G, damp, dx, dy, nz, RG)
+    ic, k = @index(Global, NTuple)
+    I, J = _cIJ(RG, ic)
     @inbounds begin
         oρ, oΘ = _cthermo_h(Z, Cf, G, dx, dy, I, J, k, 1)
         out[I, J, k, CR] = oρ + F[I, J, k, CR]; out[I, J, k, CT] = oΘ + F[I, J, k, CT]
@@ -364,9 +403,9 @@ end
     end
 end
 """out = :hmomentum (U, V: pressure gradient through the unmasked faces, forcing) on the interior."""
-@kernel function _kc_hmomentum!(out, @Const(Z), @Const(Cf), @Const(F), G, dx, dy)
-    i, j, k = @index(Global, NTuple)
-    I, J = i + HALO, j + HALO
+@kernel function _kc_hmomentum!(out, @Const(Z), @Const(Cf), @Const(F), G, dx, dy, RG)
+    ic, k = @index(Global, NTuple)
+    I, J = _cIJ(RG, ic)
     @inbounds begin
         oU, oV = _cmomentum_h(Z, Cf, G, dx, dy, I, J, k, 1)
         out[I, J, k, CU] = oU + F[I, J, k, CU]; out[I, J, k, CV] = oV + F[I, J, k, CV]
@@ -376,9 +415,9 @@ end
 
 """Implicit part without the masked momentum advection on the interior: vertical fluxes, vertical pressure gradient and
 gravity, the fluxes and pressure gradients through the masked x-, y-faces and the masked θ transport."""
-@kernel function _kc_vertical!(out, @Const(Z), @Const(Cf), G, dx, dy, dz, nz, grav)
-    i, j, k = @index(Global, NTuple)
-    I, J = i + HALO, j + HALO
+@kernel function _kc_vertical!(out, @Const(Z), @Const(Cf), G, dx, dy, dz, nz, grav, RG)
+    ic, k = @index(Global, NTuple)
+    I, J = _cIJ(RG, ic)
     @inbounds begin
         s = G.iV[I, J, k]
         Fb = k >= 2 ? G.Az[I, J, k] * Z[I, J, k, CW] : 0.0
@@ -416,9 +455,9 @@ gravity, the fluxes and pressure gradients through the masked x-, y-faces and th
 end
 
 """Shifted momenta M_side of z (direction d = 1 … 3, sides L, R: slots 2(d-1) + side) of the interior fluid cells."""
-@kernel function _kc_mshift!(M, @Const(Z), G, nz)
-    i, j, k = @index(Global, NTuple)
-    I, J = i + HALO, j + HALO
+@kernel function _kc_mshift!(M, @Const(Z), G, nz, RG)
+    ic, k = @index(Global, NTuple)
+    I, J = _cIJ(RG, ic)
     @inbounds for d in 1:3
         if G.Vf[I, J, k] > 0
             (lL, lR), (rL, rR) = FV3D.shiftcoef(_alo(G, nz, d, I, J, k), _ahi(G, nz, d, I, J, k))
@@ -432,9 +471,9 @@ end
 
 """Upwind transport of the shifted momenta in the interior cells (FV3D `upwind_transport!`) and, with `complete`, the
 rest of the Jacobian (FV3D `_mom_complete!`)."""
-@kernel function _kc_mtransport!(T, @Const(M), @Const(Z), @Const(Cf), G, dx, dy, dz, nz, complete)
-    i, j, k = @index(Global, NTuple)
-    I, J = i + HALO, j + HALO
+@kernel function _kc_mtransport!(T, @Const(M), @Const(Z), @Const(Cf), G, dx, dy, dz, nz, complete, RG)
+    ic, k = @index(Global, NTuple)
+    I, J = _cIJ(RG, ic)
     @inbounds begin
         s = G.iV[I, J, k]
         for sl in 1:6
@@ -466,9 +505,9 @@ rest of the Jacobian (FV3D `_mom_complete!`)."""
 end
 
 """out += A1 z on the momentum rows of the faces of masked cells (shift back of the tendencies of the two cells)."""
-@kernel function _kc_mback!(out, @Const(T), G, nz)
-    i, j, k = @index(Global, NTuple)
-    I, J = i + HALO, j + HALO
+@kernel function _kc_mback!(out, @Const(T), G, nz, RG)
+    ic, k = @index(Global, NTuple)
+    I, J = _cIJ(RG, ic)
     @inbounds begin
         if _rowx(G, I, J, k)
             a = G.Ax[I, J, k]
@@ -489,27 +528,47 @@ end
 end
 
 """
-    ka_vertical!(out, m::CutKA, Cf, Z)
+    ka_vertical!(out, m::CutKA, Cf, Z; halo = false)
 
-out = G_v(Z), the implicit part of the HEVI step (FV3D `:vertical` with implicit = :amf) on the interior; the halo of Z
-must be filled. Linear in Z (pressure form :product): J v = G_v(v).
+out = G_v(Z), the implicit part of the HEVI step (FV3D `:vertical` with implicit = :amf) on the interior. Linear in Z
+(pressure form :product): J v = G_v(v). `halo = false`: the halo of Z must be filled; `halo = true`: only the interior
+of Z, its side halo is exchanged here.
+
+Communication overlapped with computation (CGDycore): every exchange is non-blocking (sides only: all stencils are
+±1 in one direction), and while it is in flight the kernel that needs it runs on the core columns; after the receive
+the same kernel on the ring of first and last rows and columns:
+    [Z in flight]  vertical part, shifted momenta M (core)      ─ receive ─ ring ─ send M
+    [M in flight]  transport T of M (core)                       ─ receive ─ ring ─ send T (slots 2, 4)
+    [T in flight]  shift back A1 z (core)                        ─ receive ─ ring.
 """
-function ka_vertical!(out, m::CutKA, Cf, Z)
+function ka_vertical!(out, m::CutKA, Cf, Z; halo::Bool = false)
     g, w, dec = m.grid, m.work, m.dec
     G = _geo(g)
-    nz, nxl, nyl = g.nz, g.nxl, g.nyl
-    _launch!(m, _kc_vertical!, (nxl, nyl, nz), out, Z, Cf, G, g.dx, g.dy, g.dz, nz, m.gas.g)
-    _launch!(m, _kc_mshift!, (nxl, nyl, nz), w.M, Z, G, nz)
-    exchange!(dec, w.M, g)
-    _launch!(m, _kc_mtransport!, (nxl, nyl, nz), w.T, w.M, Z, Cf, G, g.dx, g.dy, g.dz, nz, m.complete)
-    exchange!(dec, w.T, g, (2, 4))
-    _launch!(m, _kc_mback!, (nxl, nyl, nz), out, w.T, G, nz)
+    nz = g.nz
+    core, ring = CutRegion(g, :core), CutRegion(g, :ring)
+    hz = halo ? start_halo!(dec, Z, g, (CR, CU, CV, CW, CT)) : nothing
+    for R in (core, ring)
+        R === ring && finish_halo!(dec, hz)
+        _launch_r!(m, _kc_vertical!, R, nz, out, Z, Cf, G, g.dx, g.dy, g.dz, nz, m.gas.g)
+        _launch_r!(m, _kc_mshift!, R, nz, w.M, Z, G, nz)
+    end
+    hm = start_halo!(dec, w.M, g, (1, 2, 3, 4, 5, 6))
+    for R in (core, ring)
+        R === ring && finish_halo!(dec, hm)
+        _launch_r!(m, _kc_mtransport!, R, nz, w.T, w.M, Z, Cf, G, g.dx, g.dy, g.dz, nz, m.complete)
+    end
+    ht = start_halo!(dec, w.T, g, (2, 4))
+    for R in (core, ring)
+        R === ring && finish_halo!(dec, ht)
+        _launch_r!(m, _kc_mback!, R, nz, out, w.T, G, nz)
+    end
     return out
 end
-ka_hthermo!(out, m::CutKA, Cf, Z, F) =
-    (g = m.grid; _launch!(m, _kc_hthermo!, (g.nxl, g.nyl, g.nz), out, Z, Cf, F, _geo(g), m.damp, g.dx, g.dy, g.nz); out)
-ka_hmomentum!(out, m::CutKA, Cf, Z, F) =
-    (g = m.grid; _launch!(m, _kc_hmomentum!, (g.nxl, g.nyl, g.nz), out, Z, Cf, F, _geo(g), g.dx, g.dy); out)
+"""out = :hthermo (k: ρ, Θ, W) / :hmomentum (U, V) on the columns of the region R (default: the interior)."""
+ka_hthermo!(out, m::CutKA, Cf, Z, F, R::CutRegion = CutRegion(m.grid, :all)) =
+    (g = m.grid; _launch_r!(m, _kc_hthermo!, R, g.nz, out, Z, Cf, F, _geo(g), m.damp, g.dx, g.dy, g.nz); out)
+ka_hmomentum!(out, m::CutKA, Cf, Z, F, R::CutRegion = CutRegion(m.grid, :all)) =
+    (g = m.grid; _launch_r!(m, _kc_hmomentum!, R, g.nz, out, Z, Cf, F, _geo(g), g.dx, g.dy); out)
 
 """
     ka_rhs!(out, m::CutKA, Q, Cf, S, tmp)
@@ -728,13 +787,20 @@ function CutGMRES(m::CutKA, restart::Int = 30)
 end
 
 _dot(m::CutKA, a, b) = allreduce_sum(m.dec, dot(a, b))
+"""w -= V h with h = Vᵀ w (classical Gram–Schmidt: one gemv and one allreduce of the vector h for all basis vectors,
+instead of one reduction per vector); returns h (host). Applied twice (CGS2): as stable as modified Gram–Schmidt."""
+function _project!(w, m::CutKA, V)
+    h = allreduce_sum(m.dec, Array(V' * w))
+    hd = similar(w, length(h)); copyto!(hd, h)
+    mul!(w, V, hd, -1.0, 1.0)
+    return h
+end
 _norm(m::CutKA, a) = sqrt(_dot(m, a, a))
 
 """out = (I - c J) x (packed; J v = G_v(v), halo exchange)."""
 function _cut_apply!(out, m::CutKA, Cf, c, x, W::CutGMRES)
-    fill!(W.X, 0.0); _unpack!(W.X, m, x)
-    exchange!(m.dec, W.X, m.grid)
-    ka_vertical!(W.Y, m, Cf, W.X)
+    _unpack!(W.X, m, x)
+    ka_vertical!(W.Y, m, Cf, W.X; halo = true)                # side halo of X overlapped
     _pack!(out, m, W.Y)
     @. out = x - c * out
     return out
@@ -768,10 +834,8 @@ function _cut_gmres!(x, m::CutKA, Cf, c, b, W::CutGMRES; tol = 1e-8, maxit = 300
             j = jj; it += 1
             @views _cut_prec!(Z[:, jj], m, Cf, c, V[:, jj], W)
             @views _cut_apply!(w, m, Cf, c, Z[:, jj], W); nmv += 1
-            for i in 1:jj
-                @views H[i, jj] = _dot(m, V[:, i], w)
-                @views w .-= H[i, jj] .* V[:, i]
-            end
+            @views Vj = V[:, 1:jj]
+            @views H[1:jj, jj] .= _project!(w, m, Vj) .+ _project!(w, m, Vj)     # CGS2
             H[jj+1, jj] = _norm(m, w)
             @views V[:, jj+1] .= w ./ H[jj+1, jj]
             for i in 1:jj-1
@@ -846,16 +910,14 @@ tolerance).
 function ka_vertical_step!(Z, m::CutKA, Cf, h, k, y, W::CutGMRES; tol = 1e-8, krylov::Symbol = :gmres)
     g = m.grid
     c = h / 2
-    exchange!(m.dec, Z, g)
-    ka_vertical!(k, m, Cf, Z); _interior(m, k) .*= h
+    ka_vertical!(k, m, Cf, Z; halo = true); _interior(m, k) .*= h
     _pack!(W.b, m, k)
     _cut_prec!(W.x, m, Cf, c, W.b, W)
     krylov in (:gmres, :bicgstab) || error("krylov: :gmres or :bicgstab")
     it, nmv = krylov === :gmres ? _cut_gmres!(W.x, m, Cf, c, W.b, W; tol) : _cut_bicgstab!(W.x, m, Cf, c, W.b, W; tol)
     push!(m.its, it); push!(m.mv, nmv)
-    fill!(y, 0.0); _unpack!(y, m, W.x)
-    exchange!(m.dec, y, g)
-    ka_vertical!(W.Y, m, Cf, y)
+    _unpack!(y, m, W.x)
+    ka_vertical!(W.Y, m, Cf, y; halo = true)
     _launch!(m, _kc_conserve!, (g.nxl, g.nyl, g.nz), y, k, W.Y, c)
     return _axpy!(Z, m, 1.0, y)
 end
@@ -874,11 +936,21 @@ CutMISWork(m::CutKA, s::Int; restart::Int = 30) =
 steps on the unmasked faces, the implicit Crank–Nicolson step in the middle."""
 function _cut_hevi_loop!(Z, m::CutKA, Cf, F, h, N, w::CutMISWork; tol, krylov = :gmres)
     g, dec, k = m.grid, m.dec, w.k
+    core, ring = CutRegion(g, :core), CutRegion(g, :ring)
     ka_prec_stage!(m, Cf)
+    # one Verlet sub-step: the halo of `vars` (the variables the kernel reads from the neighbours) in flight while the
+    # kernel runs on the core, the ring after the receive, then Z += a k on the interior
+    function sub!(kernel!, vars, a)
+        hz = start_halo!(dec, Z, g, vars)
+        kernel!(k, m, Cf, Z, F, core)
+        finish_halo!(dec, hz)
+        kernel!(k, m, Cf, Z, F, ring)
+        return _axpy!(Z, m, a, k)
+    end
     for _ in 1:N, half in 1:2
-        exchange!(dec, Z, g); ka_hthermo!(k, m, Cf, Z, F); _axpy!(Z, m, h / 4, k)
-        exchange!(dec, Z, g); ka_hmomentum!(k, m, Cf, Z, F); _axpy!(Z, m, h / 2, k)
-        exchange!(dec, Z, g); ka_hthermo!(k, m, Cf, Z, F); _axpy!(Z, m, h / 4, k)
+        sub!(ka_hthermo!, (CU, CV), h / 4)                    # fluxes: U, V of the east / north neighbours
+        sub!(ka_hmomentum!, (CT,), h / 2)                     # pressure gradient: Θ of the west / south neighbours
+        sub!(ka_hthermo!, (CU, CV), h / 4)
         half == 1 && ka_vertical_step!(Z, m, Cf, h, k, w.y, w.gm; tol, krylov)
     end
     return Z
