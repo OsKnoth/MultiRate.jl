@@ -16,6 +16,8 @@ using MultiRate.Euler2D: Euler2DModel
 using MultiRate.FV2D: FVModel, CutCellFVGrid
 using MultiRate.Euler2D: lagrange_basis
 import MultiRate.Common: open_vtkhdf, write_vtkhdf!
+import MultiRate.Buildings: save_levelset, load_levelset, save_geometry
+using MultiRate.Buildings: LevelSet, CutGeometry
 
 const VTK_LAGRANGE_QUADRILATERAL = UInt8(70)
 const VTK_QUAD = UInt8(9)
@@ -237,4 +239,37 @@ end
 
 Base.close(vtk::VTKHDFFile) = close(vtk.file)
 
-end # module
+# ------------------------------------------------------------------ Buildings: level set and cut-cell geometry
+
+"""Level set of the buildings (Buildings.levelset) as HDF5: dataset `phi` (Float32, nodes) and the attributes."""
+function save_levelset(file::AbstractString, ls::LevelSet)
+    h5open(file, "w") do f
+        f["phi", chunk = (min(ls.nx + 1, 256), min(ls.ny + 1, 256), ls.nz + 1), shuffle = (), deflate = 3] = ls.φ
+        a = attributes(f)
+        a["origin"] = collect(ls.origin); a["L"] = [ls.Lx, ls.Ly]; a["delta"] = [ls.δx, ls.δy, ls.δz]
+        a["band"] = ls.band
+    end
+    return file
+end
+function load_levelset(file::AbstractString)
+    h5open(file, "r") do f
+        φ = read(f["phi"]); a = attributes(f)
+        o, L, d = read(a["origin"]), read(a["L"]), read(a["delta"])
+        nx, ny, nz = size(φ) .- 1
+        return LevelSet((o[1], o[2], o[3]), L[1], L[2], d[1], d[2], d[3], nx, ny, nz, read(a["band"]), φ)
+    end
+end
+"""Cut-cell geometry (Buildings.cut_geometry) as HDF5: Vf, Ax, Ay, Az, zf and the attributes origin, dx, dy."""
+function save_geometry(file::AbstractString, cg::CutGeometry)
+    h5open(file, "w") do f
+        for (n, A) in (("Vf", cg.Vf), ("Ax", cg.Ax), ("Ay", cg.Ay), ("Az", cg.Az))
+            f[n, shuffle = (), deflate = 3, chunk = (cg.nx, cg.ny, 1)] = A
+        end
+        f["zf"] = cg.zf
+        a = attributes(f)
+        a["origin"] = collect(cg.origin); a["dx"] = cg.Δx; a["dy"] = cg.Δy
+    end
+    return file
+end
+
+end

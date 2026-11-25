@@ -1,6 +1,9 @@
 # Vertically implicit step of the frozen HEVI loop: per column (i, j) a tridiagonal system for W.
 #
-# Vertical part J_v (open fractions A_k = Az of the z-face k, s_k = c invV_k / Δz, r = c/Δz):
+# Vertical part J_v (open fractions A_k = Az of the z-face k, s_k = c invV_k / Δz_k, r = c/Δz̃_k; stretched levels:
+# Δz_k the cell thickness, Δz̃_k the distance of the centres at the face k, the face density
+# w_k ρ_{k-1} + (1 - w_k) ρ_k with w_k = Δz_{k-1}/(Δz_{k-1} + Δz_k), so (c g/2)(ρ_{k-1} + ρ_k) below is
+# c g (w_k ρ_{k-1} + (1 - w_k) ρ_k); uniform: Δz̃ = Δz, w = 1/2):
 #   ρ_k = Rρ_k - s_k (A_{k+1} W_{k+1} - A_k W_k),   Θ_k = RΘ_k - s_k (A_{k+1} θ_{k+1} W_{k+1} - A_k θ_k W_k),
 #   W_k = RW_k - r (α_k Θ_k - β_k Θ_{k-1}) - (c g/2)(ρ_{k-1} + ρ_k),
 # θ_k the frozen face θ, α_k Θ_k - β_k Θ_{k-1} the face pressure difference (divided by J; terrain
@@ -94,19 +97,19 @@ function implicit_matrix(m::Model3D, s::Column3D, C, z)
         # vertical fluxes through the lower (k) and upper (k+1) face of cell (i, j, k)
         if k >= 2
             A = g.Az[i, j, k]
-            add!(iρ(g, i, j, k), iW(g, i, j, k), sv * A / g.dz)
-            add!(iΘ(g, i, j, k), iW(g, i, j, k), sv * A * s.θz[i, j, k] / g.dz)
+            add!(iρ(g, i, j, k), iW(g, i, j, k), sv * A / g.dzc[k])
+            add!(iΘ(g, i, j, k), iW(g, i, j, k), sv * A * s.θz[i, j, k] / g.dzc[k])
         end
         if k + 1 <= g.nz
             A = g.Az[i, j, k+1]
-            add!(iρ(g, i, j, k), iW(g, i, j, k + 1), -sv * A / g.dz)
-            add!(iΘ(g, i, j, k), iW(g, i, j, k + 1), -sv * A * s.θz[i, j, k+1] / g.dz)
+            add!(iρ(g, i, j, k), iW(g, i, j, k + 1), -sv * A / g.dzc[k])
+            add!(iΘ(g, i, j, k), iW(g, i, j, k + 1), -sv * A * s.θz[i, j, k+1] / g.dzc[k])
         end
         # W row of the face k: pressure difference and gravity
         if k >= 2 && g.Az[i, j, k] > 0
             r = iW(g, i, j, k)
-            add!(r, iΘ(g, i, j, k), -s.α[i, j, k] / g.dz); add!(r, iΘ(g, i, j, k - 1), s.β[i, j, k] / g.dz)
-            add!(r, iρ(g, i, j, k - 1), -grav / 2); add!(r, iρ(g, i, j, k), -grav / 2)
+            add!(r, iΘ(g, i, j, k), -s.α[i, j, k] / g.dzf[k]); add!(r, iΘ(g, i, j, k - 1), s.β[i, j, k] / g.dzf[k])
+            add!(r, iρ(g, i, j, k - 1), -grav * g.wlo[k]); add!(r, iρ(g, i, j, k), -grav * (1 - g.wlo[k]))
         end
         # masked x- and y-faces (left faces of cell (i, j, k)): flux between the two cells, pressure
         for (dir, M, A, h, iu, θc, l) in ((1, g.Mx, g.Ax, g.dx, iU(g, i, j, k), C[cθx(g, i, j, k)], (ip(g, i - 1), j)),
@@ -170,15 +173,15 @@ function _factor(s::Column3D, m::Model3D, ct, cw, wm = NaN)
                 a, d, b = 0.0, 1.0, 0.0
             else
                 cwk = _wf(g, cw, wm, 3, i, j, k)
-                r = cwk / g.dz; cg = cwk * m.gas.g / 2
-                vk, vm = g.invV[i, j, k] / (g.Jc[i, j] * g.dz), g.invV[i, j, k-1] / (g.Jc[i, j] * g.dz)
+                r = cwk / g.dzf[k]; cgl = cwk * m.gas.g * g.wlo[k]; cgu = cwk * m.gas.g * (1 - g.wlo[k])
+                vk, vm = g.invV[i, j, k] / (g.Jc[i, j] * g.dzc[k]), g.invV[i, j, k-1] / (g.Jc[i, j] * g.dzc[k-1])
                 t0 = _wt(g, ct, wm, 3, i, j, k)                         # flux weight of the face k
                 tm = k > 2 ? _wt(g, ct, wm, 3, i, j, k - 1) : 0.0       # … of the faces k - 1, k + 1
                 tp = k < nz ? _wt(g, ct, wm, 3, i, j, k + 1) : 0.0
                 Am, Ap = g.Az[i, j, k-1], g.Az[i, j, k+1]
-                a = k > 2 ? (-r * s.β[i, j, k] * s.θz[i, j, k-1] + cg) * tm * vm * Am : 0.0
-                d = 1 + t0 * (r * A * s.θz[i, j, k] * (s.α[i, j, k] * vk + s.β[i, j, k] * vm) + cg * A * (vk - vm))
-                b = k < nz ? (-r * s.α[i, j, k] * s.θz[i, j, k+1] - cg) * tp * vk * Ap : 0.0
+                a = k > 2 ? (-r * s.β[i, j, k] * s.θz[i, j, k-1] + cgl) * tm * vm * Am : 0.0
+                d = 1 + t0 * (r * A * s.θz[i, j, k] * (s.α[i, j, k] * vk + s.β[i, j, k] * vm) + A * (cgu * vk - cgl * vm))
+                b = k < nz ? (-r * s.α[i, j, k] * s.θz[i, j, k+1] - cgu) * tp * vk * Ap : 0.0
             end
             den = k == 2 ? d : d - a * cp[k-1, i, j]
             sub[k, i, j] = a; iden[k, i, j] = 1 / den; cp[k, i, j] = b / den
@@ -191,17 +194,17 @@ end
 column_solve!(Y, s::Column3D, m::Model3D, c, R) = column_solve!(Y, s, m, c, c, R)
 function column_solve!(Y, s::Column3D, m::Model3D, ct, cw, R, wm = NaN)
     g = m.grid
-    nz, dz = g.nz, g.dz
+    nz = g.nz
     sub, cp, iden = _factor(s, m, ct, cw, wm)
     W = s.W
     Y .= R
     @inbounds for j in 1:g.ny, i in 1:g.nx
         for k in 2:nz
             cwk = _wf(g, cw, wm, 3, i, j, k)
-            r = cwk / dz; cg = cwk * m.gas.g / 2
+            r = cwk / g.dzf[k]; cgl = cwk * m.gas.g * g.wlo[k]; cgu = cwk * m.gas.g * (1 - g.wlo[k])
             rhs = g.Az[i, j, k] == 0 ? R[iW(g, i, j, k)] :
                   R[iW(g, i, j, k)] - r * (s.α[i, j, k] * R[iΘ(g, i, j, k)] - s.β[i, j, k] * R[iΘ(g, i, j, k - 1)]) -
-                  cg * (R[iρ(g, i, j, k - 1)] + R[iρ(g, i, j, k)])
+                  (cgl * R[iρ(g, i, j, k - 1)] + cgu * R[iρ(g, i, j, k)])
             W[k] = k == 2 ? rhs * iden[k, i, j] : (rhs - sub[k, i, j] * W[k-1]) * iden[k, i, j]
         end
         for k in nz-1:-1:2
@@ -209,7 +212,7 @@ function column_solve!(Y, s::Column3D, m::Model3D, ct, cw, R, wm = NaN)
         end
         W[1] = 0.0; W[nz+1] = 0.0
         for k in 1:nz
-            vk = g.invV[i, j, k] / (g.Jc[i, j] * dz)
+            vk = g.invV[i, j, k] / (g.Jc[i, j] * g.dzc[k])
             Fb = (k > 1 ? _wt(g, ct, wm, 3, i, j, k) : 0.0) * g.Az[i, j, k] * W[k]
             Ft = (k < nz ? _wt(g, ct, wm, 3, i, j, k + 1) : 0.0) * g.Az[i, j, k+1] * W[k+1]
             Y[iρ(g, i, j, k)] = R[iρ(g, i, j, k)] - vk * (Ft - Fb)

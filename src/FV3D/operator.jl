@@ -86,10 +86,14 @@ Cartesian grids)."""
 
 # ------------------------------------------------------------------ C(y) and S(y)
 
+"""Density at the z-face k (2 … nz): the mass of the face control volume, w_k ρ_{k-1} + (1 - w_k) ρ_k with
+w_k = Δz_{k-1}/(Δz_{k-1} + Δz_k) (stretched levels; uniform: the mean)."""
+@inline ρface(g, q, i, j, k) = g.wlo[k] * q[iρ(g, i, j, k - 1)] + (1 - g.wlo[k]) * q[iρ(g, i, j, k)]
+
 """C(y) (face θ, face dp/dΘ) and the slow part S(y) (momentum advection)."""
 function frozen_data!(C, S, m::Model3D, q)
     g = m.grid
-    nx, ny, nz, dx, dy, dz = g.nx, g.ny, g.nz, g.dx, g.dy, g.dz
+    nx, ny, nz = g.nx, g.ny, g.nz
     c = m.cache
     u, v, w, θ = c.u, c.v, c.w, c.θ
     @inbounds for k in 1:nz, j in 1:ny, i in 1:nx
@@ -104,7 +108,7 @@ function frozen_data!(C, S, m::Model3D, q)
                                 g.zyf[i, j, 1] * 0.5 * (v[i, j, 1] + v[i, jp(g, j + 1), 1]) : 0.0
         w[i, j, nz+1] = 0.0
         for k in 2:nz
-            w[i, j, k] = q[iW(g, i, j, k)] / (0.5 * (q[iρ(g, i, j, k - 1)] + q[iρ(g, i, j, k)]))
+            w[i, j, k] = q[iW(g, i, j, k)] / ρface(g, q, i, j, k)
         end
     end
     fill!(C, 0.0)
@@ -215,7 +219,7 @@ end
 end
 """∂p/∂z at the η-face k (2 … nz): δη Π / J times the face factor."""
 @inline gradz(pf, m, C, z, i, j, k) =
-    Pfz(pf, m, C, i, j, k) * (Πc(pf, m, z, i, j, k) - Πc(pf, m, z, i, j, k - 1)) / (m.grid.Jc[ip(m.grid, i), jp(m.grid, j)] * m.grid.dz)
+    Pfz(pf, m, C, i, j, k) * (Πc(pf, m, z, i, j, k) - Πc(pf, m, z, i, j, k - 1)) / (m.grid.Jc[ip(m.grid, i), jp(m.grid, j)] * m.grid.dzf[k])
 
 # ------------------------------------------------------------------ face selections
 # The horizontal blocks act on all faces, on the unmasked faces only (explicit half steps of HEVI
@@ -251,8 +255,8 @@ function thermo_h!(out, m::Model3D, C, z, sel = AllFaces())
                                     (C[cθy(g, i, j + 1, k)] * Fn - C[cθy(g, i, j, k)] * Fs) / g.dy)
         if g.follow && has_Ωh(sel)               # horizontal part of the vertical flux Ω
             Hb = g.Az[i, j, k] * Ωh(g, z, i, j, k); Ht = g.Az[i, j, k+1] * Ωh(g, z, i, j, k + 1)
-            out[iρ(g, i, j, k)] -= s * (Ht - Hb) / g.dz
-            out[iΘ(g, i, j, k)] -= s * (C[cθz(g, i, j, k + 1)] * Ht - C[cθz(g, i, j, k)] * Hb) / g.dz
+            out[iρ(g, i, j, k)] -= s * (Ht - Hb) / g.dzc[k]
+            out[iΘ(g, i, j, k)] -= s * (C[cθz(g, i, j, k + 1)] * Ht - C[cθz(g, i, j, k)] * Hb) / g.dzc[k]
         end
     end
     return out
@@ -264,8 +268,8 @@ function thermo_v!(out, m::Model3D, C, z)
     @inbounds for k in 1:g.nz, j in 1:g.ny, i in 1:g.nx
         Fb = g.Az[i, j, k] * Wface(g, z, i, j, k); Ft = g.Az[i, j, k+1] * Wface(g, z, i, j, k + 1)
         s = g.invV[i, j, k] / g.Jc[i, j]
-        out[iρ(g, i, j, k)] -= s * (Ft - Fb) / g.dz
-        out[iΘ(g, i, j, k)] -= s * (C[cθz(g, i, j, k + 1)] * Ft - C[cθz(g, i, j, k)] * Fb) / g.dz
+        out[iρ(g, i, j, k)] -= s * (Ft - Fb) / g.dzc[k]
+        out[iΘ(g, i, j, k)] -= s * (C[cθz(g, i, j, k + 1)] * Ft - C[cθz(g, i, j, k)] * Fb) / g.dzc[k]
     end
     return out
 end
@@ -286,7 +290,7 @@ function momentum_v!(out, m::Model3D, C, z, pf)
     grav = m.gas.g
     @inbounds for k in 2:g.nz, j in 1:g.ny, i in 1:g.nx
         out[iW(g, i, j, k)] -= (g.Az[i, j, k] > 0) *
-            (gradz(pf, m, C, z, i, j, k) + grav * 0.5 * (z[iρ(g, i, j, k - 1)] + z[iρ(g, i, j, k)]))
+            (gradz(pf, m, C, z, i, j, k) + grav * ρface(g, z, i, j, k))
     end
     return out
 end

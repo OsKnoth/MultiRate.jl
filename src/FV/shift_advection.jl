@@ -28,15 +28,34 @@
 
 """Pseudo third-order face value in the upwind cell C (upstream U, downstream D): volumes v,
 geometric faces a_UC, a_CD of C (a_UC of a wall is its geometric area); `up = false` (wall or
-closed face, no upstream neighbour): linear interpolation."""
-@inline function recon3(φU, φC, φD, vU, vC, vD, aUC, aCD, up::Bool = aUC > 0)
+closed face, no upstream neighbour): linear interpolation. dU, dC, dD: the cell lengths in the direction of the face
+(stretched grids; the virtual lengths h = v d / a, the blending of small cells with the fractions v alone).
+
+`lim` the limiter (ASAM Advection_Mod `PhiLim`): with δ = φC - φU, r = (φD - φC)/δ the face value is
+φC + ψ(r) δ, ψ = α1 r + α2 (α1, α2 the third-order weights above, ASAM k1F, k2F):
+  0  none (third order, ASAM 'Third'),
+  1  Koren, ψ = max(0, min(r, α1 r + α2, 1)) (ASAM 'Koren'; on uniform grids the Koren limiter),
+  2  van Leer, ψ = (r + |r|)/(2 (1 + |r|)) (ASAM 'Leer2'),
+  3  first-order upwind, ψ = 0.
+The linear interpolation of the cells without upstream neighbour is a convex combination (not limited)."""
+@inline function recon3(φU, φC, φD, vU, vC, vD, aUC, aCD, up::Bool = aUC > 0, dU = 1.0, dC = 1.0, dD = 1.0, lim::Int = 0)
     vD < vC && (φD = ((vC - vD) * φC + vD * φD) / vC)
-    hC = vC / (0.5 * (aUC + aCD)); hD = vD / aCD
+    hC = vC * dC / (0.5 * (aUC + aCD)); hD = vD * dD / aCD
     up || return φC + hC / (hC + hD) * (φD - φC)
     vU < vC && (φU = ((vC - vU) * φC + vU * φU) / vC)
-    hU = vU / aUC
+    hU = vU * dU / aUC
     s = hU + hC + hD
-    return φC + hC * (hU + hC) / ((hC + hD) * s) * (φD - φC) + hC * hD / ((hU + hC) * s) * (φC - φU)
+    α1 = hC * (hU + hC) / ((hC + hD) * s); α2 = hC * hD / ((hU + hC) * s)
+    lim == 0 && return φC + α1 * (φD - φC) + α2 * (φC - φU)
+    return φC + limited(φD - φC, φC - φU, α1, α2, lim)
+end
+"""The limited increment ψ(r) δ of the face value, Δ = φD - φC, δ = φC - φU, r = Δ/δ (no division: ψ δ for r > 0 is
+sign(δ) min(|Δ|, α1 |Δ| + α2 |δ|, |δ|) for Koren; 0 for r ≤ 0)."""
+@inline function limited(Δ, δ, α1, α2, lim::Int)
+    (lim == 3 || Δ * δ <= 0) && return zero(Δ)
+    aΔ, aδ = abs(Δ), abs(δ)
+    lim == 1 && return copysign(min(aΔ, α1 * aΔ + α2 * aδ, aδ), δ)
+    return copysign(aΔ * aδ / (aΔ + aδ), δ)                    # van Leer: δ (r + |r|)/(2(1 + |r|)) = Δδ/(Δ + δ) for r > 0
 end
 
 """Left/right cell values of a face field (MATLAB `ShiftFaceCellCut`)."""

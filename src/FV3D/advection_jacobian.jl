@@ -82,8 +82,8 @@ function _mom_complete!(T, m::Model3D, C, z, d, side)
         if k > 1
             ap, am = C[cazp(g, i, j, k)], C[cazm(g, i, j, k)]
             vl = C[cvel(g, d, side, i, j, k - 1)]
-            f = (az(g, i, j, k) * z[iW(g, i, j, k)] * (ap > 0 ? vl : vc) - ap * vl * z[iρ(g, i, j, k - 1)] - am * vc * ρc) / g.dz
-            T[i, j, k-1] -= f * g.invV[i, j, k-1] / g.Jc[i, j]; T[i, j, k] += f * g.invV[i, j, k] / g.Jc[i, j]
+            f = az(g, i, j, k) * z[iW(g, i, j, k)] * (ap > 0 ? vl : vc) - ap * vl * z[iρ(g, i, j, k - 1)] - am * vc * ρc
+            T[i, j, k-1] -= f * g.invV[i, j, k-1] / (g.Jc[i, j] * g.dzc[k-1]); T[i, j, k] += f * g.invV[i, j, k] / (g.Jc[i, j] * g.dzc[k])
         end
     end
     return T
@@ -127,7 +127,7 @@ function adv_masked!(out, m::Model3D, C, z)
             _row(g, d, i, j, k) || continue
             lo = d == 1 ? (ip(g, i - 1), j, k) : d == 2 ? (i, jp(g, j - 1), k) : (i, j, k - 1)
             a = _alo(g, d, i, j, k)
-            out[_ilo(g, d, i, j, k)] += shift_back(T1[i, j, k], T2[lo...], vol(g, lo...), vol(g, i, j, k), a,
+            out[_ilo(g, d, i, j, k)] += shift_back(T1[i, j, k], T2[lo...], vold(g, d, lo...), vold(g, d, i, j, k), a,
                                                    _alo(g, d, lo...), _ahi(g, d, i, j, k))
         end
     end
@@ -145,19 +145,18 @@ T = -(invV/J) div f, f = a⁺ Φ_left + a⁻ Φ_right - θ_f (a⁺ ρ_left + a�
 function masked_face_transport!(T, m::Model3D, C, z, ivar, θterm)
     g = m.grid
     fill!(T, 0.0)
-    @inline function face!(L, R, cp, cm, cθ, f, h)
+    @inline function face!(L, R, cp, cm, cθ, f, hL, hR)
         maskface(g, L, R) || return
         ap, am = C[cp(g, f...)], C[cm(g, f...)]
         fl = ap * z[ivar(g, L...)] + am * z[ivar(g, R...)]
         θterm && (fl -= C[cθ(g, f...)] * (ap * z[iρ(g, L...)] + am * z[iρ(g, R...)]))
-        fl /= h
-        T[L...] -= fl * g.invV[L...] / g.Jc[L[1], L[2]]; T[R...] += fl * g.invV[R...] / g.Jc[R[1], R[2]]
+        T[L...] -= fl * g.invV[L...] / (g.Jc[L[1], L[2]] * hL); T[R...] += fl * g.invV[R...] / (g.Jc[R[1], R[2]] * hR)
     end
     @inbounds for k in 1:g.nz, j in 1:g.ny, i in 1:g.nx
         c0 = (i, j, k)
-        face!((ip(g, i - 1), j, k), c0, caxp, caxm, cθx, c0, g.dx)
-        face!((i, jp(g, j - 1), k), c0, cayp, caym, cθy, c0, g.dy)
-        k > 1 && face!((i, j, k - 1), c0, cazp, cazm, cθz, c0, g.dz)
+        face!((ip(g, i - 1), j, k), c0, caxp, caxm, cθx, c0, g.dx, g.dx)
+        face!((i, jp(g, j - 1), k), c0, cayp, caym, cθy, c0, g.dy, g.dy)
+        k > 1 && face!((i, j, k - 1), c0, cazp, cazm, cθz, c0, g.dzc[k-1], g.dzc[k])
     end
     return T
 end
@@ -196,8 +195,8 @@ function upwind_transport!(T, M, m::Model3D, C)
         f = (C[cayp(g, i, j, k)] * M[i, jm, k] + C[caym(g, i, j, k)] * M[i, j, k]) / g.dy
         T[i, jm, k] -= f; T[i, j, k] += f
         if k > 1
-            f = (C[cazp(g, i, j, k)] * M[i, j, k-1] + C[cazm(g, i, j, k)] * M[i, j, k]) / g.dz
-            T[i, j, k-1] -= f; T[i, j, k] += f
+            f = C[cazp(g, i, j, k)] * M[i, j, k-1] + C[cazm(g, i, j, k)] * M[i, j, k]
+            T[i, j, k-1] -= f / g.dzc[k-1]; T[i, j, k] += f / g.dzc[k]
         end
     end
     @inbounds for k in 1:g.nz, j in 1:g.ny, i in 1:g.nx
@@ -232,10 +231,10 @@ function adv_matrix(m::Model3D, C)
             addM!(r, -s * C[cp(g, up...)] / h, d, side, (i, j, k)); addM!(r, -s * C[cm(g, up...)] / h, d, side, hi)
         end
         if k > 1
-            addM!(r, s * C[cazp(g, i, j, k)] / g.dz, d, side, (i, j, k - 1)); addM!(r, s * C[cazm(g, i, j, k)] / g.dz, d, side, (i, j, k))
+            addM!(r, s * C[cazp(g, i, j, k)] / g.dzc[k], d, side, (i, j, k - 1)); addM!(r, s * C[cazm(g, i, j, k)] / g.dzc[k], d, side, (i, j, k))
         end
         if k < g.nz
-            addM!(r, -s * C[cazp(g, i, j, k + 1)] / g.dz, d, side, (i, j, k)); addM!(r, -s * C[cazm(g, i, j, k + 1)] / g.dz, d, side, (i, j, k + 1))
+            addM!(r, -s * C[cazp(g, i, j, k + 1)] / g.dzc[k], d, side, (i, j, k)); addM!(r, -s * C[cazm(g, i, j, k + 1)] / g.dzc[k], d, side, (i, j, k + 1))
         end
         FV3D_MASK_JFORM[] === :conservative || return
         # complete Jacobian (_mom_complete!): face (index f, mass-flux column cF, measure A, lower cell L, upper cell H)
@@ -252,15 +251,15 @@ function adv_matrix(m::Model3D, C)
         face!(-s / g.dx, caxp, caxm, iU(g, xh...), ax(g, xh...), c0, xh, xh)
         face!(s / g.dy, cayp, caym, iV(g, c0...), ay(g, c0...), yl, c0, c0)
         face!(-s / g.dy, cayp, caym, iV(g, yh...), ay(g, yh...), c0, yh, yh)
-        k > 1 && face!(s / g.dz, cazp, cazm, iW(g, c0...), az(g, c0...), (i, j, k - 1), c0, c0)
-        k < g.nz && face!(-s / g.dz, cazp, cazm, iW(g, i, j, k + 1), az(g, i, j, k + 1), c0, (i, j, k + 1), (i, j, k + 1))
+        k > 1 && face!(s / g.dzc[k], cazp, cazm, iW(g, c0...), az(g, c0...), (i, j, k - 1), c0, c0)
+        k < g.nz && face!(-s / g.dzc[k], cazp, cazm, iW(g, i, j, k + 1), az(g, i, j, k + 1), c0, (i, j, k + 1), (i, j, k + 1))
     end
     # Θ (and for :advective ρ) rows: upwind transport through the faces of the masked cells (masked_face_transport!)
-    function sface!(L, R, cp, cm, cθ, f, h, ivar, θterm)
+    function sface!(L, R, cp, cm, cθ, f, hL, hR, ivar, θterm)
         maskface(g, L, R) || return
         ap, am = C[cp(g, f...)], C[cm(g, f...)]
         θf = C[cθ(g, f...)]
-        for (cc, sg) in ((L, -1), (R, 1))
+        for (cc, sg, h) in ((L, -1, hL), (R, 1, hR))
             w = sg * g.invV[cc...] / (g.Jc[cc[1], cc[2]] * h)
             w == 0 && continue
             r = ivar(g, cc...)
@@ -275,16 +274,16 @@ function adv_matrix(m::Model3D, C)
     for (ivar, θterm) in (FV3D_MASK_JFORM[] === :advective ? ((iΘ, false), (iρ, false)) : ((iΘ, true),))
         for k in 1:g.nz, j in 1:g.ny, i in 1:g.nx
             c0 = (i, j, k)
-            sface!((ip(g, i - 1), j, k), c0, caxp, caxm, cθx, c0, g.dx, ivar, θterm)
-            sface!((i, jp(g, j - 1), k), c0, cayp, caym, cθy, c0, g.dy, ivar, θterm)
-            k > 1 && sface!((i, j, k - 1), c0, cazp, cazm, cθz, c0, g.dz, ivar, θterm)
+            sface!((ip(g, i - 1), j, k), c0, caxp, caxm, cθx, c0, g.dx, g.dx, ivar, θterm)
+            sface!((i, jp(g, j - 1), k), c0, cayp, caym, cθy, c0, g.dy, g.dy, ivar, θterm)
+            k > 1 && sface!((i, j, k - 1), c0, cazp, cazm, cθz, c0, g.dzc[k-1], g.dzc[k], ivar, θterm)
         end
     end
     for d in 1:3, k in 1:g.nz, j in 1:g.ny, i in 1:g.nx
         _row(g, d, i, j, k) || continue
         lo = d == 1 ? (ip(g, i - 1), j, k) : d == 2 ? (i, jp(g, j - 1), k) : (i, j, k - 1)
         a = _alo(g, d, i, j, k)
-        VR = vol(g, i, j, k) * a / (a + _ahi(g, d, i, j, k)); VL = vol(g, lo...) * a / (a + _alo(g, d, lo...))
+        VR = vold(g, d, i, j, k) * a / (a + _ahi(g, d, i, j, k)); VL = vold(g, d, lo...) * a / (a + _alo(g, d, lo...))
         r = _ilo(g, d, i, j, k)
         addT!(r, VR / (VL + VR), d, 1, i, j, k)         # T_LC of the upper cell
         addT!(r, VL / (VL + VR), d, 2, lo...)           # T_RC of the lower cell

@@ -1740,6 +1740,131 @@ end
     end
 end
 
+@testset "FV3D: stretched levels (zf), limiters of the face values; CutKA equals FV3D" begin
+    F3 = MultiRate.FV3D; K = MultiRate.FV3DKA
+    r3 = MultiRate.FV2D.recon3
+    # the nonuniform third-order weights are exact for the cell means of a parabola
+    Pp(x) = x + x^2 - x^3; av(a, b) = (Pp(b) - Pp(a)) / (b - a)
+    @test abs(r3(av(0.0, 0.7), av(0.7, 1.0), av(1.0, 2.3), 1.0, 1.0, 1.0, 1.0, 1.0, true, 0.7, 0.3, 1.3) - (1 + 2 - 3)) < 1e-13
+    # Koren (ASAM PhiLim) on a uniform grid is the textbook limiter; van Leer, upwind; extrema first order
+    kor(a, b, c) = (δ = b - a; r = (c - b) / δ; b + 0.5 * max(0, min(2r, (1 + 2r) / 3, 2)) * δ)
+    @test maximum(abs(r3(a, b, c, 1.0, 1.0, 1.0, 1.0, 1.0, true, 1.0, 1.0, 1.0, 1) - kor(a, b, c))
+                  for a in -2:0.37:2, b in -2:0.41:2, c in -2:0.43:2 if a != b) < 1e-14
+    @test r3(0.0, 1.0, 3.0, 1.0, 1.0, 1.0, 1.0, 1.0, true, 1.0, 1.0, 1.0, 2) ≈ 1 + 2 / 3
+    @test r3(0.0, 1.0, 0.5, 1.0, 1.0, 1.0, 1.0, 1.0, true, 1.0, 1.0, 1.0, 1) == 1.0
+    @test r3(0.0, 1.0, 3.0, 1.0, 1.0, 1.0, 1.0, 1.0, true, 1.0, 1.0, 1.0, 3) == 1.0
+    @test_throws ErrorException F3.Grid3D(4, 4, 4, 1.0, 1.0, 1.0; limiter = :superbee)
+    gas = CM.Gas(); ρr, Θr, θr = CM.stratified_reference(gas; θ0 = 300.0, N = 0.01)
+    F3.FV3D_PRESSURE_FORM[] = :product
+    tab = TS.mis_tableau(:MIS54)
+    hill(x, y) = 1500.0 * exp(-((x - 10e3)^2 + (y - 8e3)^2) / 3e3^2)
+    # a uniform zf equals the default levels
+    ga = F3.Grid3D(12, 8, 6, 20e3, 16e3, 6e3; zs = hill); gb = F3.Grid3D(12, 8, 6, 20e3, 16e3, 6e3; zs = hill, zf = 0.0:1e3:6e3)
+    @test gb.uniform && gb.dz == ga.dz && gb.zc == ga.zc && gb.Vf == ga.Vf && gb.Az == ga.Az
+    zf = [0.0, 500.0, 1000.0, 1500.0, 2000.0, 2700.0, 3700.0, 6000.0]
+    for lim in (:none, :koren)
+        g3 = F3.Grid3D(12, 8, 7, 20e3, 16e3, 6e3; zs = hill, zf, limiter = lim)
+        @test !g3.uniform && isnan(g3.dz) && g3.dzc == diff(zf) && g3.zc ≈ (zf[1:end-1] .+ zf[2:end]) ./ 2
+        @test g3.wlo[6] ≈ 700 / 1700 && g3.dzf[6] ≈ 850
+        F3.FV3D_MASK_SOLVER[] = :gmres; F3.FV3D_MASK_TOL[] = 1e-12; F3.FV3D_MASK_TILES[] = (2, 2)
+        for (jf, prec) in ((:partial, :columns), (:conservative, :amf))
+            F3.FV3D_MASK_JFORM[] = jf
+            m3 = F3.with_sponge(F3.Model3D(g3, gas, ρr, Θr), zeros(F3.nunknowns(g3)); zD = 4e3, αtop = 0.02)
+            ρa = F3.hydrostatic_column(m3, Θr; ρbottom = ρr(g3.zc[1]))
+            # the discretely balanced rest state stays at rest on the stretched cut-cell grid
+            rest = F3.project3d(m3, (x, y, z) -> (k = F3.level(g3, z); (ρa[k], 0.0, 0.0, 0.0, Θr(g3.zc[k]))))
+            @test maximum(abs, TS.rhs_nonlinear(m3, rest)) < 1e-12
+            q0 = F3.project3d(m3, (x, y, z) -> (k = F3.level(g3, z); (ρa[k] * (1 + 1e-3 * sin(x / 3e3) * cos(y / 4e3)), 10ρa[k],
+                                                                      -3ρa[k], 0.0, Θr(g3.zc[k]))))
+            q3 = TS.run_frozen(m3, q0, 20.0, 3; tab, nsub = 4, fast = :hevi)
+            @test abs(F3.total3d(m3, q3, :ρ) / F3.total3d(m3, q0, :ρ) - 1) < 1e-13
+            @test abs(F3.total3d(m3, q3, :Θ) / F3.total3d(m3, q0, :Θ) - 1) < 1e-13
+            m = K.CutKA(K.CutGrid(g3); gas, sponge = (4e3, 0.02), jform = jf, prec)
+            N3 = TS.rhs_nonlinear(m3, q0)
+            Nk = K.global_state(m, g3, K.ka_rhs!(K.ka_zeros(m), m, K.ka_state(m, g3, q0)))
+            @test maximum(abs, Nk - N3) < 1e-13 * maximum(abs, N3)
+            Q = K.ka_state(m, g3, q0); K.ka_run!(m, Q, 20.0, 3; tab, nsub = 4, tol = 1e-12)
+            @test maximum(abs, K.global_state(m, g3, Q) - q3) < 1e-9 * maximum(abs, q3 - q0)
+        end
+    end
+    F3.FV3D_MASK_JFORM[] = :partial
+    @test_throws ErrorException F3.MoistModel3D(F3.Model3D(F3.Grid3D(4, 4, 3, 4e3, 4e3, 3e3; zf = [0.0, 500.0, 1500.0, 3000.0]),
+                                                           gas, ρr, Θr))
+end
+
+@testset "Buildings: CityGML LoD1/LoD2 → level set → cut-cell fractions (stretched levels)" begin
+    BD = MultiRate.Buildings
+    include(joinpath(@__DIR__, "buildings_citygml.jl"))
+    # exact fractions of the linear interpolant: complement, symmetric cases, Monte Carlo
+    rng = MersenneTwister(7)
+    for _ in 1:20
+        v = randn(rng, 4)
+        @test BD.tet_fraction(v...) + BD.tet_fraction((-v)...) ≈ 1 atol = 1e-12
+        w = randn(rng, 3)
+        @test BD.tri_fraction(w...) + BD.tri_fraction((-w)...) ≈ 1 atol = 1e-12
+    end
+    @test BD.tet_fraction(1.0, 1.0, -1.0, -1.0) ≈ 0.5
+    @test BD.tet_fraction(1.0, -1.0, -1.0, -1.0) ≈ 1 / 8
+    v = (0.7, -0.2, 0.4, -1.3); n = 200_000; c = 0
+    for _ in 1:n
+        e = -log.(rand(rng, 4)); λ = e ./ sum(e)                  # uniform in the tetrahedron
+        c += sum(λ .* v) > 0
+    end
+    @test abs(c / n - BD.tet_fraction(v...)) < 5e-3
+    # convex decomposition (ear clipping, Hertel–Mehlhorn): L shape, comb
+    Lsh = [(0.0, 0.0), (4.0, 0.0), (4.0, 1.0), (1.0, 1.0), (1.0, 3.0), (0.0, 3.0)]
+    cp = BD.convex_pieces(reverse(Lsh))
+    @test length(cp) == 2 && sum(BD._area, cp) ≈ 6.0
+    comb = [(0.0, 0.0), (5.0, 0.0), (5.0, 2.0), (4.0, 2.0), (4.0, 1.0), (3.0, 1.0), (3.0, 2.0), (2.0, 2.0), (2.0, 1.0),
+            (1.0, 1.0), (1.0, 2.0), (0.0, 2.0)]
+    cp = BD.convex_pieces(comb)
+    @test sum(BD._area, cp) ≈ 8.0 && all(q -> all(BD._turn(q[mod1(t - 1, length(q))], q[t], q[mod1(t + 1, length(q))]) >= -1e-12
+                                                   for t in eachindex(q)), cp) && length(cp) <= 4
+    # reader and level set: block (LoD1 solid), gable house (LoD2), courtyard block (LoD1, hole); ground 100 m
+    f = tempname() * ".gml"; write(f, synthetic_citygml())
+    P = BD.read_citygml(f)
+    @test length(P) == 15
+    φ = BD.building_levelset(P; origin = (400000.0, 5650000.0), L = (120.0, 80.0))
+    @test length(φ.solids) == 4                                    # block top, two roof faces, courtyard top
+    @test φ.hmax ≈ 15.5 && φ.origin[3] ≈ 100.0 && length(φ.solids[4].holes) == 1
+    @test BD.height_at(φ, 40.0, 40.0) ≈ 15.5 && BD.height_at(φ, 76.0, 45.25) ≈ 9.0 && BD.height_at(φ, 76.0, 42.75) ≈ 7.5
+    @test BD.height_at(φ, 60.0, 40.0) == 0.0 && BD.height_at(φ, 98.5, 20.5) == 0.0 && BD.height_at(φ, 90.0, 20.5) ≈ 10.0
+    # φ near the block: the largest signed plane distance (ASAM), min with the ground, capped by the band
+    err = 0.0
+    for x in 24.0:0.7:57.0, y in 26.0:0.7:52.0, z in 0.0:0.6:22.0
+        ex = min(φ.band, max(30.3 - x, x - 50.7, 32.2 - y, y - 45.9, z - 15.5), z)
+        err = max(err, abs(φ(x, y, z) - ex))
+    end
+    @test err < 1e-9                                               # GIS coordinates ~ 1e5–1e6 m shifted
+    @test φ(98.5, 20.5, 5.0) > 0 && φ(90.0, 20.5, 5.0) < 0 && φ(76.0, 45.0, 8.7) < 0 && φ(76.0, 45.0, 9.0) > 0
+    # fractions on 4 m columns, stretched levels: volume second order in the sub-cells, sections, solid interior
+    zf = BD.stretched_levels(60.0; dz0 = 2.0, z1 = 20.0, r = 1.1)
+    @test zf[1] == 0 && zf[end] == 60 && all(diff(zf) .> 0) && all(diff(zf)[1:10] .≈ 2.0) && diff(zf)[end] > 4
+    ex = 20.4 * 13.7 * 15.5 + 900 + 3360
+    solid(cg) = sum((1 - cg.Vf[i, j, k]) * 16 * (zf[k+1] - zf[k]) for i in 1:cg.nx, j in 1:cg.ny, k in 1:cg.nz)
+    cg1 = BD.cut_geometry(φ; Δx = 4.0, zf, nsub = (4, 4), δsub = 1.0)
+    cg2 = BD.cut_geometry(φ; Δx = 4.0, zf, nsub = (8, 8), δsub = 0.5)
+    e1, e2 = abs(solid(cg1) / ex - 1), abs(solid(cg2) / ex - 1)
+    @test e1 < 5e-3 && e2 < 1e-3                                   # errors only at edges and corners
+    k6 = findfirst(==(6.0), zf)                                    # section z = 6: block, courtyard, house eaves
+    @test abs(sum(1 .- cg2.Az[:, :, k6]) * 16 / (20.4 * 13.7 + 336 + 120) - 1) < 4e-3
+    @test cg1.Vf[11, 10, 3] == 0 && cg1.Ax[11, 10, 3] == 0 && cg1.Az[11, 10, 3] == 0   # inside the block
+    @test all(cg1.Vf[25, 6, 1:4] .== 1)                            # courtyard (cell 96–100 m × 20–24 m): air
+    @test all(cg1.Vf[:, :, end] .== 1) && all(0 .<= cg1.Vf .<= 1) && all(0 .<= cg1.Ax .<= 1)
+    # the auxiliary grid (cache) gives the same fractions where it resolves the sub-cells
+    ls = BD.levelset(φ; δ = 1.0, δz = 1.0)
+    @test maximum(abs, ls.φ[23:59, 27:53, 1:20] .- [φ((i - 1) * ls.δx, (j - 1) * ls.δy, (k - 1) * ls.δz) for i in 23:59, j in 27:53, k in 1:20]) < 1e-5
+    zu = collect(0.0:2.0:40.0)
+    cu = BD.cut_geometry(φ; Δx = 4.0, zf = zu, nsub = (4, 4), δsub = 1.0)
+    cl = BD.cut_geometry(ls; Δx = 4.0, zf = zu, nsub = (4, 4), δsub = 1.0)
+    @test maximum(abs, cu.Vf .- cl.Vf) < 1e-5
+    # FV3D grid with uniform levels (2 m) from the fractions
+    g = BD.fv3d_grid(cu)
+    @test g.cut && g.nz == 20 && g.dz ≈ 2.0 && any(g.mask) && all((g.Vf .== 0) .| (g.Vf .== cu.Vf))
+    gs = BD.fv3d_grid(cg1)                                         # stretched levels
+    @test !gs.uniform && isnan(gs.dz) && gs.dzc ≈ diff(zf) && gs.Vf == cg1.Vf
+end
+
 @testset "MethodDesign: bicoloured B-series of MIS with frozen first argument" begin
     BC = Main.BiColourMIS
     @test [length(BC.trees(n)) for n in 1:4] == [1, 2, 7, 26]

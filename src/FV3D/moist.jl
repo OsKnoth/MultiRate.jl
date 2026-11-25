@@ -88,6 +88,7 @@ function MoistModel3D(base::Model3D; mgas::MoistGas = MoistGas(), pvar::Symbol =
                       τfac::Real = 0.25, cs::Real = 350.0, wτ = nothing, τ = nothing, rain::Bool = false,
                       kessler::KesslerParams = KesslerParams(), smagorinsky::Union{Nothing,Smagorinsky} = nothing)
     pvar in (:pi, :p) || error("pvar: :pi or :p")
+    base.grid.uniform || error("MoistModel3D: stretched levels not yet supported (dry Model3D only)")
     mgas.thvar in (:thetarho, :energy, :entropy) || error("thvar: :thetarho, :energy or :entropy")
     micro in (:slow, :fast, :none) || error("micro: :slow, :fast or :none")
     g = base.grid

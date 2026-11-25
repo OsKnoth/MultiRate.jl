@@ -28,6 +28,8 @@
 
 """Geometric volume Vf J of cell (i, j, k) (zero in solid cells)."""
 @inline vol(g, i, j, k) = g.Vf[ip(g, i), jp(g, j), k] * g.Jc[ip(g, i), jp(g, j)]
+"""Volume for the weights of direction d (3: times the cell thickness Δz_k of stretched levels)."""
+@inline vold(g, d, i, j, k) = d == 3 ? vol(g, i, j, k) * g.dzc[k] : vol(g, i, j, k)
 """Open face measures: left x-face, left y-face (A J), lower η-face (A; walls 0)."""
 @inline ax(g, i, j, k) = g.Ax[ip(g, i), jp(g, j), k] * g.Jx[ip(g, i), jp(g, j)]
 @inline ay(g, i, j, k) = g.Ay[ip(g, i), jp(g, j), k] * g.Jy[ip(g, i), jp(g, j)]
@@ -42,22 +44,22 @@ ground 1 on flat and terrain-following grids, 0 below a cut cell)."""
     if !signbit(F)
         c = g.lsqid[ip(g, i - 1), j, k]; c > 0 && g.recon === :lsq && return lsq_face(g, φ, ip(g, i - 1), j, k, 2)
         return (c > 0 ? lsq_corr(g, φ, ip(g, i - 1), j, k, 2) : 0.0) + recon3(φ[ip(g, i - 2), j, k], φ[ip(g, i - 1), j, k], φ[ip(g, i), j, k],
-                      vol(g, i - 2, j, k), vol(g, i - 1, j, k), vol(g, i, j, k), ax(g, i - 1, j, k), ax(g, i, j, k))
+                      vol(g, i - 2, j, k), vol(g, i - 1, j, k), vol(g, i, j, k), ax(g, i - 1, j, k), ax(g, i, j, k), ax(g, i - 1, j, k) > 0, 1.0, 1.0, 1.0, g.lim)
     else
         c = g.lsqid[ip(g, i), j, k]; c > 0 && g.recon === :lsq && return lsq_face(g, φ, ip(g, i), j, k, 1)
         return (c > 0 ? lsq_corr(g, φ, ip(g, i), j, k, 1) : 0.0) + recon3(φ[ip(g, i + 1), j, k], φ[ip(g, i), j, k], φ[ip(g, i - 1), j, k],
-                      vol(g, i + 1, j, k), vol(g, i, j, k), vol(g, i - 1, j, k), ax(g, i + 1, j, k), ax(g, i, j, k))
+                      vol(g, i + 1, j, k), vol(g, i, j, k), vol(g, i - 1, j, k), ax(g, i + 1, j, k), ax(g, i, j, k), ax(g, i + 1, j, k) > 0, 1.0, 1.0, 1.0, g.lim)
     end
 end
 @inline function face_y(g, φ, i, j, k, F)
     if !signbit(F)
         c = g.lsqid[i, jp(g, j - 1), k]; c > 0 && g.recon === :lsq && return lsq_face(g, φ, i, jp(g, j - 1), k, 4)
         return (c > 0 ? lsq_corr(g, φ, i, jp(g, j - 1), k, 4) : 0.0) + recon3(φ[i, jp(g, j - 2), k], φ[i, jp(g, j - 1), k], φ[i, jp(g, j), k],
-                      vol(g, i, j - 2, k), vol(g, i, j - 1, k), vol(g, i, j, k), ay(g, i, j - 1, k), ay(g, i, j, k))
+                      vol(g, i, j - 2, k), vol(g, i, j - 1, k), vol(g, i, j, k), ay(g, i, j - 1, k), ay(g, i, j, k), ay(g, i, j - 1, k) > 0, 1.0, 1.0, 1.0, g.lim)
     else
         c = g.lsqid[i, jp(g, j), k]; c > 0 && g.recon === :lsq && return lsq_face(g, φ, i, jp(g, j), k, 3)
         return (c > 0 ? lsq_corr(g, φ, i, jp(g, j), k, 3) : 0.0) + recon3(φ[i, jp(g, j + 1), k], φ[i, jp(g, j), k], φ[i, jp(g, j - 1), k],
-                      vol(g, i, j + 1, k), vol(g, i, j, k), vol(g, i, j - 1, k), ay(g, i, j + 1, k), ay(g, i, j, k))
+                      vol(g, i, j + 1, k), vol(g, i, j, k), vol(g, i, j - 1, k), ay(g, i, j + 1, k), ay(g, i, j, k), ay(g, i, j + 1, k) > 0, 1.0, 1.0, 1.0, g.lim)
     end
 end
 """Face value at the η-face k (2 … nz); beyond the walls the upstream face is closed."""
@@ -66,12 +68,12 @@ end
         c = g.lsqid[i, j, k-1]; c > 0 && g.recon === :lsq && return lsq_face(g, φ, i, j, k - 1, 6)
         ku = max(k - 2, 1)
         return (c > 0 ? lsq_corr(g, φ, i, j, k - 1, 6) : 0.0) + recon3(φ[i, j, ku], φ[i, j, k-1], φ[i, j, k], vol(g, i, j, ku), vol(g, i, j, k - 1), vol(g, i, j, k),
-                      azs(g, i, j, k - 1), az(g, i, j, k), az(g, i, j, k - 1) > 0)
+                      azs(g, i, j, k - 1), az(g, i, j, k), az(g, i, j, k - 1) > 0, g.dzc[ku], g.dzc[k-1], g.dzc[k], g.lim)
     else
         c = g.lsqid[i, j, k]; c > 0 && g.recon === :lsq && return lsq_face(g, φ, i, j, k, 5)
         ku = min(k + 1, g.nz)
         return (c > 0 ? lsq_corr(g, φ, i, j, k, 5) : 0.0) + recon3(φ[i, j, ku], φ[i, j, k], φ[i, j, k-1], vol(g, i, j, ku), vol(g, i, j, k), vol(g, i, j, k - 1),
-                      azs(g, i, j, k + 1), az(g, i, j, k), az(g, i, j, k + 1) > 0)
+                      azs(g, i, j, k + 1), az(g, i, j, k), az(g, i, j, k + 1) > 0, g.dzc[ku], g.dzc[k], g.dzc[k-1], g.lim)
     end
 end
 
@@ -105,8 +107,8 @@ function advect_cells!(T, φ, m::Model3D)
         end
         F = c.Fz[i, j, k]
         if F != 0
-            f = F * face_z(g, φ, i, j, k, F) / g.dz
-            T[i, j, k-1] -= f; T[i, j, k] += f
+            f = F * face_z(g, φ, i, j, k, F)
+            T[i, j, k-1] -= f / g.dzc[k-1]; T[i, j, k] += f / g.dzc[k]
         end
     end
     @inbounds for k in 1:g.nz, j in 1:g.ny, i in 1:g.nx
@@ -139,7 +141,7 @@ function momentum_advection!(S, m::Model3D)
                                                a, ay(g, i, jm, k), ay(g, i, j + 1, k)) : 0.0
         if k > 1
             a = az(g, i, j, k)
-            S[iW(g, i, j, k)] = a > 0 ? shift_back(TwL[i, j, k], TwR[i, j, k-1], vol(g, i, j, k - 1), vol(g, i, j, k),
+            S[iW(g, i, j, k)] = a > 0 ? shift_back(TwL[i, j, k], TwR[i, j, k-1], vold(g, 3, i, j, k - 1), vold(g, 3, i, j, k),
                                                    a, azs(g, i, j, k - 1), azs(g, i, j, k + 1)) : 0.0
         end
     end

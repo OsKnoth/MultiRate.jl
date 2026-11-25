@@ -15,6 +15,7 @@ Submodules (load with e.g. `using MultiRate.Euler2D`):
   FV:
     FV2D              WRF-style finite volumes on an Arakawa C-grid (flat)
     FV3D              3D C-grid finite volumes, flat or cut cells, frozen split (src/FV3D)
+  Buildings           cut-cell geometry of buildings from CityGML LoD1/LoD2 via an intermediate level set (src/Buildings)
   MIS                 construction of MIS methods with polynomial coupling: order conditions
                       (bicoloured B-series), 1D acoustic-advection test for FV and DG (src/MIS)
 """
@@ -27,8 +28,9 @@ include("DGSEM/Euler2D/Euler2D.jl")
 include("FV/FV2D.jl")
 include("FV3D/FV3D.jl")
 include("FV3DKA/FV3DKA.jl")
+include("Buildings/Buildings.jl")
 include("MIS/MIS.jl")
 
-export Common, TimeStepping, LinearAnalysis, Euler2D, FV2D, FV3D, FV3DKA, MIS
+export Common, TimeStepping, LinearAnalysis, Euler2D, FV2D, FV3D, FV3DKA, Buildings, MIS
 
 end # module

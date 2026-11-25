@@ -74,7 +74,7 @@ end
     balanced_state(m, Θfun, ρfun; U = 0, V = 0)
 
 Discretely balanced initial state without a background state in the equations: Θ = Θfun(z) at the
-centres, ρ per column from the W equation at rest, δη p / J + g (ρ_{k-1} + ρ_k)/2 = 0 (pressure form
+centres, ρ per column from the W equation at rest, δη p / J + g ρ̄ = 0 (face density `ρface`; pressure form
 of the operator), upwards from ρ_1 = ρfun(z_1), and uniform velocities U, V (momenta U ρ̄, V ρ̄ with
 the face means of ρ, as in u = U/ρ̄). On Cartesian grids (flat, cut cells, obstacles) the rest state
 is exactly steady; terrain following it is steady up to the horizontal pressure-gradient error.
@@ -90,7 +90,7 @@ function balanced_state(m::Model3D, Θfun, ρfun; U = 0.0, V = 0.0)
         for k in 2:g.nz
             Θl, Θc = q[iΘ(g, i, j, k - 1)], q[iΘ(g, i, j, k)]
             dp = FV3D_PRESSURE_FORM[] === :product ? dpdΘ_face(m.gas, Θl, Θc) * (Θc - Θl) : pressure(m.gas, Θc) - pressure(m.gas, Θl)
-            q[iρ(g, i, j, k)] = -2dp / (m.gas.g * g.Jc[i, j] * g.dz) - q[iρ(g, i, j, k - 1)]
+            q[iρ(g, i, j, k)] = _rho_up(g, k, dp / (m.gas.g * g.Jc[i, j]), q[iρ(g, i, j, k - 1)])
         end
     end
     for k in 1:g.nz, j in 1:g.ny, i in 1:g.nx
@@ -115,20 +115,22 @@ function hydrostatic_column(m::Model3D, Θfun; ρbottom)
     for k in 2:g.nz
         Θl, Θc = Θfun(g.zc[k-1]), Θfun(g.zc[k])
         dp = FV3D_PRESSURE_FORM[] === :product ? dpdΘ_face(m.gas, Θl, Θc) * (Θc - Θl) : pressure(m.gas, Θc) - pressure(m.gas, Θl)
-        ρ[k] = -2dp / (m.gas.g * g.dz) - ρ[k-1]
+        ρ[k] = _rho_up(g, k, dp / m.gas.g, ρ[k-1])
     end
     return ρ
 end
+"""ρ_k from the W equation at rest, dp/Δz̃_k + g (w_k ρ_{k-1} + (1 - w_k) ρ_k) = 0 (dpg = dp/g)."""
+_rho_up(g::Grid3D, k, dpg, ρl) = g.uniform ? -2dpg / g.dz - ρl : (-dpg / g.dzf[k] - g.wlo[k] * ρl) / (1 - g.wlo[k])
 
 """Cell level k of the height z."""
-level(g::Grid3D, z) = clamp(floor(Int, z / g.dz) + 1, 1, g.nz)
+level(g::Grid3D, z) = g.uniform ? clamp(floor(Int, z / g.dz) + 1, 1, g.nz) : clamp(searchsortedlast(g.zf, z), 1, g.nz)
 
 """Discrete integral Σ Vf J ΔV q_c of a cell variable (:ρ or :Θ) over the fluid cells."""
 function total3d(m::Model3D, q, var::Symbol)
     g = m.grid
     idx = var === :ρ ? iρ : iΘ
-    dV = g.dx * g.dy * g.dz
-    return sum(q[idx(g, i, j, k)] * g.Jc[i, j] * dV / g.invV[i, j, k] for k in 1:g.nz, j in 1:g.ny, i in 1:g.nx if g.invV[i, j, k] > 0)
+    return sum(q[idx(g, i, j, k)] * g.Jc[i, j] * (g.dx * g.dy * g.dzc[k]) / g.invV[i, j, k]
+               for k in 1:g.nz, j in 1:g.ny, i in 1:g.nx if g.invV[i, j, k] > 0)
 end
 
 sound_speed_max(m::Model3D, q) = (g = m.grid;
@@ -140,6 +142,6 @@ theta_prime(m::Model3D, q) = (g = m.grid;
     [g.Vf[i, j, k] > 0 ? q[iΘ(g, i, j, k)] / q[iρ(g, i, j, k)] - m.Θref[i, j, k] / m.ρref[i, j, k] : NaN
      for i in 1:g.nx, j in 1:g.ny, k in 1:g.nz])
 
-"""w = W / mean ρ at the interior z-faces (nx, ny, nz-1)."""
+"""w = W / face ρ at the interior z-faces (nx, ny, nz-1)."""
 vertical_velocity(m::Model3D, q) = (g = m.grid;
-    [q[iW(g, i, j, k)] / (0.5 * (q[iρ(g, i, j, k - 1)] + q[iρ(g, i, j, k)])) for i in 1:g.nx, j in 1:g.ny, k in 2:g.nz])
+    [q[iW(g, i, j, k)] / ρface(g, q, i, j, k) for i in 1:g.nx, j in 1:g.ny, k in 2:g.nz])

@@ -24,7 +24,11 @@ frozen. `box = (x0, x1, y0, y1, h)`: a rectangular obstacle
 [x0, x1] × [y0, y1] × [0, h] on the ground, with exact fractions (aligned with the grid faces:
 only full and solid cells; shifted: cut cells). `mask`: the cut cells and their neighbours within
 `mask_width` cells (x, y, z), the region treated implicitly by `implicit = :mask` (model); `Mx`,
-`My` mark the horizontal faces of masked cells.
+`My` mark the horizontal faces of masked cells. `zf`: the z-faces 0 = zf[1] < … < zf[nz+1] = H (stretched levels,
+e.g. `Buildings.stretched_levels`; Cartesian grids with recon = :ash, the dry Model3D and FV3DKA.CutKA only): cell
+thicknesses `dzc`, centre distances `dzf` at the faces, face weights `wlo`; then `dz = NaN`. `limiter`: of the
+third-order face values (`recon3`): :none, :koren, :vanleer, :upwind (ASAM). `fractions = (Vf, Ax, Ay, Az)`: given fractions (e.g. of buildings,
+`Buildings.cut_geometry`), arrays of the sizes above.
 
 `terrain = :follow`: the terrain `zs` maps the grid instead (Gal-Chen): z = z_s + η J,
 J = 1 - z_s/H, cells uniform in (x, y, η) with all fractions 1. `Jc`, `Jx`, `Jy`: J in the cell
@@ -50,6 +54,10 @@ struct Grid3D
     xf::Vector{Float64}           # x of the left x-faces (nx)
     yf::Vector{Float64}           # y of the left y-faces (ny)
     zf::Vector{Float64}           # z of the z-faces (nz+1)
+    dzc::Vector{Float64}          # cell thicknesses zf[k+1] - zf[k] (nz)
+    dzf::Vector{Float64}          # distance of the cell centres at the z-face k (2 … nz; walls: half a cell) (nz+1)
+    wlo::Vector{Float64}          # face average (ρ etc.) at the z-face k: weight of the lower cell Δz_{k-1}/(Δz_{k-1}+Δz_k)
+    uniform::Bool                 # constant Δz (dz the spacing; else dz = NaN: use dzc, dzf)
     Vf::Array{Float64,3}          # fluid volume fractions (nx, ny, nz)
     invV::Array{Float64,3}        # 1/Vf, 0 in solid cells
     Ax::Array{Float64,3}          # open fraction of the left x-face (nx, ny, nz)
@@ -74,7 +82,12 @@ struct Grid3D
     recon::Symbol                 # face reconstruction near cut cells: :ash (pseudo third order), :lin (+ linear centroid correction) or :lsq
     lsqid::Array{Int,3}           # recon = :lsq: index into lsq of the mask cells, 0 elsewhere
     lsq::Vector{LSQCell}
+    lim::Int                      # limiter of the face reconstruction (recon3): 0 none, 1 Koren, 2 van Leer, 3 upwind
 end
+
+"""Code of the limiter of `recon3`: :none (third order), :koren, :vanleer, :upwind (ASAM `PhiLim`)."""
+limcode(l::Symbol) = l === :none ? 0 : l === :koren ? 1 : l === :vanleer ? 2 : l === :upwind ? 3 :
+                     error("limiter: :none, :koren, :vanleer or :upwind")
 
 ncell(g::Grid3D) = g.nx * g.ny * g.nz
 nunknowns(g::Grid3D) = 4 * ncell(g) + g.nx * g.ny * (g.nz - 1)
@@ -99,15 +112,35 @@ const _GW = (0.3478548451374538, 0.6521451548625462, 0.6521451548625462, 0.34785
 @inline _ov(a0, a1, b0, b1) = max(0.0, min(a1, b1) - max(a0, b0))
 
 function Grid3D(nx, ny, nz, Lx, Ly, H; zs = nothing, terrain::Symbol = :cut, box = nothing, mask_width = 1,
-                recon::Symbol = :ash, qsub::Int = 1)
+                recon::Symbol = :ash, qsub::Int = 1, fractions = nothing, zf = nothing, limiter::Symbol = :none)
     recon in (:ash, :lin, :lsq) || error("recon: :ash, :lin or :lsq")
     zs !== nothing && box !== nothing && error("Grid3D: give zs or box, not both")
+    fractions !== nothing && (zs !== nothing || box !== nothing || recon !== :ash) &&
+        error("Grid3D: fractions only without zs, box and with recon = :ash")
     terrain in (:cut, :follow) || error("terrain: :cut or :follow")
     follow = zs !== nothing && terrain === :follow
     zcut = follow ? nothing : zs
     dx, dy, dz = Lx / nx, Ly / ny, H / nz
-    xc = [(i - 0.5) * dx for i in 1:nx]; yc = [(j - 0.5) * dy for j in 1:ny]; zc = [(k - 0.5) * dz for k in 1:nz]
-    xf = [(i - 1) * dx for i in 1:nx]; yf = [(j - 1) * dy for j in 1:ny]; zf = [(k - 1) * dz for k in 1:nz+1]
+    xc = [(i - 0.5) * dx for i in 1:nx]; yc = [(j - 0.5) * dy for j in 1:ny]
+    xf = [(i - 1) * dx for i in 1:nx]; yf = [(j - 1) * dy for j in 1:ny]
+    if zf === nothing
+        zf = [(k - 1) * dz for k in 1:nz+1]
+        uniform = true
+    else
+        zf = collect(Float64, zf)
+        (length(zf) == nz + 1 && zf[1] == 0 && abs(zf[end] - H) <= 1e-9 * H && all(diff(zf) .> 0)) ||
+            error("Grid3D: zf must be increasing from 0 to H with nz + 1 entries")
+        zf[end] = H
+        uniform = maximum(diff(zf)) - minimum(diff(zf)) <= 1e-12 * H
+        uniform && (zf = [(k - 1) * dz for k in 1:nz+1])
+        uniform || (dz = NaN)
+        uniform || (terrain === :follow && zs !== nothing) && error("Grid3D: stretched levels only on Cartesian grids")
+        uniform || recon === :ash || error("Grid3D: stretched levels only with recon = :ash")
+    end
+    zc = uniform ? [(k - 0.5) * dz for k in 1:nz] : [(zf[k] + zf[k+1]) / 2 for k in 1:nz]
+    dzc = uniform ? fill(dz, nz) : diff(zf)
+    dzf = [k == 1 ? dzc[1] / 2 : k == nz + 1 ? dzc[nz] / 2 : (uniform ? dz : (dzc[k-1] + dzc[k]) / 2) for k in 1:nz+1]
+    wlo = [(k == 1 || k == nz + 1) ? 0.5 : dzc[k-1] / (dzc[k-1] + dzc[k]) for k in 1:nz+1]
     Vf = ones(nx, ny, nz); Ax = ones(nx, ny, nz); Ay = ones(nx, ny, nz); Az = ones(nx, ny, nz + 1)
     zs_ = zs
     zs = zcut
@@ -133,7 +166,7 @@ function Grid3D(nx, ny, nz, Lx, Ly, H; zs = nothing, terrain::Symbol = :cut, box
         x0, x1, y0, y1, h = box
         for k in 1:nz, j in 1:ny, i in 1:nx
             ox = _ov(xf[i], xf[i] + dx, x0, x1) / dx; oy = _ov(yf[j], yf[j] + dy, y0, y1) / dy
-            oz = _ov(zf[k], zf[k+1], 0.0, h) / dz
+            oz = _ov(zf[k], zf[k+1], 0.0, h) / dzc[k]
             Vf[i, j, k] = 1 - ox * oy * oz
             Ax[i, j, k] = 1 - (x0 <= xf[i] <= x1) * oy * oz      # the box surface itself is closed
             Ay[i, j, k] = 1 - (y0 <= yf[j] <= y1) * ox * oz
@@ -142,7 +175,11 @@ function Grid3D(nx, ny, nz, Lx, Ly, H; zs = nothing, terrain::Symbol = :cut, box
             Az[i, j, k] = 1 - (zf[k] <= h) * _ov(xf[i], xf[i] + dx, x0, x1) / dx * _ov(yf[j], yf[j] + dy, y0, y1) / dy
         end
     end
-    if zs !== nothing || box !== nothing
+    if fractions !== nothing
+        Vf .= fractions.Vf; Ax .= fractions.Ax; Ay .= fractions.Ay; Az .= fractions.Az
+    end
+    given = zs !== nothing || box !== nothing || fractions !== nothing
+    if given
         # quadrature rounding: snap to 0 and 1
         snap(a) = a > 1 - 1e-12 ? 1.0 : (a < 1e-12 ? 0.0 : a)
         Vf .= snap.(Vf); Ax .= snap.(Ax); Ay .= snap.(Ay); Az .= snap.(Az)
@@ -182,9 +219,9 @@ function Grid3D(nx, ny, nz, Lx, Ly, H; zs = nothing, terrain::Symbol = :cut, box
     zyy = [syy[i, j] * fac[k] for i in 1:nx, j in 1:ny, k in 1:nz+1]
     Zc = [zsc[i, j] + zc[k] * Jc[i, j] for i in 1:nx, j in 1:ny, k in 1:nz]
     Zf = [zsc[i, j] + zf[k] * Jc[i, j] for i in 1:nx, j in 1:ny, k in 1:nz+1]
-    g = Grid3D(nx, ny, nz, Lx, Ly, H, dx, dy, dz, xc, yc, zc, xf, yf, zf, Vf, invV, Ax, Ay, Az,
-               Vf .== 1, mask, Mx, My, zs !== nothing || box !== nothing, follow, Jc, Jx, Jy, zxf, zyf, zxx, zyy, Zc, Zf,
-               follow ? zs_ : (zs === nothing ? box : zs), recon, zeros(Int, nx, ny, nz), LSQCell[])
+    g = Grid3D(nx, ny, nz, Lx, Ly, H, dx, dy, dz, xc, yc, zc, xf, yf, zf, dzc, dzf, wlo, uniform, Vf, invV, Ax, Ay, Az,
+               Vf .== 1, mask, Mx, My, given, follow, Jc, Jx, Jy, zxf, zyf, zxx, zyy, Zc, Zf,
+               follow ? zs_ : (zs === nothing ? box : zs), recon, zeros(Int, nx, ny, nz), LSQCell[], limcode(limiter))
     if !follow && (zs !== nothing || box !== nothing)
         recon === :lsq && lsq_reconstruction!(g, zs, box)
         recon === :lin && lin_reconstruction!(g, zs, box)
@@ -206,7 +243,7 @@ function subgrid(g::Grid3D, i0::Int, j0::Int, nxt::Int, nyt::Int)
     sl2(A) = A[[gi(i) for i in 1:nxt], [gj(j) for j in 1:nyt]]
     xc = [g.xc[1] + (i0 + i - 1) * g.dx for i in 1:nxt]; yc = [g.yc[1] + (j0 + j - 1) * g.dy for j in 1:nyt]
     return Grid3D(nxt, nyt, g.nz, nxt * g.dx, nyt * g.dy, g.H, g.dx, g.dy, g.dz, xc, yc, copy(g.zc), xc .- g.dx / 2, yc .- g.dy / 2,
-                  copy(g.zf), sl(g.Vf), sl(g.invV), sl(g.Ax), sl(g.Ay), sl(g.Az), sl(g.full), sl(g.mask), sl(g.Mx), sl(g.My),
+                  copy(g.zf), copy(g.dzc), copy(g.dzf), copy(g.wlo), g.uniform, sl(g.Vf), sl(g.invV), sl(g.Ax), sl(g.Ay), sl(g.Az), sl(g.full), sl(g.mask), sl(g.Mx), sl(g.My),
                   g.cut, g.follow, sl2(g.Jc), sl2(g.Jx), sl2(g.Jy), sl(g.zxf), sl(g.zyf), sl(g.zxx), sl(g.zyy), sl(g.Zc), sl(g.Zf),
-                  g.zs, g.recon, zeros(Int, nxt, nyt, g.nz), LSQCell[])
+                  g.zs, g.recon, zeros(Int, nxt, nyt, g.nz), LSQCell[], g.lim)
 end

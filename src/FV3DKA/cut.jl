@@ -26,7 +26,7 @@ Tile (cx, cy) of a px × py decomposition of the Cartesian cut-cell grid g3 (per
 the tile with halo (arrays (nxh+1, nyh+1, nz+1) on the device: the outer faces of the right and upper halo cells
 included).
 """
-struct CutGrid{M3} <: AbstractTileGrid
+struct CutGrid{M3,M1} <: AbstractTileGrid
     nx::Int; ny::Int; nz::Int
     nxl::Int; nyl::Int
     i0::Int; j0::Int
@@ -36,6 +36,8 @@ struct CutGrid{M3} <: AbstractTileGrid
     msk::M3                                  # 1 in the masked cells
     Mx::M3; My::M3                           # 1 on the x-, y-faces of masked cells
     gr::M3                                   # gr[I, J, 1]: ground area of the shift (1 full, 0 below a cut cell)
+    dzc::M1; dzf::M1; wlo::M1                # levels (FV3D.Grid3D): cell thicknesses, centre distances, face weights (nz+1)
+    lim::Int                                 # limiter of the face values (FV3D.Grid3D lim, recon3)
     zf::Vector{Float64}
     px::Int; py::Int
     g3::FV3D.Grid3D                          # the global grid (host; tile models of the AMF preconditioner)
@@ -56,11 +58,14 @@ function CutGrid(g3::FV3D.Grid3D; px::Int = 1, py::Int = 1, cx::Int = 0, cy::Int
     return CutGrid(nx, ny, nz, nxl, nyl, i0, j0, nxh, nyh, g3.dx, g3.dy, g3.dz, g3.H,
                    dev(slab(g3.Vf, nz)), dev(slab(g3.invV, nz)), dev(slab(g3.Ax, nz)), dev(slab(g3.Ay, nz)),
                    dev(slab(g3.Az, nz + 1)), dev(slab(g3.mask, nz)), dev(slab(g3.Mx, nz)), dev(slab(g3.My, nz)), dev(gr),
-                   collect(g3.zf), px, py, g3)
+                   dev(vcat(g3.dzc, g3.dzc[nz])), dev(g3.dzf), dev(g3.wlo), g3.lim, collect(g3.zf), px, py, g3)
 end
 KA.get_backend(g::CutGrid) = KA.get_backend(g.Vf)
 """The geometry arrays as a named tuple (kernel argument)."""
-_geo(g::CutGrid) = (Vf = g.Vf, iV = g.iV, Ax = g.Ax, Ay = g.Ay, Az = g.Az, msk = g.msk, Mx = g.Mx, My = g.My, gr = g.gr)
+_geo(g::CutGrid) = (Vf = g.Vf, iV = g.iV, Ax = g.Ax, Ay = g.Ay, Az = g.Az, msk = g.msk, Mx = g.Mx, My = g.My, gr = g.gr,
+                     dzc = g.dzc, dzf = g.dzf, wlo = g.wlo, lim = g.lim)
+"""Density at the η-face k of the state Z (FV3D `ρface`: mass of the face control volume)."""
+@inline _ρf(G, Z, I, J, k) = G.wlo[k] * Z[I, J, k-1, CR] + (1 - G.wlo[k]) * Z[I, J, k, CR]
 
 @inline _azs(G, nz, I, J, k) = k == 1 ? G.gr[I, J, 1] : (k == nz + 1 ? 1.0 : G.Az[I, J, k])
 """Faces of masked cells (rows of A1): left x-face, left y-face, lower η-face (2 … nz) of cell (I, J, k)."""
@@ -172,20 +177,24 @@ ka_zeros(m::CutKA, nv::Int = NVC) = KA.zeros(KA.get_backend(m), Float64, m.grid.
 # ------------------------------------------------------------------ face values (FV3D/advection.jl, recon = :ash)
 
 @inline _cfx(φ, G, I, J, k, F) = !signbit(F) ?
-    recon3(φ[I-2, J, k], φ[I-1, J, k], φ[I, J, k], G.Vf[I-2, J, k], G.Vf[I-1, J, k], G.Vf[I, J, k], G.Ax[I-1, J, k], G.Ax[I, J, k]) :
-    recon3(φ[I+1, J, k], φ[I, J, k], φ[I-1, J, k], G.Vf[I+1, J, k], G.Vf[I, J, k], G.Vf[I-1, J, k], G.Ax[I+1, J, k], G.Ax[I, J, k])
+    recon3(φ[I-2, J, k], φ[I-1, J, k], φ[I, J, k], G.Vf[I-2, J, k], G.Vf[I-1, J, k], G.Vf[I, J, k], G.Ax[I-1, J, k], G.Ax[I, J, k],
+           G.Ax[I-1, J, k] > 0, 1.0, 1.0, 1.0, G.lim) :
+    recon3(φ[I+1, J, k], φ[I, J, k], φ[I-1, J, k], G.Vf[I+1, J, k], G.Vf[I, J, k], G.Vf[I-1, J, k], G.Ax[I+1, J, k], G.Ax[I, J, k],
+           G.Ax[I+1, J, k] > 0, 1.0, 1.0, 1.0, G.lim)
 @inline _cfy(φ, G, I, J, k, F) = !signbit(F) ?
-    recon3(φ[I, J-2, k], φ[I, J-1, k], φ[I, J, k], G.Vf[I, J-2, k], G.Vf[I, J-1, k], G.Vf[I, J, k], G.Ay[I, J-1, k], G.Ay[I, J, k]) :
-    recon3(φ[I, J+1, k], φ[I, J, k], φ[I, J-1, k], G.Vf[I, J+1, k], G.Vf[I, J, k], G.Vf[I, J-1, k], G.Ay[I, J+1, k], G.Ay[I, J, k])
+    recon3(φ[I, J-2, k], φ[I, J-1, k], φ[I, J, k], G.Vf[I, J-2, k], G.Vf[I, J-1, k], G.Vf[I, J, k], G.Ay[I, J-1, k], G.Ay[I, J, k],
+           G.Ay[I, J-1, k] > 0, 1.0, 1.0, 1.0, G.lim) :
+    recon3(φ[I, J+1, k], φ[I, J, k], φ[I, J-1, k], G.Vf[I, J+1, k], G.Vf[I, J, k], G.Vf[I, J-1, k], G.Ay[I, J+1, k], G.Ay[I, J, k],
+           G.Ay[I, J+1, k] > 0, 1.0, 1.0, 1.0, G.lim)
 @inline function _cfz(φ, G, nz, I, J, k, F)
     if !signbit(F)
         ku = max(k - 2, 1)
         return recon3(φ[I, J, ku], φ[I, J, k-1], φ[I, J, k], G.Vf[I, J, ku], G.Vf[I, J, k-1], G.Vf[I, J, k],
-                      _azs(G, nz, I, J, k - 1), G.Az[I, J, k], G.Az[I, J, k-1] > 0)
+                      _azs(G, nz, I, J, k - 1), G.Az[I, J, k], G.Az[I, J, k-1] > 0, G.dzc[ku], G.dzc[k-1], G.dzc[k], G.lim)
     else
         ku = min(k + 1, nz)
         return recon3(φ[I, J, ku], φ[I, J, k], φ[I, J, k-1], G.Vf[I, J, ku], G.Vf[I, J, k], G.Vf[I, J, k-1],
-                      _azs(G, nz, I, J, k + 1), G.Az[I, J, k], G.Az[I, J, k+1] > 0)
+                      _azs(G, nz, I, J, k + 1), G.Az[I, J, k], G.Az[I, J, k+1] > 0, G.dzc[ku], G.dzc[k], G.dzc[k-1], G.lim)
     end
 end
 
@@ -215,7 +224,7 @@ end
         if k == 1 || k == nz + 1
             w[I, J, k] = 0.0; Fz[I, J, k] = 0.0
         else
-            w[I, J, k] = Q[I, J, k, CW] / (0.5 * (Q[I, J, k-1, CR] + Q[I, J, k, CR]))
+            w[I, J, k] = Q[I, J, k, CW] / _ρf(G, Q, I, J, k)
             Fz[I, J, k] = G.Az[I, J, k] * Q[I, J, k, CW]
         end
     end
@@ -308,14 +317,14 @@ end
 @inline _mhi(Z, nz, d, I, J, k) = d == 1 ? Z[I+1, J, k, CU] : d == 2 ? Z[I, J+1, k, CV] : (k == nz ? 0.0 : Z[I, J, k+1, CW])
 
 """Advective tendencies of the six shifted velocities in the interior cells: -(1/V_f) Σ F φ_f."""
-@kernel function _kc_advect!(TT, @Const(SH), @Const(FVx), @Const(FVy), @Const(Fz), G, dz, nz)
+@kernel function _kc_advect!(TT, @Const(SH), @Const(FVx), @Const(FVy), @Const(Fz), G, nz)
     i, j, k = @index(Global, NTuple)
     I, J = i + HALO, j + HALO
     @inbounds for s in 1:6
         φ = view(SH, :, :, :, s)
         t = FVx[I, J, k, 1+s] + FVy[I, J, k, 1+s] - FVx[I+1, J, k, 1+s] - FVy[I, J+1, k, 1+s]
-        k > 1 && (F = Fz[I, J, k]; F != 0 && (t += F * _cfz(φ, G, nz, I, J, k, F) / dz))
-        k < nz && (F = Fz[I, J, k+1]; F != 0 && (t -= F * _cfz(φ, G, nz, I, J, k + 1, F) / dz))
+        k > 1 && (F = Fz[I, J, k]; F != 0 && (t += F * _cfz(φ, G, nz, I, J, k, F) / G.dzc[k]))
+        k < nz && (F = Fz[I, J, k+1]; F != 0 && (t -= F * _cfz(φ, G, nz, I, J, k + 1, F) / G.dzc[k]))
         TT[I, J, k, s] = t * G.iV[I, J, k]
     end
 end
@@ -335,7 +344,7 @@ first-order upwind advection A1 z of the fast part replaces it there)."""
         if k >= 2
             a = G.Az[I, J, k]
             S[I, J, k, CW] = (a > 0 && !_rowz(G, nz, I, J, k)) ?
-                shift_back(TT[I, J, k, 5], TT[I, J, k-1, 6], G.Vf[I, J, k-1], G.Vf[I, J, k], a, _azs(G, nz, I, J, k - 1),
+                shift_back(TT[I, J, k, 5], TT[I, J, k-1, 6], G.Vf[I, J, k-1] * G.dzc[k-1], G.Vf[I, J, k] * G.dzc[k], a, _azs(G, nz, I, J, k - 1),
                            _azs(G, nz, I, J, k + 1)) : 0.0
         end
     end
@@ -363,7 +372,7 @@ function ka_frozen_data!(Cf, S, m::CutKA, Q)
     fill!(Cf, 0.0); fill!(S, 0.0)
     _launch!(m, _kc_coefs!, (nxl + 1, nyl + 1, nz + 1), Cf, Q, w.FVx, w.FVy, w.θ, w.Fx, w.Fy, w.Fz, G, m.gas, nz, nxl, nyl)
     exchange!(dec, Cf, g, Tuple(kvel(d, s) for d in 1:3 for s in 1:2))
-    _launch!(m, _kc_advect!, (nxl, nyl, nz), w.TT, w.SH, w.FVx, w.FVy, w.Fz, G, g.dz, nz)
+    _launch!(m, _kc_advect!, (nxl, nyl, nz), w.TT, w.SH, w.FVx, w.FVy, w.Fz, G, nz)
     exchange!(dec, w.TT, g, (2, 4))
     _launch!(m, _kc_shiftback!, (nxl, nyl, nz), S, w.TT, G, nz)
     return Cf, S
@@ -415,13 +424,14 @@ end
 
 """Implicit part without the masked momentum advection on the interior: vertical fluxes, vertical pressure gradient and
 gravity, the fluxes and pressure gradients through the masked x-, y-faces and the masked θ transport."""
-@kernel function _kc_vertical!(out, @Const(Z), @Const(Cf), G, dx, dy, dz, nz, grav, RG)
+@kernel function _kc_vertical!(out, @Const(Z), @Const(Cf), G, dx, dy, nz, grav, RG)
     ic, k = @index(Global, NTuple)
     I, J = _cIJ(RG, ic)
     @inbounds begin
         s = G.iV[I, J, k]
         Fb = k >= 2 ? G.Az[I, J, k] * Z[I, J, k, CW] : 0.0
         Ft = k < nz ? G.Az[I, J, k+1] * Z[I, J, k+1, CW] : 0.0
+        dz = G.dzc[k]
         oρ = -(s * (Ft - Fb) / dz)
         oΘ = -(s * ((k < nz ? Cf[I, J, k+1, KθZ] : 0.0) * Ft - (k >= 2 ? Cf[I, J, k, KθZ] : 0.0) * Fb) / dz)
         hρ, hΘ = _cthermo_h(Z, Cf, G, dx, dy, I, J, k, 2)
@@ -450,7 +460,7 @@ gravity, the fluxes and pressure gradients through the masked x-, y-faces and th
         oU, oV = _cmomentum_h(Z, Cf, G, dx, dy, I, J, k, 2)
         out[I, J, k, CU] = oU; out[I, J, k, CV] = oV
         out[I, J, k, CW] = (k >= 2 && G.Az[I, J, k] > 0) ?
-            -(Cf[I, J, k, KPZ] * (Z[I, J, k, CT] - Z[I, J, k-1, CT]) / dz + grav * 0.5 * (Z[I, J, k-1, CR] + Z[I, J, k, CR])) : 0.0
+            -(Cf[I, J, k, KPZ] * (Z[I, J, k, CT] - Z[I, J, k-1, CT]) / G.dzf[k] + grav * _ρf(G, Z, I, J, k)) : 0.0
     end
 end
 
@@ -471,10 +481,11 @@ end
 
 """Upwind transport of the shifted momenta in the interior cells (FV3D `upwind_transport!`) and, with `complete`, the
 rest of the Jacobian (FV3D `_mom_complete!`)."""
-@kernel function _kc_mtransport!(T, @Const(M), @Const(Z), @Const(Cf), G, dx, dy, dz, nz, complete, RG)
+@kernel function _kc_mtransport!(T, @Const(M), @Const(Z), @Const(Cf), G, dx, dy, nz, complete, RG)
     ic, k = @index(Global, NTuple)
     I, J = _cIJ(RG, ic)
     @inbounds begin
+        dz = G.dzc[k]
         s = G.iV[I, J, k]
         for sl in 1:6
             d, side = (sl + 1) ÷ 2, 2 - sl % 2
@@ -521,7 +532,7 @@ end
         end
         if _rowz(G, nz, I, J, k)
             a = G.Az[I, J, k]
-            out[I, J, k, CW] += shift_back(T[I, J, k, 5], T[I, J, k-1, 6], G.Vf[I, J, k-1], G.Vf[I, J, k], a,
+            out[I, J, k, CW] += shift_back(T[I, J, k, 5], T[I, J, k-1, 6], G.Vf[I, J, k-1] * G.dzc[k-1], G.Vf[I, J, k] * G.dzc[k], a,
                                            _azs(G, nz, I, J, k - 1), _azs(G, nz, I, J, k + 1))
         end
     end
@@ -549,13 +560,13 @@ function ka_vertical!(out, m::CutKA, Cf, Z; halo::Bool = false)
     hz = halo ? start_halo!(dec, Z, g, (CR, CU, CV, CW, CT)) : nothing
     for R in (core, ring)
         R === ring && finish_halo!(dec, hz)
-        _launch_r!(m, _kc_vertical!, R, nz, out, Z, Cf, G, g.dx, g.dy, g.dz, nz, m.gas.g)
+        _launch_r!(m, _kc_vertical!, R, nz, out, Z, Cf, G, g.dx, g.dy, nz, m.gas.g)
         _launch_r!(m, _kc_mshift!, R, nz, w.M, Z, G, nz)
     end
     hm = start_halo!(dec, w.M, g, (1, 2, 3, 4, 5, 6))
     for R in (core, ring)
         R === ring && finish_halo!(dec, hm)
-        _launch_r!(m, _kc_mtransport!, R, nz, w.T, w.M, Z, Cf, G, g.dx, g.dy, g.dz, nz, m.complete)
+        _launch_r!(m, _kc_mtransport!, R, nz, w.T, w.M, Z, Cf, G, g.dx, g.dy, nz, m.complete)
     end
     ht = start_halo!(dec, w.T, g, (2, 4))
     for R in (core, ring)
@@ -620,11 +631,10 @@ Column solve Y = (I - c J_v)⁻¹ R per interior column (FV3D `column_solve!` wi
 :product): the tridiagonal W system, then ρ, Θ from the fluxes; U, V rows identity. Preconditioner of the implicit
 system (block Jacobi over the columns, no communication).
 """
-@kernel function _kc_csolve!(Y, @Const(R), @Const(Cf), G, Wc, cpw, idw, c, dz, nz, grav)
+@kernel function _kc_csolve!(Y, @Const(R), @Const(Cf), G, Wc, cpw, idw, c, nz, grav)
     i, j = @index(Global, NTuple)
     I, J = i + HALO, j + HALO
     @inbounds begin
-        r = c / dz; cg = c * grav / 2
         for k in 2:nz
             A = G.Az[I, J, k]
             if A == 0
@@ -632,12 +642,13 @@ system (block Jacobi over the columns, no communication).
                 rhs = R[I, J, k, CW]
             else
                 P = Cf[I, J, k, KPZ]
-                sk, sm = c * G.iV[I, J, k] / dz, c * G.iV[I, J, k-1] / dz
+                r = c / G.dzf[k]; cgl = c * grav * G.wlo[k]; cgu = c * grav * (1 - G.wlo[k])
+                sk, sm = c * G.iV[I, J, k] / G.dzc[k], c * G.iV[I, J, k-1] / G.dzc[k-1]
                 Am, Ap = G.Az[I, J, k-1], G.Az[I, J, k+1]
-                a = k > 2 ? -r * P * sm * Am * Cf[I, J, k-1, KθZ] + cg * sm * Am : 0.0
-                d = 1 + r * A * Cf[I, J, k, KθZ] * (P * sk + P * sm) + cg * A * (sk - sm)
-                b = k < nz ? -r * P * sk * Ap * Cf[I, J, k+1, KθZ] - cg * sk * Ap : 0.0
-                rhs = R[I, J, k, CW] - r * P * (R[I, J, k, CT] - R[I, J, k-1, CT]) - cg * (R[I, J, k-1, CR] + R[I, J, k, CR])
+                a = k > 2 ? -r * P * sm * Am * Cf[I, J, k-1, KθZ] + cgl * sm * Am : 0.0
+                d = 1 + r * A * Cf[I, J, k, KθZ] * (P * sk + P * sm) + A * (cgu * sk - cgl * sm)
+                b = k < nz ? -r * P * sk * Ap * Cf[I, J, k+1, KθZ] - cgu * sk * Ap : 0.0
+                rhs = R[I, J, k, CW] - r * P * (R[I, J, k, CT] - R[I, J, k-1, CT]) - (cgl * R[I, J, k-1, CR] + cgu * R[I, J, k, CR])
             end
             den = k == 2 ? d : d - a * cpw[I, J, k-1]
             idw[I, J, k] = 1 / den; cpw[I, J, k] = b / den
@@ -648,7 +659,7 @@ system (block Jacobi over the columns, no communication).
         end
         Wc[I, J, 1] = 0.0; Wc[I, J, nz+1] = 0.0
         for k in 1:nz
-            sk = c * G.iV[I, J, k] / dz
+            sk = c * G.iV[I, J, k] / G.dzc[k]
             Fb = G.Az[I, J, k] * Wc[I, J, k]; Ft = G.Az[I, J, k+1] * Wc[I, J, k+1]
             Y[I, J, k, CR] = R[I, J, k, CR] - sk * (Ft - Fb)
             Y[I, J, k, CT] = R[I, J, k, CT] - sk * ((k < nz ? Cf[I, J, k+1, KθZ] : 0.0) * Ft - (k > 1 ? Cf[I, J, k, KθZ] : 0.0) * Fb)
@@ -658,7 +669,7 @@ system (block Jacobi over the columns, no communication).
     end
 end
 ka_column_solve!(Y, m::CutKA, Cf, c, R) = (g = m.grid; w = m.work;
-    _launch!(m, _kc_csolve!, (g.nxl, g.nyl), Y, R, Cf, _geo(g), w.Wc, w.cpw, w.idw, Float64(c), g.dz, g.nz, m.gas.g); Y)
+    _launch!(m, _kc_csolve!, (g.nxl, g.nyl), Y, R, Cf, _geo(g), w.Wc, w.cpw, w.idw, Float64(c), g.nz, m.gas.g); Y)
 
 # ------------------------------------------------------------------ AMF preconditioner of the tile (host)
 
