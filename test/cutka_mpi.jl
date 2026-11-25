@@ -4,11 +4,15 @@
 #
 #     julia --project=examples -e 'using MPI; run(`$(mpiexec()) -n 4 $(Base.julia_cmd()) --project=examples test/cutka_mpi.jl 2 2`)'
 #
-# Arguments px py (default 2 2); the number of ranks must be px py.
+# Arguments px py (default 2 2); the number of ranks must be px py. CUTKA_GPU=1: CUDA backend (one GPU per rank,
+# GPU-aware MPI).
 
 using MPI
 MPI.Init()
+const ONGPU = get(ENV, "CUTKA_GPU", "0") == "1"
+ONGPU && @eval using CUDA
 using MultiRate, Printf
+using KernelAbstractions
 const TS = MultiRate.TimeStepping
 const F3 = MultiRate.FV3D
 const K = MultiRate.FV3DKA
@@ -33,7 +37,8 @@ for jf in (:partial, :conservative), prec in (:columns, :amf)
     ρa = F3.hydrostatic_column(m3, Θr; ρbottom = ρr(g3.zc[1]))
     q0 = F3.project3d(m3, (x, y, z) -> (k = F3.level(g3, z); (ρa[k] * (1 + 1e-3 * sin(x / 3e3) * cos(y / 4e3)), 10ρa[k],
                                                               -3ρa[k], 0.0, Θr(g3.zc[k]))))
-    m = K.CutKA(K.CutGrid(g3; px, py, cx, cy), dec; gas, sponge = (4e3, 0.02), jform = jf, prec)
+    be = ONGPU ? CUDABackend() : CPU()
+    m = K.CutKA(K.CutGrid(g3; px, py, cx, cy, backend = be), dec; gas, sponge = (4e3, 0.02), jform = jf, prec)
     Q = K.ka_state(m, g3, q0)
     N3 = TS.rhs_nonlinear(m3, q0)
     Nk = K.allreduce_sum(dec, K.global_state(m, g3, K.ka_rhs!(K.ka_zeros(m), m, Q)))
@@ -48,8 +53,8 @@ for jf in (:partial, :conservative), prec in (:columns, :amf)
     its = sum(m.its) / length(m.its)
     ok = eN < 1e-12 && eR < 1e-9 && abs(dρ) < 1e-13 && abs(dΘ) < 1e-13
     global fails += !ok
-    rank == 0 && @printf("%d × %d tiles, %-12s %-8s: N rel %.1e, 3 MIS54 steps rel %.1e, Δρ %.1e ΔΘ %.1e, GMRES its %.1f  %s\n",
-                         px, py, jf, prec, eN, eR, dρ, dΘ, its, ok ? "ok" : "FAILED")
+    rank == 0 && @printf("%s %d × %d tiles, %-12s %-8s: N rel %.1e, 3 MIS54 steps rel %.1e, Δρ %.1e ΔΘ %.1e, GMRES its %.1f  %s\n",
+                         ONGPU ? "GPU" : "CPU", px, py, jf, prec, eN, eR, dρ, dΘ, its, ok ? "ok" : "FAILED")
 end
 MPI.Barrier(MPI.COMM_WORLD)
 rank == 0 && println(fails == 0 ? "all passed" : "$fails failed")
