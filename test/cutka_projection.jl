@@ -1,4 +1,10 @@
-# Divergence-free projection of the momenta of FV3D.Model3D (projected start of the bell-hill runs).
+# Divergence-free projection of the momenta of FV3D.Model3D (projected start of the hill and building runs), for
+# uniform and stretched levels.
+#
+# The discrete divergence of the model times the cell volume (per Δx Δy),
+#     D̃ U = Δz_k (Δ(A_x U)/Δx + Δ(A_y V)/Δy) + Δ(A_z W),
+# the correction U_f = U0_f - K_f (D̃ᵀ λ)_f with K_f = ρ_f / (A_x Δz_k) on x-faces (y alike) and ρ_f / (A_z Δz̃_k) on
+# z-faces, so that the correction is ρ_f times the gradient of λ; λ from the symmetric system D̃ K D̃ᵀ λ = D̃ U0.
 
 """Divergence-free projection of the momenta (as in the hill experiments of FV3D)."""
 function project_divfree(m, q)
@@ -7,18 +13,23 @@ function project_divfree(m, q)
     for k in 1:nz, j in 1:ny, i in 1:nx; g.Vf[i, j, k] > 0 && (cid[i, j, k] = (nc += 1)); end
     faces = Int[]; Ir = Int[]; Jc = Int[]; Vv = Float64[]; w = Float64[]
     ρ(i, j, k) = q[F3.iρ(g, i, j, k)]
-    function face!(n, a, h, l, r, ρf, vol)
-        a > 0 || return
+    function face!(n, d, l, r, ρf, kf)
+        d > 0 || return
         push!(faces, n); f = length(faces)
-        cid[l...] > 0 && (push!(Ir, cid[l...]); push!(Jc, f); push!(Vv, -a / h))
-        cid[r...] > 0 && (push!(Ir, cid[r...]); push!(Jc, f); push!(Vv, a / h))
-        push!(w, ρf / vol)
+        cid[l...] > 0 && (push!(Ir, cid[l...]); push!(Jc, f); push!(Vv, -d))
+        cid[r...] > 0 && (push!(Ir, cid[r...]); push!(Jc, f); push!(Vv, d))
+        push!(w, ρf * kf)
     end
     for k in 1:nz, j in 1:ny, i in 1:nx
         im, jm = F3.ip(g, i - 1), F3.jp(g, j - 1)
-        face!(F3.iU(g, i, j, k), F3.ax(g, i, j, k), g.dx, (im, j, k), (i, j, k), 0.5 * (ρ(im, j, k) + ρ(i, j, k)), g.dx * g.dy * g.dz)
-        face!(F3.iV(g, i, j, k), F3.ay(g, i, j, k), g.dy, (i, jm, k), (i, j, k), 0.5 * (ρ(i, jm, k) + ρ(i, j, k)), g.dx * g.dy * g.dz)
-        k > 1 && face!(F3.iW(g, i, j, k), F3.az(g, i, j, k), g.dz, (i, j, k - 1), (i, j, k), 0.5 * (ρ(i, j, k - 1) + ρ(i, j, k)), g.dx * g.dy * g.dz)
+        a = F3.ax(g, i, j, k)
+        face!(F3.iU(g, i, j, k), a * g.dzc[k] / g.dx, (im, j, k), (i, j, k), 0.5 * (ρ(im, j, k) + ρ(i, j, k)), a > 0 ? 1 / (a * g.dzc[k]) : 0.0)
+        a = F3.ay(g, i, j, k)
+        face!(F3.iV(g, i, j, k), a * g.dzc[k] / g.dy, (i, jm, k), (i, j, k), 0.5 * (ρ(i, jm, k) + ρ(i, j, k)), a > 0 ? 1 / (a * g.dzc[k]) : 0.0)
+        if k > 1
+            a = F3.az(g, i, j, k)
+            face!(F3.iW(g, i, j, k), a, (i, j, k - 1), (i, j, k), F3.ρface(g, q, i, j, k), a > 0 ? 1 / (a * g.dzf[k]) : 0.0)
+        end
     end
     D = sparse(Ir, Jc, Vv, nc, length(faces))
     U0 = q[faces]

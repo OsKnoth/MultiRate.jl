@@ -1788,6 +1788,22 @@ end
         end
     end
     F3.FV3D_MASK_JFORM[] = :partial
+    # nudging zone (slow force), divergence damping and off-centring: CutKA equals FV3D
+    g3 = F3.Grid3D(12, 8, 7, 20e3, 16e3, 6e3; zs = hill, zf, limiter = :koren)
+    nud = (x0 = 14e3, x1 = 20e3, αmax = 0.01, u = z -> 8.0, v = 1.0, θ = θr)
+    m3 = F3.with_nudging(F3.with_sponge(F3.Model3D(g3, gas, ρr, Θr), zeros(F3.nunknowns(g3)); zD = 4e3, αtop = 0.02); nud...)
+    ρa = F3.hydrostatic_column(m3, Θr; ρbottom = ρr(g3.zc[1]))
+    q0 = F3.project3d(m3, (x, y, z) -> (k = F3.level(g3, z); (ρa[k] * (1 + 1e-3 * sin(x / 3e3) * cos(y / 4e3)), 10ρa[k],
+                                                              -3ρa[k], 0.0, Θr(g3.zc[k]))))
+    F3.FV3D_HEVI_BETA[] = 0.6
+    m = K.CutKA(K.CutGrid(g3); gas, sponge = (4e3, 0.02), nudge = nud)
+    N3 = TS.rhs_nonlinear(m3, q0)
+    @test maximum(abs, K.global_state(m, g3, K.ka_rhs!(K.ka_zeros(m), m, K.ka_state(m, g3, q0))) - N3) < 1e-13 * maximum(abs, N3)
+    q3 = TS.run_frozen(m3, q0, 20.0, 3; tab, nsub = 4, fast = :hevi, smdiv = 0.1)
+    Q = K.ka_state(m, g3, q0); K.ka_run!(m, Q, 20.0, 3; tab, nsub = 4, tol = 1e-12, smdiv = 0.1)
+    @test maximum(abs, K.global_state(m, g3, Q) - q3) < 1e-9 * maximum(abs, q3 - q0)
+    @test abs(F3.total3d(m3, q3, :ρ) / F3.total3d(m3, q0, :ρ) - 1) < 1e-13         # nudging leaves ρ alone
+    F3.FV3D_HEVI_BETA[] = 0.5
     @test_throws ErrorException F3.MoistModel3D(F3.Model3D(F3.Grid3D(4, 4, 3, 4e3, 4e3, 3e3; zf = [0.0, 500.0, 1500.0, 3000.0]),
                                                            gas, ρr, Θr))
 end

@@ -28,7 +28,7 @@ import ..TimeStepping: rhs_nonlinear!, frozen_ncoef, frozen_data!, frozen_fast!,
                        frozen_vertical_step!, frozen_vertical_rhs!, frozen_vertical_implicit!, frozen_vertical_solve!,
                        frozen_phase!, frozen_step_end!
 
-export Grid3D, Model3D, project3d, total3d, with_sponge, sponge!, sound_speed_max, theta_prime,
+export Grid3D, Model3D, project3d, total3d, with_sponge, sponge!, with_nudging, sound_speed_max, theta_prime,
        vertical_velocity, hydrostatic_column, balanced_state, level, FV3D_PRESSURE_FORM, iρ, iU, iV, iW, iΘ, nunknowns,
        MoistModel3D, iqv, iqc, iπ, iqr, moist_exner_state, base_state, thermo_convert, theta_e3d, qc3d, qr3d,
        moist_column_solve!, precipitation_rate, rain_courant, msed!, Smagorinsky, smagorinsky!, eddy_viscosity,

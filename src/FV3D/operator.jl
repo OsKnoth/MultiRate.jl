@@ -144,6 +144,7 @@ function frozen_data!(C, S, m::Model3D, q)
             _row(g, d, i, j, k) && (S[_ilo(g, d, i, j, k)] = 0.0)
         end
     end
+    nudge!(S, m, q)                                              # nudging zone (sponge.jl)
     return C, S
 end
 

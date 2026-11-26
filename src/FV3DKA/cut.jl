@@ -136,7 +136,8 @@ The dry cut-cell model of `FV3D.Model3D(…; implicit = :amf)` with FV3D_PRESSUR
 column solve (no matrix, no communication; with the matrix-free product J v = G_v(v) the implicit solve uses no
 assembled matrix at all), `:amf` the approximate matrix factorization of the tile (with one halo column as overlap in
 decomposed directions, restricted additive Schwarz; host assembly and sparse LU per stage: fewer iterations, but on
-the bell hill 42 s against 24 s per step).
+the bell hill 42 s against 24 s per step). `nudge = (; x0, x1, αmax, u, v, θ)`: nudging zone x0 ≤ x ≤ x1 towards the
+profiles u(z), v(z), θ(z) (as `FV3D.with_nudging`).
 """
 struct CutKA{G<:CutGrid,D<:AbstractDecomp,A1,W<:CutWork}
     grid::G
@@ -149,9 +150,10 @@ struct CutKA{G<:CutGrid,D<:AbstractDecomp,A1,W<:CutWork}
     mv::Vector{Int}                                # matrix-vector products per implicit solve
     prec::Symbol                                   # preconditioner: :columns (default) or :amf (tile AMF)
     amf::Any                                       # CutAMF (prec = :amf)
+    nudge::Any                                     # nudging zone: rates (cells, x-, y-faces) and profiles on the device
 end
 function CutKA(g::CutGrid, dec::AbstractDecomp = SerialDecomp(); gas::Gas = Gas(), sponge = nothing, jform::Symbol = :partial,
-               prec::Symbol = :columns)
+               prec::Symbol = :columns, nudge = nothing)
     jform in (:partial, :conservative) || error("jform: :partial or :conservative")
     prec in (:amf, :columns) || error("prec: :amf or :columns")
     be = KA.get_backend(g)
@@ -168,7 +170,18 @@ function CutKA(g::CutGrid, dec::AbstractDecomp = SerialDecomp(); gas::Gas = Gas(
     work = CutWork(z3(), z3(), z3(), z3(), z3(), z4(4), z4(6), z4(6), z4(7), z4(7), z4(6), z4(6), z3(), z3(), z3())
     dd = KA.allocate(be, Float64, g.nz + 1); copyto!(dd, damp)
     init_exchange!(dec, g, max(NVC + 4, NCC))
-    return CutKA(g, dec, gas, dd, jform === :conservative, work, Int[], Int[], prec, prec === :amf ? CutAMF(g, gas) : nothing)
+    nd = nothing
+    if nudge !== nothing
+        g3 = g.g3
+        f(p) = p isa Number ? (z -> Float64(p)) : p
+        a(x) = FV3D.nudging_rate(x, nudge.x0, nudge.x1, get(nudge, :αmax, 0.5), g3.Lx)
+        xc(I) = (g.i0 + I - HALO - 0.5) * g.dx; xf(I) = (g.i0 + I - HALO - 1) * g.dx
+        dev(A) = (b = KA.allocate(be, Float64, size(A)...); copyto!(b, A); b)
+        prof(p) = dev([k <= g.nz ? f(p)(g3.zc[k]) : 0.0 for k in 1:g.nz+1])
+        nd = (αc = dev([a(xc(I)) for I in 1:g.nxh+1, J in 1:g.nyh+1]), αx = dev([a(xf(I)) for I in 1:g.nxh+1, J in 1:g.nyh+1]),
+              u = prof(nudge.u), v = prof(get(nudge, :v, 0.0)), θ = prof(nudge.θ))
+    end
+    return CutKA(g, dec, gas, dd, jform === :conservative, work, Int[], Int[], prec, prec === :amf ? CutAMF(g, gas) : nothing, nd)
 end
 KA.get_backend(m::CutKA) = KA.get_backend(m.grid)
 """A zero state (or a coefficient array, nv = NCC) on the device of the model."""
@@ -375,8 +388,28 @@ function ka_frozen_data!(Cf, S, m::CutKA, Q)
     _launch!(m, _kc_advect!, (nxl, nyl, nz), w.TT, w.SH, w.FVx, w.FVy, w.Fz, G, nz)
     exchange!(dec, w.TT, g, (2, 4))
     _launch!(m, _kc_shiftback!, (nxl, nyl, nz), S, w.TT, G, nz)
+    m.nudge === nothing || _ka_nudge!(S, m, m.nudge, Q, G)
     return Cf, S
 end
+
+"""S += nudging tendencies on the interior (FV3D `nudge!`): U, V, W towards ρ̄ u_t, ρ̄ v_t, 0, Θ towards ρ θ_t."""
+@kernel function _kc_nudge!(S, @Const(Q), αc, αx, ut, vt, θt, G, nz)
+    i, j, k = @index(Global, NTuple)
+    I, J = i + HALO, j + HALO
+    @inbounds begin
+        ρc = Q[I, J, k, CR]
+        a = αc[I, J]
+        if a > 0 && G.Vf[I, J, k] > 0
+            S[I, J, k, CT] -= a * (Q[I, J, k, CT] - ρc * θt[k])
+            k >= 2 && G.Az[I, J, k] > 0 && (S[I, J, k, CW] -= a * Q[I, J, k, CW])
+        end
+        a = αx[I, J]
+        (a > 0 && G.Ax[I, J, k] > 0) && (S[I, J, k, CU] -= a * (Q[I, J, k, CU] - 0.5 * (Q[I-1, J, k, CR] + ρc) * ut[k]))
+        a = αc[I, J]
+        (a > 0 && G.Ay[I, J, k] > 0) && (S[I, J, k, CV] -= a * (Q[I, J, k, CV] - 0.5 * (Q[I, J-1, k, CR] + ρc) * vt[k]))
+    end
+end
+_ka_nudge!(S, m, nd, Q, G) = (g = m.grid; _launch!(m, _kc_nudge!, (g.nxl, g.nyl, g.nz), S, Q, nd.αc, nd.αx, nd.u, nd.v, nd.θ, G, g.nz))
 
 # ------------------------------------------------------------------ fast part
 
@@ -920,7 +953,7 @@ tolerance).
 """
 function ka_vertical_step!(Z, m::CutKA, Cf, h, k, y, W::CutGMRES; tol = 1e-8, krylov::Symbol = :gmres)
     g = m.grid
-    c = h / 2
+    c = FV3D.FV3D_HEVI_BETA[] * h                      # β = 1/2 Crank–Nicolson, > 1/2 off-centred (FV3D_HEVI_BETA)
     ka_vertical!(k, m, Cf, Z; halo = true); _interior(m, k) .*= h
     _pack!(W.b, m, k)
     _cut_prec!(W.x, m, Cf, c, W.b, W)
@@ -937,31 +970,42 @@ end
 struct CutMISWork{A}
     C::Vector{A}; S::Vector{A}; ΔY::Vector{A}
     c::A; F::A; Y::A; Z::A; k::A; y::A
+    zl::A; zt::A                                   # divergence damping: state at the last momentum step, extrapolated state
     gm::CutGMRES
 end
 CutMISWork(m::CutKA, s::Int; restart::Int = 30) =
     CutMISWork([ka_zeros(m, NCC) for _ in 1:s], [ka_zeros(m) for _ in 1:s], [ka_zeros(m) for _ in 1:s], ka_zeros(m, NCC),
-               ka_zeros(m), ka_zeros(m), ka_zeros(m), ka_zeros(m), ka_zeros(m), CutGMRES(m, restart))
+               ka_zeros(m), ka_zeros(m), ka_zeros(m), ka_zeros(m), ka_zeros(m), ka_zeros(m), ka_zeros(m), CutGMRES(m, restart))
 
 """HEVI small steps (TimeStepping `frozen_fast_solve!` with method = :hevi): Strang splitting, horizontal Verlet half
-steps on the unmasked faces, the implicit Crank–Nicolson step in the middle."""
-function _cut_hevi_loop!(Z, m::CutKA, Cf, F, h, N, w::CutMISWork; tol, krylov = :gmres)
+steps on the unmasked faces, the implicit Crank–Nicolson step in the middle (β = FV3D_HEVI_BETA). `smdiv = γd > 0`:
+divergence damping as WRF (TimeStepping `smdiv`): the horizontal pressure gradient at Θ̃ = Θ + γd (Θ - Θ_prev), Θ_prev
+at the previous momentum step of the stage."""
+function _cut_hevi_loop!(Z, m::CutKA, Cf, F, h, N, w::CutMISWork; tol, krylov = :gmres, smdiv::Float64 = 0.0)
     g, dec, k = m.grid, m.dec, w.k
     core, ring = CutRegion(g, :core), CutRegion(g, :ring)
     ka_prec_stage!(m, Cf)
-    # one Verlet sub-step: the halo of `vars` (the variables the kernel reads from the neighbours) in flight while the
-    # kernel runs on the core, the ring after the receive, then Z += a k on the interior
-    function sub!(kernel!, vars, a)
-        hz = start_halo!(dec, Z, g, vars)
-        kernel!(k, m, Cf, Z, F, core)
+    damp = smdiv > 0
+    damp && (w.zl .= Z)
+    # one Verlet sub-step: the halo of `vars` (the variables the kernel reads from the neighbours) of the input X in
+    # flight while the kernel runs on the core, the ring after the receive, then Z += a k on the interior
+    function sub!(kernel!, X, vars, a)
+        hz = start_halo!(dec, X, g, vars)
+        kernel!(k, m, Cf, X, F, core)
         finish_halo!(dec, hz)
-        kernel!(k, m, Cf, Z, F, ring)
+        kernel!(k, m, Cf, X, F, ring)
         return _axpy!(Z, m, a, k)
     end
     for _ in 1:N, half in 1:2
-        sub!(ka_hthermo!, (CU, CV), h / 4)                    # fluxes: U, V of the east / north neighbours
-        sub!(ka_hmomentum!, (CT,), h / 2)                     # pressure gradient: Θ of the west / south neighbours
-        sub!(ka_hthermo!, (CU, CV), h / 4)
+        sub!(ka_hthermo!, Z, (CU, CV), h / 4)                 # fluxes: U, V of the east / north neighbours
+        if damp                                               # pressure gradient at the extrapolated Θ
+            @views @. w.zt[:, :, :, CT] = Z[:, :, :, CT] + smdiv * (Z[:, :, :, CT] - w.zl[:, :, :, CT])
+            @views w.zl[:, :, :, CT] .= Z[:, :, :, CT]
+            sub!(ka_hmomentum!, w.zt, (CT,), h / 2)
+        else
+            sub!(ka_hmomentum!, Z, (CT,), h / 2)              # pressure gradient: Θ of the west / south neighbours
+        end
+        sub!(ka_hthermo!, Z, (CU, CV), h / 4)
         half == 1 && ka_vertical_step!(Z, m, Cf, h, k, w.y, w.gm; tol, krylov)
     end
     return Z
@@ -973,7 +1017,7 @@ end
 One MIS step (TimeStepping `frozen_mis_step!` with fast = :hevi) of the cut-cell model, in place.
 """
 function ka_mis_step!(m::CutKA, q, Δt, tab::MISTableau, w::CutMISWork; nsub::Int = 12, tol::Real = 1e-8,
-                      krylov::Symbol = :gmres)
+                      krylov::Symbol = :gmres, smdiv::Real = 0.0)
     for i in 1:nstages(tab)
         i == 1 ? (w.Y .= q) : (@. w.Y = q + w.ΔY[i-1])
         ka_frozen_data!(w.C[i], w.S[i], m, w.Y)
@@ -993,7 +1037,7 @@ function ka_mis_step!(m::CutKA, q, Δt, tab::MISTableau, w::CutMISWork; nsub::In
             end
         end
         n = fast_substeps(d, nsub)
-        _cut_hevi_loop!(w.Z, m, w.c, w.F, d * Δt / n, n, w; tol = Float64(tol), krylov)
+        _cut_hevi_loop!(w.Z, m, w.c, w.F, d * Δt / n, n, w; tol = Float64(tol), krylov, smdiv = Float64(smdiv))
         @. w.ΔY[i] = w.Z - q
     end
     q .= w.Z
@@ -1002,10 +1046,10 @@ end
 
 """nsteps MIS steps of the cut-cell model (in place); `monitor(n, q)` every `every` steps."""
 function ka_run!(m::CutKA, q, Δt, nsteps; tab::MISTableau, nsub::Int = 12, tol::Real = 1e-8, krylov::Symbol = :gmres,
-                 monitor = nothing, every::Int = 1)
+                 smdiv::Real = 0.0, monitor = nothing, every::Int = 1)
     w = CutMISWork(m, nstages(tab))
     for n in 1:nsteps
-        ka_mis_step!(m, q, Δt, tab, w; nsub, tol, krylov)
+        ka_mis_step!(m, q, Δt, tab, w; nsub, tol, krylov, smdiv)
         monitor !== nothing && n % every == 0 && monitor(n, q)
     end
     return q

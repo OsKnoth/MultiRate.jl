@@ -26,6 +26,7 @@ struct Model3D
     qtarget::Vector{Float64}
     cache::Cache3D
     implicit::Symbol              # HEVI implicit step: :column (vertical), :mask (+ masked horizontal), :amf (+ masked advection)
+    nudge::Any                    # nudging zone (`with_nudging`, sponge.jl) or nothing
 end
 
 """
@@ -49,7 +50,7 @@ function Model3D(g::Grid3D, gas::Gas, ρref, Θref; implicit::Symbol = g.cut ? :
     cache = Cache3D(zeros(sz), zeros(sz), zeros(g.nx, g.ny, g.nz + 1), zeros(sz), zeros(sz),
                     zeros(_ncoef(g)), zeros(nq), Ref{Any}(nothing), zeros(sz), zeros(sz), zeros(g.nx, g.ny, g.nz + 1),
                     ntuple(_ -> zeros(sz), 12), zeros(nq))
-    return Model3D(g, gas, nq, ρref.(Z), Θref.(Z), zeros(nq), zeros(nq), cache, implicit)
+    return Model3D(g, gas, nq, ρref.(Z), Θref.(Z), zeros(nq), zeros(nq), cache, implicit, nothing)
 end
 
 """Initialization from `fun(x, y, z) = (ρ, ρu, ρv, ρw, Θ)` at the physical positions of the
