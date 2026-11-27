@@ -16,6 +16,15 @@ decomp_coords(::SerialDecomp) = (0, 0)
 allreduce_sum(::SerialDecomp, x) = x
 allreduce_max(::SerialDecomp, x) = x
 allreduce_min(::SerialDecomp, x) = x
+"""
+    allgather!(recv, dec, send)
+
+The arrays `send` of all ranks one after the other in `recv` (rank order of the communicator; GPU-aware with MPI).
+Serial: a copy.
+"""
+allgather!(recv, ::SerialDecomp, send) = copyto!(recv, send)
+"""Number of ranks and the rank of this process."""
+decomp_size(::SerialDecomp) = 1
 
 """
     mpi_decomp(px, py; comm = MPI.COMM_WORLD)

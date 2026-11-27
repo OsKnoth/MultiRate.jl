@@ -11,6 +11,12 @@
 # couplings to a neighbour inside the same coarse cell go to the diagonal. Smoother: zebra (red–black columns by the
 # global column index), the block-tridiagonal (2 × 2) column systems of S solved exactly per column (vertical lines).
 # The coarsest level: `νc` zebra sweeps.
+#
+# Agglomeration (MPI): on the coarse levels the tiles shrink to a few columns and every zebra half sweep is a halo
+# exchange, pure latency (2 × 2 A100: 3.4 times slower than one GPU). Below `aggcols` global columns the levels are
+# global on every rank: the stencil of the first global level is gathered once per setup (allgather), the right-hand
+# side once per V-cycle; the rest of the V-cycle runs on every rank without communication (periodic images), each rank
+# takes its part of the correction. Same arithmetic as on one GPU (zebra colours by the global column index).
 
 const MGS = 20                                      # stencil slots per cell
 const SΘC, SΘW, SΘE, SΘS, SΘN, SΘB, SΘT, SρC, SρB, SρT = 1, 2, 3, 4, 5, 6, 7, 8, 9, 10
@@ -28,31 +34,57 @@ struct MGLevelKA{A}
     St::A; x::A; b::A; r::A; C::A; g::A
 end
 
-"""Multigrid of the all-masked twin model `ma`: levels, sweeps ν (pre and post), coarsest sweeps νc."""
-struct CutMG{L,A}
+"""Multigrid of the all-masked twin model `ma`: levels, sweeps ν (pre and post), coarsest sweeps νc; the global
+(agglomerated) levels below tile level `la` (0: none) and the gather buffers."""
+struct CutMG{L,A,B,O}
     levels::Vector{L}
     ν::Int; νc::Int
     X::A; Y::A                                      # state-shaped work (Schur reduction)
+    la::Int
+    glev::Vector{L}
+    gs::B; gr::B                                    # send / receive buffers of the gather
+    goff::O                                         # (i0, j0) of the tiles of all ranks at level la (device)
+    np::Int
 end
 
 """
-    CutMG(ma::CutKA; ν = 2, νc = 20, coarsest = 2)
+    CutMG(ma::CutKA; ν = 2, νc = 20, coarsest = 2, aggcols = 4096)
 
-Levels of horizontal 2 × 2 coarsening of the tile of `ma` while the tile sizes are even and at least `coarsest`.
+Levels of horizontal 2 × 2 coarsening of the tile of `ma` while the tile sizes are even and at least `coarsest`;
+with several ranks, the levels with at most `aggcols` global columns are global on every rank (agglomeration; 0:
+never), coarsened further while even and at least `coarsest`.
 """
-function CutMG(ma::CutKA; ν::Int = 2, νc::Int = 20, coarsest::Int = 2)
+function CutMG(ma::CutKA; ν::Int = 2, νc::Int = 20, coarsest::Int = 2, aggcols::Int = 4096)
     g = ma.grid
     be = KA.get_backend(g)
     nxl, nyl, nz, i0, j0 = g.nxl, g.nyl, g.nz, g.i0, g.j0
+    level(t) = (z(n) = KA.zeros(be, Float64, t.nxh, t.nyh, nz, n); MGLevelKA(t, z(MGS), z(2), z(2), z(2), z(4), z(2)))
     lv = []
     while true
-        t = MGTile(nxl, nyl, nz, i0, j0)
-        z(n) = KA.zeros(be, Float64, t.nxh, t.nyh, nz, n)
-        push!(lv, MGLevelKA(t, z(MGS), z(2), z(2), z(2), z(4), z(2)))
+        push!(lv, level(MGTile(nxl, nyl, nz, i0, j0)))
         (iseven(nxl) && iseven(nyl) && nxl ÷ 2 >= coarsest && nyl ÷ 2 >= coarsest) || break
         nxl, nyl, i0, j0 = nxl ÷ 2, nyl ÷ 2, i0 ÷ 2, j0 ÷ 2
     end
-    return CutMG([l for l in lv], ν, νc, ka_zeros(ma), ka_zeros(ma))
+    lv = [l for l in lv]
+    np = decomp_size(ma.dec); px, py = decomp_dims(ma.dec)
+    la = np > 1 && aggcols > 0 ? something(findfirst(L -> L.t.nxl * px * L.t.nyl * py <= aggcols, lv), 0) : 0
+    glev = similar(lv, 0)
+    gs = gr = KA.zeros(be, Float64, 0); goff = nothing
+    if la > 0
+        t = lv[la].t
+        lv = lv[1:la]
+        nx, ny = t.nxl * px, t.nyl * py
+        while true
+            push!(glev, level(MGTile(nx, ny, nz, 0, 0)))
+            (iseven(nx) && iseven(ny) && nx ÷ 2 >= coarsest && ny ÷ 2 >= coarsest) || break
+            nx, ny = nx ÷ 2, ny ÷ 2
+        end
+        n = t.nxl * t.nyl * nz * MGS
+        gs = KA.zeros(be, Float64, n); gr = KA.zeros(be, Float64, n * np)
+        offs = zeros(Int, 2np); allgather!(offs, ma.dec, [t.i0, t.j0])
+        goff = KA.zeros(be, Int, 2np); copyto!(goff, offs)
+    end
+    return CutMG(lv, ν, νc, ka_zeros(ma), ka_zeros(ma), la, glev, gs, gr, goff, np)
 end
 
 # ------------------------------------------------------------------ stencils
@@ -210,35 +242,86 @@ function mg_setup!(mg::CutMG, ma::CutKA, Cf, c)
         t = mg.levels[l].t
         _mgl!(ma, _mg_coarsen!, (t.nxl, t.nyl, t.nz), mg.levels[l].St, mg.levels[l-1].St)
     end
+    if mg.la > 0                                                   # the global levels: gather, coarsen locally
+        _mg_gather!(mg, ma, mg.glev[1].St, mg.levels[mg.la].St, MGS)
+        for l in 2:length(mg.glev)
+            t = mg.glev[l].t
+            _mgl!(ma, _mg_coarsen!, (t.nxl, t.nyl, t.nz), mg.glev[l].St, mg.glev[l-1].St)
+        end
+    end
     return mg
 end
 
-"""ν zebra sweeps on level L (x updated)."""
-function _mg_smooth!(mg::CutMG, ma::CutKA, L, ν)
+"""G (global level) = the interiors of the tile arrays A (nv fields) of all ranks."""
+function _mg_gather!(mg::CutMG, ma::CutKA, G, A, nv)
+    t = mg.levels[mg.la].t
+    n = t.nxl * t.nyl * t.nz * nv
+    s, r = view(mg.gs, 1:n), view(mg.gr, 1:n * mg.np)
+    _mgl!(ma, _mg_pack!, (t.nxl, t.nyl, t.nz), s, A, nv)
+    allgather!(r, ma.dec, s)
+    _mgl!(ma, _mg_unpack!, (t.nxl, t.nyl, t.nz, mg.np), G, r, mg.goff, t.nxl, t.nyl, nv)
+    return G
+end
+@kernel function _mg_pack!(buf, @Const(A), nv)
+    i, j, k = @index(Global, NTuple)
+    nxl, nyl, nz = size(A, 1) - 2HALO, size(A, 2) - 2HALO, size(A, 3)
+    @inbounds for v in 1:nv
+        buf[i + nxl * ((j - 1) + nyl * ((k - 1) + nz * (v - 1)))] = A[i+HALO, j+HALO, k, v]
+    end
+end
+@kernel function _mg_unpack!(G, @Const(buf), @Const(off), nxl, nyl, nv)
+    i, j, k, p = @index(Global, NTuple)
+    nz = size(G, 3)
+    n = nxl * nyl * nz * nv
+    @inbounds begin
+        i0, j0 = off[2p-1], off[2p]
+        for v in 1:nv
+            G[HALO+i0+i, HALO+j0+j, k, v] = buf[(p - 1) * n + i + nxl * ((j - 1) + nyl * ((k - 1) + nz * (v - 1)))]
+        end
+    end
+end
+"""x (tile) = the part of the global x_G of this tile (offset i0, j0)."""
+@kernel function _mg_pick!(x, @Const(G), i0, j0)
+    i, j, k, v = @index(Global, NTuple)
+    @inbounds x[i+HALO, j+HALO, k, v] = G[HALO+i0+i, HALO+j0+j, k, v]
+end
+
+"""ν zebra sweeps on level L (x updated); dec: the decomposition of the level (serial for the global levels)."""
+function _mg_smooth!(mg::CutMG, ma::CutKA, L, ν, dec = ma.dec)
     t = L.t
     for _ in 1:ν, colour in (true, false)
-        exchange!(ma.dec, L.x, t, (2,))
+        exchange!(dec, L.x, t, (2,))
         _mgl!(ma, _mg_zebra!, (t.nxl, t.nyl), L.x, L.St, L.b, L.C, L.g, t.nz, t.i0, t.j0, colour)
     end
     return L
 end
 
-"""One V-cycle on level l for S_l x = b_l (x = 0 on entry)."""
+"""One V-cycle on level l for S_l x = b_l (x = 0 on entry); at the tile level `la` the global levels (agglomeration)."""
 function mg_vcycle!(mg::CutMG, ma::CutKA, l::Int = 1)
-    L = mg.levels[l]
+    if mg.la > 0 && l == mg.la
+        L = mg.levels[l]; t = L.t
+        _mg_gather!(mg, ma, mg.glev[1].b, L.b, 2)
+        _vcycle!(mg, ma, mg.glev, SerialDecomp(), 1)
+        _mgl!(ma, _mg_pick!, (t.nxl, t.nyl, t.nz, 2), L.x, mg.glev[1].x, t.i0, t.j0)
+        return L
+    end
+    return _vcycle!(mg, ma, mg.levels, ma.dec, l)
+end
+function _vcycle!(mg::CutMG, ma::CutKA, lev, dec, l::Int)
+    L = lev[l]
     t = L.t
     fill!(L.x, 0.0)
-    if l == length(mg.levels)
-        return _mg_smooth!(mg, ma, L, mg.νc)
+    if l == length(lev)
+        return _mg_smooth!(mg, ma, L, mg.νc, dec)
     end
-    _mg_smooth!(mg, ma, L, mg.ν)
-    exchange!(ma.dec, L.x, t, (2,))
+    _mg_smooth!(mg, ma, L, mg.ν, dec)
+    exchange!(dec, L.x, t, (2,))
     _mgl!(ma, _mg_residual!, (t.nxl, t.nyl, t.nz), L.r, L.St, L.x, L.b, t.nz)
-    Lc = mg.levels[l+1]
+    Lc = lev[l+1]
     _mgl!(ma, _mg_restrict!, (Lc.t.nxl, Lc.t.nyl, t.nz, 2), Lc.b, L.r)
-    mg_vcycle!(mg, ma, l + 1)
+    lev === mg.levels ? mg_vcycle!(mg, ma, l + 1) : _vcycle!(mg, ma, lev, dec, l + 1)
     _mgl!(ma, _mg_prolong!, (t.nxl, t.nyl, t.nz, 2), L.x, Lc.x)
-    _mg_smooth!(mg, ma, L, mg.ν)
+    _mg_smooth!(mg, ma, L, mg.ν, dec)
     return L
 end
 

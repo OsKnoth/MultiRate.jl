@@ -150,6 +150,53 @@ function cut_geometry(ls; Δx::Real = 4.0, Δy::Real = Δx, zf::AbstractVector, 
 end
 
 """
+    remove_small_cells!(cg::CutGeometry; vmin = 0.05, amin = 0.0) -> (cells, volume, faces)
+
+Small-cell removal (ASAM `RelVol`, with a threshold for the explicit fluxes): cut cells with 0 < Vf < vmin become
+solid, faces with 0 < A < amin are closed (slits between neighbouring buildings: the velocity on such a face is driven
+by the pressure difference alone and grows without bound while it carries almost no flux), faces are open only
+between two fluid cells (periodic in x, y), fluid cells without an open face become solid; repeated until nothing
+changes. Real geometry (LoD2 roofs and walls in general position) produces cut cells down to
+Vf ~ 1e-6 with face/volume ratios ~ 1e5, which make the stage matrices ill conditioned and the fluxes unstable.
+Returns the number of removed cells and their fluid volume relative to the fluid volume.
+"""
+function remove_small_cells!(cg::CutGeometry; vmin::Real = 0.05, amin::Real = 0.0)
+    nx, ny, nz = cg.nx, cg.ny, cg.nz
+    Vf, Ax, Ay, Az = cg.Vf, cg.Ax, cg.Ay, cg.Az
+    dz = diff(cg.zf)
+    V0 = sum(Vf[i, j, k] * dz[k] for i in 1:nx, j in 1:ny, k in 1:nz)
+    removed = 0; vol = 0.0
+    closed = 0
+    for A in (Ax, Ay, Az), c in eachindex(A)
+        0 < A[c] < amin && (A[c] = 0.0; closed += 1)
+    end
+    while true
+        n = 0
+        for k in 1:nz, j in 1:ny, i in 1:nx
+            if 0 < Vf[i, j, k] < vmin
+                vol += Vf[i, j, k] * dz[k]; Vf[i, j, k] = 0.0; n += 1
+            end
+        end
+        for k in 1:nz, j in 1:ny, i in 1:nx
+            f = Vf[i, j, k] > 0
+            f && Vf[mod1(i - 1, nx), j, k] > 0 || (Ax[i, j, k] = 0.0)
+            f && Vf[i, mod1(j - 1, ny), k] > 0 || (Ay[i, j, k] = 0.0)
+            k > 1 && !(f && Vf[i, j, k-1] > 0) && (Az[i, j, k] = 0.0)
+        end
+        for k in 1:nz, j in 1:ny, i in 1:nx
+            Vf[i, j, k] > 0 || continue
+            if Ax[i, j, k] == 0 && Ax[mod1(i + 1, nx), j, k] == 0 && Ay[i, j, k] == 0 && Ay[i, mod1(j + 1, ny), k] == 0 &&
+               Az[i, j, k] == 0 && Az[i, j, k+1] == 0
+                vol += Vf[i, j, k] * dz[k]; Vf[i, j, k] = 0.0; n += 1
+            end
+        end
+        removed += n
+        n == 0 && break
+    end
+    return removed, vol / V0, closed
+end
+
+"""
     fv3d_grid(cg::CutGeometry; kw...)
 
 FV3D.Grid3D with the fractions and the (stretched) levels zf of cg (keywords: mask_width, limiter).

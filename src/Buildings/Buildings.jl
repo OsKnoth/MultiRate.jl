@@ -31,7 +31,7 @@ using Base.Threads: @threads
 import ..FV3D
 
 export read_citygml, BuildingPolygon, building_levelset, BuildingLevelSet, convex_pieces, height_at, levelset, LevelSet,
-       stretched_levels, cut_geometry, CutGeometry, fv3d_grid, save_levelset, load_levelset, save_geometry
+       stretched_levels, cut_geometry, CutGeometry, remove_small_cells!, fv3d_grid, save_levelset, load_levelset, save_geometry
 
 include("citygml.jl")
 include("polygon.jl")

@@ -13,7 +13,7 @@ using MultiRate, MPI
 using KernelAbstractions
 const KA = KernelAbstractions
 import MultiRate.FV3DKA: exchange!, merge_faces!, allreduce_sum, allreduce_max, allreduce_min, mpi_decomp,
-                         decomp_dims, decomp_coords, start_halo!, finish_halo!, init_exchange!
+                         decomp_dims, decomp_coords, start_halo!, finish_halo!, init_exchange!, allgather!, decomp_size
 using MultiRate.FV3DKA: AbstractDecomp, HALO, KAGrid, AbstractTileGrid, _as4, exchange_length
 
 const W_, E_, S_, N_ = 1, 2, 3, 4
@@ -49,6 +49,12 @@ decomp_coords(d::MPIDecomp) = (d.cx, d.cy)
 allreduce_sum(d::MPIDecomp, x) = MPI.Allreduce(x, +, d.comm)
 allreduce_max(d::MPIDecomp, x) = MPI.Allreduce(x, max, d.comm)
 allreduce_min(d::MPIDecomp, x) = MPI.Allreduce(x, min, d.comm)
+decomp_size(d::MPIDecomp) = MPI.Comm_size(d.comm)
+function allgather!(recv, d::MPIDecomp, send)
+    KA.synchronize(KA.get_backend(send))
+    MPI.Allgather!(send, MPI.UBuffer(recv, length(send)), d.comm)
+    return recv
+end
 
 """The buffers for the tile grid g, once (a later call with a larger grid enlarges them)."""
 function init_exchange!(d::MPIDecomp, g::AbstractTileGrid, nfields::Int = 12)

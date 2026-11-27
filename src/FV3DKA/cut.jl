@@ -857,6 +857,7 @@ struct CutGMRES{V,Mx}
     r::V; w::V; x::V; b::V
     rh::V; p::V; v::V; s::V; t::V; ph::V; sh::V    # BiCGStab
     X::Any; Y::Any                     # state-shaped work arrays
+    wt::V; tw::V                       # squared weights of the inner product (empty: Euclidean), work vector
 end
 function CutGMRES(m::CutKA, restart::Int = 30)
     g = m.grid
@@ -865,7 +866,37 @@ function CutGMRES(m::CutKA, restart::Int = 30)
     vz() = KA.zeros(be, Float64, n)
     return CutGMRES(KA.zeros(be, Float64, n, restart + 1), KA.zeros(be, Float64, n, restart), zeros(restart + 1, restart),
                     zeros(restart), zeros(restart), zeros(restart + 1), vz(), vz(), vz(), vz(),
-                    vz(), vz(), vz(), vz(), vz(), vz(), vz(), ka_zeros(m), ka_zeros(m))
+                    vz(), vz(), vz(), vz(), vz(), vz(), vz(), ka_zeros(m), ka_zeros(m), KA.zeros(be, Float64, 0), vz())
+end
+
+"""
+    energy_norm!(W::CutGMRES, m; θ0 = 300.0)
+
+GMRES of W in the acoustic energy norm: every residual component in pascal, ρ (continuity) times c², Θ times
+∂p/∂Θ = γR (RΘ/p00)^(γ-1) ≈ γR, the momenta times c (acoustic impedance), c² = γRθ0. Then an absolute tolerance is a
+pressure (e.g. a fraction of the dynamic pressure ρU²/2), independent of the background pressure.
+"""
+function energy_norm!(W::CutGMRES, m::CutKA; θ0::Real = 300.0)
+    g, gas = m.grid, m.gas
+    c2 = gas.γ * gas.R * θ0
+    w2 = zeros(NVC); w2[CR] = c2^2; w2[CT] = (gas.γ * gas.R)^2; w2[CU] = w2[CV] = w2[CW] = c2
+    n = g.nxl * g.nyl * (g.nz + 1)
+    h = reduce(vcat, (fill(w2[v], n) for v in 1:NVC))
+    wt = similar(W.tw); copyto!(wt, h)
+    return CutGMRES(W.V, W.Z, W.H, W.cs, W.sn, W.e, W.r, W.w, W.x, W.b, W.rh, W.p, W.v, W.s, W.t, W.ph, W.sh, W.X, W.Y,
+                    wt, W.tw)
+end
+"""Inner product and norm of GMRES (weighted with W.wt if set)."""
+_wdot(m::CutKA, W::CutGMRES, a, b) = isempty(W.wt) ? _dot(m, a, b) : (W.tw .= W.wt .* b; _dot(m, a, W.tw))
+_wnorm(m::CutKA, W::CutGMRES, a) = sqrt(_wdot(m, W, a, a))
+"""w -= V h, h = Vᵀ W w (classical Gram–Schmidt in the inner product of W)."""
+function _wproject!(w, m::CutKA, V, W::CutGMRES)
+    isempty(W.wt) && return _project!(w, m, V)
+    W.tw .= W.wt .* w
+    h = allreduce_sum(m.dec, Array(V' * W.tw))
+    hd = similar(w, length(h)); copyto!(hd, h)
+    mul!(w, V, hd, -1.0, 1.0)
+    return h
 end
 
 _dot(m::CutKA, a, b) = allreduce_sum(m.dec, dot(a, b))
@@ -894,7 +925,12 @@ function _cut_apply!(out, m::CutKA, Cf, c, x, W::CutGMRES; op::Symbol = :vertica
 end
 """z = M⁻¹ r (packed): column solve (prec = :columns) or tile AMF (:amf)."""
 function _cut_prec!(z, m::CutKA, Cf, c, r, W::CutGMRES; op::Symbol = :vertical)
-    op === :advection && return copyto!(z, r)                 # upwind transport: no preconditioner
+    if op === :advection                                      # upwind transport: none, or the masked AMF advection factor
+        m.mprec[] === nothing && return copyto!(z, r)
+        _unpack!(W.X, m, r)
+        mask_precondition!(W.Y, m.mprec[], m, Cf, c, W.X)
+        return _pack!(z, m, W.Y)
+    end
     _unpack!(W.X, m, r)
     if op === :vertical && m.prec === :mask                   # masked AMF: Θ Schur + upwind transport (cut_mask.jl)
         mask_precondition!(W.Y, m.mprec[], m, Cf, c, W.X)
@@ -915,15 +951,16 @@ end
 
 """Right-preconditioned restarted GMRES for (I - c J) x = b, x the initial guess; returns (iterations, matrix-vector
 products)."""
-function _cut_gmres!(x, m::CutKA, Cf, c, b, W::CutGMRES; tol = 1e-8, maxit = 300, op::Symbol = :vertical)
+function _cut_gmres!(x, m::CutKA, Cf, c, b, W::CutGMRES; tol = 1e-8, atol = 0.0, maxit = 300, op::Symbol = :vertical)
     mr = size(W.H, 2)
     V, Z, H, cs, sn, e, r, w = W.V, W.Z, W.H, W.cs, W.sn, W.e, W.r, W.w
-    nb = _norm(m, b); nb == 0 && (fill!(x, 0.0); return 0, 0)
+    nb = _wnorm(m, W, b); nb == 0 && (fill!(x, 0.0); return 0, 0)
+    thr = max(tol * nb, atol)                                 # relative drop or absolute level (norm of W)
     it = 0; nmv = 0
     while true
         _cut_apply!(r, m, Cf, c, x, W; op); @. r = b - r; nmv += 1
-        β = _norm(m, r)
-        (β <= tol * nb || it >= maxit) && return it, nmv
+        β = _wnorm(m, W, r)
+        (β <= thr || it >= maxit) && return it, nmv
         @views V[:, 1] .= r ./ β
         fill!(e, 0.0); e[1] = β
         j = 0
@@ -932,8 +969,8 @@ function _cut_gmres!(x, m::CutKA, Cf, c, b, W::CutGMRES; tol = 1e-8, maxit = 300
             @views _cut_prec!(Z[:, jj], m, Cf, c, V[:, jj], W; op)
             @views _cut_apply!(w, m, Cf, c, Z[:, jj], W; op); nmv += 1
             @views Vj = V[:, 1:jj]
-            @views H[1:jj, jj] .= _project!(w, m, Vj) .+ _project!(w, m, Vj)     # CGS2
-            H[jj+1, jj] = _norm(m, w)
+            @views H[1:jj, jj] .= _wproject!(w, m, Vj, W) .+ _wproject!(w, m, Vj, W)     # CGS2
+            H[jj+1, jj] = _wnorm(m, W, w)
             @views V[:, jj+1] .= w ./ H[jj+1, jj]
             for i in 1:jj-1
                 t = cs[i] * H[i, jj] + sn[i] * H[i+1, jj]
@@ -943,7 +980,7 @@ function _cut_gmres!(x, m::CutKA, Cf, c, b, W::CutGMRES; tol = 1e-8, maxit = 300
             cs[jj] = H[jj, jj] / ρ; sn[jj] = H[jj+1, jj] / ρ
             H[jj, jj] = ρ; H[jj+1, jj] = 0.0
             e[jj+1] = -sn[jj] * e[jj]; e[jj] *= cs[jj]
-            (abs(e[jj+1]) <= tol * nb || it >= maxit) && break
+            (abs(e[jj+1]) <= thr || it >= maxit) && break
         end
         y = UpperTriangular(H[1:j, 1:j]) \ e[1:j]
         yd = similar(x, j); copyto!(yd, y)

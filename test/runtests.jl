@@ -1856,6 +1856,16 @@ end
         its[aprec] = w.its[1:2:end]
     end
     @test maximum(its[:mg]) <= 10 && minimum(its[:columns]) >= 5 * maximum(its[:mg])      # acoustic factor
+    # stopping criterion in the acoustic energy norm (residuals in Pa: ρ c², Θ γR, m c): a drop of 1e-3 or an RMS
+    # residual of 1e-2 Pa is close to the converged steps with fewer iterations; conservative for any tolerance
+    m = K.CutKA(K.CutGrid(g3); gas, sponge = (4e3, 0.02), jform = :conservative)
+    Q = K.ka_state(m, g3, q0)
+    w = K.CutRos(m, tab.s; aprec = :mg); K.ros_energy_norm!(w)
+    for _ in 1:3; K.ka_ros_step!(m, Q, 10.0, tab, w; tol = 1e-3, atol = 1e-2); end
+    q = K.global_state(m, g3, Q)
+    @test maximum(abs, q - q3) < 1e-2 * maximum(abs, q3 - q0)
+    @test abs(F3.total3d(m3, q, :ρ) / F3.total3d(m3, q0, :ρ) - 1) < 1e-13
+    @test sum(w.its[1:2:end]) < sum(its[:mg])
     # masked small step (vertical = :explicit, gravity explicit): N(q) = FV3D; the masked AMF preconditioner with its
     # inner solvers gives the same steps as the column preconditioner, with fewer GMRES iterations; conserves
     F3.FV3D_MASK_JFORM[] = :partial
@@ -1956,6 +1966,15 @@ end
     @test g.cut && g.nz == 20 && g.dz ≈ 2.0 && any(g.mask) && all((g.Vf .== 0) .| (g.Vf .== cu.Vf))
     gs = BD.fv3d_grid(cg1)                                         # stretched levels
     @test !gs.uniform && isnan(gs.dz) && gs.dzc ≈ diff(zf) && gs.Vf == cg1.Vf
+    # small-cell removal: no cut cell below vmin, no face below amin, faces open only between fluid cells
+    cr = deepcopy(cg2)
+    nr, vr, nf = BD.remove_small_cells!(cr; vmin = 0.1, amin = 0.1)
+    @test nr > 0 && nf > 0 && vr < 1e-3
+    @test !any(0 .< cr.Vf .< 0.1) && !any(0 .< cr.Ax .< 0.1) && !any(0 .< cr.Ay .< 0.1) && !any(0 .< cr.Az .< 0.1)
+    @test all(cr.Ax[i, j, k] == 0 || (cr.Vf[i, j, k] > 0 && cr.Vf[mod1(i - 1, cr.nx), j, k] > 0)
+              for i in 1:cr.nx, j in 1:cr.ny, k in 1:cr.nz)
+    @test all(cr.Az[i, j, k] == 0 || (cr.Vf[i, j, k] > 0 && cr.Vf[i, j, k-1] > 0) for i in 1:cr.nx, j in 1:cr.ny, k in 2:cr.nz)
+    @test all((cr.Vf .== cg2.Vf) .| (cr.Vf .== 0))
 end
 
 @testset "MethodDesign: bicoloured B-series of MIS with frozen first argument" begin
