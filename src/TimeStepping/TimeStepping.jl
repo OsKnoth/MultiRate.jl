@@ -15,7 +15,9 @@ policy, so it can be reused with a model implementing this interface:
     Adams–Bashforth multistep methods (`EABTableau`, :EAB1 … :EAB4) in the same stage-ODE form,
   * MIS with a frozen part of the right-hand side, N(q) = F(q, q) (`run_frozen`): no linearized
     fast operator, the fast part nonlinear with coefficients frozen at the stage values,
-  * classical RK4 on N (`run_rk4`) as reference.
+  * classical RK4 on N (`run_rk4`) as reference,
+  * Rosenbrock (W-)methods in the form of ASAM (`ros_tableau`, `run_ros`) with a model-supplied approximate
+    Jacobian W (global acoustics + reduced advection, AMF) as the linearly implicit comparison.
 
 A discretization provides a model and a fast operator (subtype of `AbstractFastOperator`) and
 implements the interface below (methods of the functions declared in `interface.jl`).
@@ -32,7 +34,8 @@ export AbstractFastOperator,
        etd_tableau, epirk_tableau, eab_tableau, split_work, reset!, eab_advance!, eab_step_exact, phi_functions, mis_from_paper, mis_kw, nstages, fast_time,
        mis_rk_tableau, rk_order_residuals, rk_order, mis_step_exact, mis_observed_order,
        frozen_ncoef, frozen_data!, frozen_fast!, FrozenWork, frozen_fast_solve!, frozen_mis_step!, run_frozen,
-       MISStepper, MISWork, stage_substeps, mis_step!, mis_step, run_mis, run_rk4
+       MISStepper, MISWork, stage_substeps, mis_step!, mis_step, run_mis, run_rk4,
+       RosTableau, ros_tableau, ros_prepare!, ros_solve!, RosWork, ros_step!, run_ros
 
 using LinearAlgebra: I, norm
 
@@ -45,5 +48,6 @@ include("etd.jl")
 include("epirk.jl")
 include("frozen.jl")
 include("analysis.jl")
+include("rosenbrock.jl")
 
 end # module

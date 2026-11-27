@@ -76,6 +76,10 @@ _geo(g::CutGrid) = (Vf = g.Vf, iV = g.iV, Ax = g.Ax, Ay = g.Ay, Az = g.Az, msk =
 @inline _mfx(G, I, J, k) = G.msk[I-1, J, k] > 0 || G.msk[I, J, k] > 0
 @inline _mfy(G, I, J, k) = G.msk[I, J-1, k] > 0 || G.msk[I, J, k] > 0
 @inline _mfz(G, I, J, k) = G.msk[I, J, k-1] > 0 || G.msk[I, J, k] > 0
+"""Implicit weight of the z-face k (2 … nz) of column (I, J): 1 for every face with `vimp` (vertical = :implicit,
+HEVI), else 1 only on the faces of masked cells (vertical = :explicit: outside the mask the vertical acoustics and
+gravity are explicit, in the Verlet sub-steps with weight 1 - w)."""
+@inline _wzI(G, nz, I, J, k, vimp) = (2 <= k <= nz && (vimp || G.msk[I, J, k-1] > 0 || G.msk[I, J, k] > 0)) ? 1.0 : 0.0
 
 """
 Columns of the tile on which a kernel runs (overlap of communication and computation): `:all` the interior, `:core`
@@ -137,25 +141,36 @@ column solve (no matrix, no communication; with the matrix-free product J v = G_
 assembled matrix at all), `:amf` the approximate matrix factorization of the tile (with one halo column as overlap in
 decomposed directions, restricted additive Schwarz; host assembly and sparse LU per stage: fewer iterations, but on
 the bell hill 42 s against 24 s per step). `nudge = (; x0, x1, αmax, u, v, θ)`: nudging zone x0 ≤ x ≤ x1 towards the
-profiles u(z), v(z), θ(z) (as `FV3D.with_nudging`).
+profiles u(z), v(z), θ(z) (as `FV3D.with_nudging`). `prec = :mask` (with vertical = :explicit): the
+masked AMF preconditioner with switchable inner solvers, `mask = (acoustic = :cg | :jacobi | :bicgstab | :hostlu,
+advection = :bicgstab | :jacobi | :hostlu, tol, maxit)` (cut_mask.jl). `vertical`: `:implicit` (HEVI: the vertical acoustics and
+gravity implicit in every column; for Δz ≪ Δx, hills) or `:explicit` (implicit only on the faces of the masked cells,
+outside the mask all three directions explicit in the Verlet sub-steps, gravity explicit everywhere; for Δz ≈ Δx,
+buildings).
 """
 struct CutKA{G<:CutGrid,D<:AbstractDecomp,A1,W<:CutWork}
     grid::G
     dec::D
     gas::Gas
     damp::A1
+    zdamp::A1                                      # zeros (no sponge in the implicit operator)
     complete::Bool
     work::W
     its::Vector{Int}                               # Krylov iterations per implicit solve
     mv::Vector{Int}                                # matrix-vector products per implicit solve
     prec::Symbol                                   # preconditioner: :columns (default) or :amf (tile AMF)
     amf::Any                                       # CutAMF (prec = :amf)
+    mgp::Base.RefValue{Any}                        # acoustic multigrid (Rosenbrock twin model, cut_mg.jl) or nothing
+    vimp::Bool                                     # vertical = :implicit (HEVI: all z-faces implicit) or :explicit (mask only)
+    mprec::Base.RefValue{Any}                      # prec = :mask: the masked AMF preconditioner (cut_mask.jl)
     nudge::Any                                     # nudging zone: rates (cells, x-, y-faces) and profiles on the device
 end
 function CutKA(g::CutGrid, dec::AbstractDecomp = SerialDecomp(); gas::Gas = Gas(), sponge = nothing, jform::Symbol = :partial,
-               prec::Symbol = :columns, nudge = nothing)
+               prec::Symbol = :columns, nudge = nothing, vertical::Symbol = :implicit, mask = (;))
     jform in (:partial, :conservative) || error("jform: :partial or :conservative")
-    prec in (:amf, :columns) || error("prec: :amf or :columns")
+    prec === :mask && vertical !== :explicit && error("prec = :mask needs vertical = :explicit (gravity explicit)")
+    vertical in (:implicit, :explicit) || error("vertical: :implicit (HEVI) or :explicit (implicit only in the mask)")
+    prec in (:amf, :columns, :mask) || error("prec: :amf, :columns or :mask")
     be = KA.get_backend(g)
     damp = zeros(g.nz + 1)
     if sponge !== nothing
@@ -181,7 +196,10 @@ function CutKA(g::CutGrid, dec::AbstractDecomp = SerialDecomp(); gas::Gas = Gas(
         nd = (αc = dev([a(xc(I)) for I in 1:g.nxh+1, J in 1:g.nyh+1]), αx = dev([a(xf(I)) for I in 1:g.nxh+1, J in 1:g.nyh+1]),
               u = prof(nudge.u), v = prof(get(nudge, :v, 0.0)), θ = prof(nudge.θ))
     end
-    return CutKA(g, dec, gas, dd, jform === :conservative, work, Int[], Int[], prec, prec === :amf ? CutAMF(g, gas) : nothing, nd)
+    mk = CutKA(g, dec, gas, dd, KA.zeros(be, Float64, g.nz + 1), jform === :conservative, work, Int[], Int[], prec, prec === :amf ? CutAMF(g, gas) : nothing, Ref{Any}(nothing),
+                 vertical === :implicit, Ref{Any}(nothing), nd)
+    prec === :mask && (mk.mprec[] = MaskAMF(mk; mask...))
+    return mk
 end
 KA.get_backend(m::CutKA) = KA.get_backend(m.grid)
 """A zero state (or a coefficient array, nv = NCC) on the device of the model."""
@@ -434,66 +452,81 @@ end
 end
 
 """out = :hthermo (ρ, Θ: fluxes through the unmasked faces, forcing; W: forcing, sponge) on the interior."""
-@kernel function _kc_hthermo!(out, @Const(Z), @Const(Cf), @Const(F), G, damp, dx, dy, nz, RG)
+@kernel function _kc_hthermo!(out, @Const(Z), @Const(Cf), @Const(F), G, damp, dx, dy, nz, vimp, RG)
     ic, k = @index(Global, NTuple)
     I, J = _cIJ(RG, ic)
     @inbounds begin
         oρ, oΘ = _cthermo_h(Z, Cf, G, dx, dy, I, J, k, 1)
+        if !vimp                                       # vertical fluxes through the unmasked z-faces (explicit)
+            Fb = k >= 2 ? (1 - _wzI(G, nz, I, J, k, false)) * G.Az[I, J, k] * Z[I, J, k, CW] : 0.0
+            Ft = k < nz ? (1 - _wzI(G, nz, I, J, k + 1, false)) * G.Az[I, J, k+1] * Z[I, J, k+1, CW] : 0.0
+            s = G.iV[I, J, k]; dz = G.dzc[k]
+            oρ -= s * (Ft - Fb) / dz
+            oΘ -= s * ((k < nz ? Cf[I, J, k+1, KθZ] : 0.0) * Ft - (k >= 2 ? Cf[I, J, k, KθZ] : 0.0) * Fb) / dz
+        end
         out[I, J, k, CR] = oρ + F[I, J, k, CR]; out[I, J, k, CT] = oΘ + F[I, J, k, CT]
         out[I, J, k, CU] = 0.0; out[I, J, k, CV] = 0.0
         out[I, J, k, CW] = k >= 2 ? F[I, J, k, CW] - damp[k] * Z[I, J, k, CW] : 0.0
     end
 end
 """out = :hmomentum (U, V: pressure gradient through the unmasked faces, forcing) on the interior."""
-@kernel function _kc_hmomentum!(out, @Const(Z), @Const(Cf), @Const(F), G, dx, dy, RG)
+@kernel function _kc_hmomentum!(out, @Const(Z), @Const(Cf), @Const(F), G, dx, dy, nz, grav, vimp, RG)
     ic, k = @index(Global, NTuple)
     I, J = _cIJ(RG, ic)
     @inbounds begin
         oU, oV = _cmomentum_h(Z, Cf, G, dx, dy, I, J, k, 1)
         out[I, J, k, CU] = oU + F[I, J, k, CU]; out[I, J, k, CV] = oV + F[I, J, k, CV]
-        out[I, J, k, CR] = 0.0; out[I, J, k, CT] = 0.0; out[I, J, k, CW] = 0.0
+        out[I, J, k, CR] = 0.0; out[I, J, k, CT] = 0.0
+        # vertical = :explicit: vertical pressure gradient on the unmasked z-faces, gravity on all z-faces
+        out[I, J, k, CW] = (!vimp && k >= 2 && G.Az[I, J, k] > 0) ?
+            -((1 - _wzI(G, nz, I, J, k, false)) * Cf[I, J, k, KPZ] * (Z[I, J, k, CT] - Z[I, J, k-1, CT]) / G.dzf[k] +
+              grav * _ρf(G, Z, I, J, k)) : 0.0
     end
 end
 
 """Implicit part without the masked momentum advection on the interior: vertical fluxes, vertical pressure gradient and
 gravity, the fluxes and pressure gradients through the masked x-, y-faces and the masked θ transport."""
-@kernel function _kc_vertical!(out, @Const(Z), @Const(Cf), G, dx, dy, nz, grav, RG)
+@kernel function _kc_vertical!(out, @Const(Z), @Const(Cf), G, dx, dy, nz, grav, ac, tr, damp, vimp, RG)
     ic, k = @index(Global, NTuple)
     I, J = _cIJ(RG, ic)
     @inbounds begin
         s = G.iV[I, J, k]
-        Fb = k >= 2 ? G.Az[I, J, k] * Z[I, J, k, CW] : 0.0
-        Ft = k < nz ? G.Az[I, J, k+1] * Z[I, J, k+1, CW] : 0.0
         dz = G.dzc[k]
-        oρ = -(s * (Ft - Fb) / dz)
-        oΘ = -(s * ((k < nz ? Cf[I, J, k+1, KθZ] : 0.0) * Ft - (k >= 2 ? Cf[I, J, k, KθZ] : 0.0) * Fb) / dz)
-        hρ, hΘ = _cthermo_h(Z, Cf, G, dx, dy, I, J, k, 2)
-        oρ += hρ; oΘ += hΘ
+        oρ = 0.0; oΘ = 0.0
+        if ac                                          # acoustics: vertical, masked horizontal faces
+            Fb = k >= 2 ? _wzI(G, nz, I, J, k, vimp) * G.Az[I, J, k] * Z[I, J, k, CW] : 0.0
+            Ft = k < nz ? _wzI(G, nz, I, J, k + 1, vimp) * G.Az[I, J, k+1] * Z[I, J, k+1, CW] : 0.0
+            oρ = -(s * (Ft - Fb) / dz)
+            oΘ = -(s * ((k < nz ? Cf[I, J, k+1, KθZ] : 0.0) * Ft - (k >= 2 ? Cf[I, J, k, KθZ] : 0.0) * Fb) / dz)
+            hρ, hΘ = _cthermo_h(Z, Cf, G, dx, dy, I, J, k, 2)
+            oρ += hρ; oΘ += hΘ
+        end
         # masked θ transport: f = a⁺ Θ_l + a⁻ Θ_r - θ_f (a⁺ ρ_l + a⁻ ρ_r) through the faces of masked cells
         fθ(ap, am, θf, l, r) = ap * Z[l..., CT] + am * Z[r..., CT] - θf * (ap * Z[l..., CR] + am * Z[r..., CR])
-        if _mfx(G, I, J, k)
+        if tr && _mfx(G, I, J, k)
             oΘ += s * fθ(Cf[I, J, k, KAXP], Cf[I, J, k, KAXM], Cf[I, J, k, KθX], (I - 1, J, k), (I, J, k)) / dx
         end
-        if _mfx(G, I + 1, J, k)
+        if tr && _mfx(G, I + 1, J, k)
             oΘ -= s * fθ(Cf[I+1, J, k, KAXP], Cf[I+1, J, k, KAXM], Cf[I+1, J, k, KθX], (I, J, k), (I + 1, J, k)) / dx
         end
-        if _mfy(G, I, J, k)
+        if tr && _mfy(G, I, J, k)
             oΘ += s * fθ(Cf[I, J, k, KAYP], Cf[I, J, k, KAYM], Cf[I, J, k, KθY], (I, J - 1, k), (I, J, k)) / dy
         end
-        if _mfy(G, I, J + 1, k)
+        if tr && _mfy(G, I, J + 1, k)
             oΘ -= s * fθ(Cf[I, J+1, k, KAYP], Cf[I, J+1, k, KAYM], Cf[I, J+1, k, KθY], (I, J, k), (I, J + 1, k)) / dy
         end
-        if k >= 2 && _mfz(G, I, J, k)
+        if tr && k >= 2 && _mfz(G, I, J, k)
             oΘ += s * fθ(Cf[I, J, k, KAZP], Cf[I, J, k, KAZM], Cf[I, J, k, KθZ], (I, J, k - 1), (I, J, k)) / dz
         end
-        if k < nz && _mfz(G, I, J, k + 1)
+        if tr && k < nz && _mfz(G, I, J, k + 1)
             oΘ -= s * fθ(Cf[I, J, k+1, KAZP], Cf[I, J, k+1, KAZM], Cf[I, J, k+1, KθZ], (I, J, k), (I, J, k + 1)) / dz
         end
         out[I, J, k, CR] = oρ; out[I, J, k, CT] = oΘ
-        oU, oV = _cmomentum_h(Z, Cf, G, dx, dy, I, J, k, 2)
+        oU, oV = ac ? _cmomentum_h(Z, Cf, G, dx, dy, I, J, k, 2) : (0.0, 0.0)
         out[I, J, k, CU] = oU; out[I, J, k, CV] = oV
-        out[I, J, k, CW] = (k >= 2 && G.Az[I, J, k] > 0) ?
-            -(Cf[I, J, k, KPZ] * (Z[I, J, k, CT] - Z[I, J, k-1, CT]) / G.dzf[k] + grav * _ρf(G, Z, I, J, k)) : 0.0
+        out[I, J, k, CW] = (ac && k >= 2 && G.Az[I, J, k] > 0) ?
+            -(_wzI(G, nz, I, J, k, vimp) * (Cf[I, J, k, KPZ] * (Z[I, J, k, CT] - Z[I, J, k-1, CT]) / G.dzf[k] +
+              (vimp ? grav * _ρf(G, Z, I, J, k) : 0.0)) + damp[k] * Z[I, J, k, CW]) : 0.0
     end
 end
 
@@ -572,7 +605,7 @@ end
 end
 
 """
-    ka_vertical!(out, m::CutKA, Cf, Z; halo = false)
+    ka_vertical!(out, m::CutKA, Cf, Z; halo = false, parts = :all, sponge = false)
 
 out = G_v(Z), the implicit part of the HEVI step (FV3D `:vertical` with implicit = :amf) on the interior. Linear in Z
 (pressure form :product): J v = G_v(v). `halo = false`: the halo of Z must be filled; `halo = true`: only the interior
@@ -585,17 +618,20 @@ the same kernel on the ring of first and last rows and columns:
     [M in flight]  transport T of M (core)                       ─ receive ─ ring ─ send T (slots 2, 4)
     [T in flight]  shift back A1 z (core)                        ─ receive ─ ring.
 """
-function ka_vertical!(out, m::CutKA, Cf, Z; halo::Bool = false)
+function ka_vertical!(out, m::CutKA, Cf, Z; halo::Bool = false, parts::Symbol = :all, sponge::Bool = false)
     g, w, dec = m.grid, m.work, m.dec
     G = _geo(g)
     nz = g.nz
+    ac, tr = parts !== :advection, parts !== :acoustic   # :acoustic, :advection (Rosenbrock AMF factors), :all
+    damp = sponge ? m.damp : m.zdamp
     core, ring = CutRegion(g, :core), CutRegion(g, :ring)
     hz = halo ? start_halo!(dec, Z, g, (CR, CU, CV, CW, CT)) : nothing
     for R in (core, ring)
         R === ring && finish_halo!(dec, hz)
-        _launch_r!(m, _kc_vertical!, R, nz, out, Z, Cf, G, g.dx, g.dy, nz, m.gas.g)
-        _launch_r!(m, _kc_mshift!, R, nz, w.M, Z, G, nz)
+        _launch_r!(m, _kc_vertical!, R, nz, out, Z, Cf, G, g.dx, g.dy, nz, m.gas.g, ac, tr, damp, m.vimp)
+        tr && _launch_r!(m, _kc_mshift!, R, nz, w.M, Z, G, nz)
     end
+    tr || return out
     hm = start_halo!(dec, w.M, g, (1, 2, 3, 4, 5, 6))
     for R in (core, ring)
         R === ring && finish_halo!(dec, hm)
@@ -610,9 +646,9 @@ function ka_vertical!(out, m::CutKA, Cf, Z; halo::Bool = false)
 end
 """out = :hthermo (k: ρ, Θ, W) / :hmomentum (U, V) on the columns of the region R (default: the interior)."""
 ka_hthermo!(out, m::CutKA, Cf, Z, F, R::CutRegion = CutRegion(m.grid, :all)) =
-    (g = m.grid; _launch_r!(m, _kc_hthermo!, R, g.nz, out, Z, Cf, F, _geo(g), m.damp, g.dx, g.dy, g.nz); out)
+    (g = m.grid; _launch_r!(m, _kc_hthermo!, R, g.nz, out, Z, Cf, F, _geo(g), m.damp, g.dx, g.dy, g.nz, m.vimp); out)
 ka_hmomentum!(out, m::CutKA, Cf, Z, F, R::CutRegion = CutRegion(m.grid, :all)) =
-    (g = m.grid; _launch_r!(m, _kc_hmomentum!, R, g.nz, out, Z, Cf, F, _geo(g), g.dx, g.dy); out)
+    (g = m.grid; _launch_r!(m, _kc_hmomentum!, R, g.nz, out, Z, Cf, F, _geo(g), g.dx, g.dy, g.nz, m.gas.g, m.vimp); out)
 
 """
     ka_rhs!(out, m::CutKA, Q, Cf, S, tmp)
@@ -664,20 +700,21 @@ Column solve Y = (I - c J_v)⁻¹ R per interior column (FV3D `column_solve!` wi
 :product): the tridiagonal W system, then ρ, Θ from the fluxes; U, V rows identity. Preconditioner of the implicit
 system (block Jacobi over the columns, no communication).
 """
-@kernel function _kc_csolve!(Y, @Const(R), @Const(Cf), G, Wc, cpw, idw, c, nz, grav)
+@kernel function _kc_csolve!(Y, @Const(R), @Const(Cf), G, Wc, cpw, idw, c, nz, grav, vimp)
     i, j = @index(Global, NTuple)
     I, J = i + HALO, j + HALO
     @inbounds begin
         for k in 2:nz
-            A = G.Az[I, J, k]
+            A = G.Az[I, J, k] * _wzI(G, nz, I, J, k, vimp)
             if A == 0
                 a, d, b = 0.0, 1.0, 0.0
                 rhs = R[I, J, k, CW]
             else
                 P = Cf[I, J, k, KPZ]
-                r = c / G.dzf[k]; cgl = c * grav * G.wlo[k]; cgu = c * grav * (1 - G.wlo[k])
+                gv = vimp ? grav : 0.0                         # vertical = :explicit: gravity explicit
+                r = c / G.dzf[k]; cgl = c * gv * G.wlo[k]; cgu = c * gv * (1 - G.wlo[k])
                 sk, sm = c * G.iV[I, J, k] / G.dzc[k], c * G.iV[I, J, k-1] / G.dzc[k-1]
-                Am, Ap = G.Az[I, J, k-1], G.Az[I, J, k+1]
+                Am, Ap = G.Az[I, J, k-1] * _wzI(G, nz, I, J, k - 1, vimp), G.Az[I, J, k+1] * _wzI(G, nz, I, J, k + 1, vimp)
                 a = k > 2 ? -r * P * sm * Am * Cf[I, J, k-1, KθZ] + cgl * sm * Am : 0.0
                 d = 1 + r * A * Cf[I, J, k, KθZ] * (P * sk + P * sm) + A * (cgu * sk - cgl * sm)
                 b = k < nz ? -r * P * sk * Ap * Cf[I, J, k+1, KθZ] - cgu * sk * Ap : 0.0
@@ -693,7 +730,8 @@ system (block Jacobi over the columns, no communication).
         Wc[I, J, 1] = 0.0; Wc[I, J, nz+1] = 0.0
         for k in 1:nz
             sk = c * G.iV[I, J, k] / G.dzc[k]
-            Fb = G.Az[I, J, k] * Wc[I, J, k]; Ft = G.Az[I, J, k+1] * Wc[I, J, k+1]
+            Fb = G.Az[I, J, k] * _wzI(G, nz, I, J, k, vimp) * Wc[I, J, k]
+            Ft = G.Az[I, J, k+1] * _wzI(G, nz, I, J, k + 1, vimp) * Wc[I, J, k+1]
             Y[I, J, k, CR] = R[I, J, k, CR] - sk * (Ft - Fb)
             Y[I, J, k, CT] = R[I, J, k, CT] - sk * ((k < nz ? Cf[I, J, k+1, KθZ] : 0.0) * Ft - (k > 1 ? Cf[I, J, k, KθZ] : 0.0) * Fb)
             Y[I, J, k, CU] = R[I, J, k, CU]; Y[I, J, k, CV] = R[I, J, k, CV]
@@ -702,7 +740,7 @@ system (block Jacobi over the columns, no communication).
     end
 end
 ka_column_solve!(Y, m::CutKA, Cf, c, R) = (g = m.grid; w = m.work;
-    _launch!(m, _kc_csolve!, (g.nxl, g.nyl), Y, R, Cf, _geo(g), w.Wc, w.cpw, w.idw, Float64(c), g.nz, m.gas.g); Y)
+    _launch!(m, _kc_csolve!, (g.nxl, g.nyl), Y, R, Cf, _geo(g), w.Wc, w.cpw, w.idw, Float64(c), g.nz, m.gas.g, m.vimp); Y)
 
 # ------------------------------------------------------------------ AMF preconditioner of the tile (host)
 
@@ -841,18 +879,33 @@ function _project!(w, m::CutKA, V)
 end
 _norm(m::CutKA, a) = sqrt(_dot(m, a, a))
 
-"""out = (I - c J) x (packed; J v = G_v(v), halo exchange)."""
-function _cut_apply!(out, m::CutKA, Cf, c, x, W::CutGMRES)
+"""out = (I - c J) x (packed; halo exchange): J v = G_v(v) (op = :vertical, HEVI), or the Rosenbrock factors on the
+all-masked model `m` (op = :acoustic: global acoustics with the sponge; :advection: upwind transport; :full: both)."""
+function _cut_apply!(out, m::CutKA, Cf, c, x, W::CutGMRES; op::Symbol = :vertical)
     _unpack!(W.X, m, x)
-    ka_vertical!(W.Y, m, Cf, W.X; halo = true)                # side halo of X overlapped
+    if op === :vertical
+        ka_vertical!(W.Y, m, Cf, W.X; halo = true)            # side halo of X overlapped
+    else
+        ka_vertical!(W.Y, m, Cf, W.X; halo = true, parts = op === :full ? :all : op, sponge = op !== :advection)
+    end
     _pack!(out, m, W.Y)
     @. out = x - c * out
     return out
 end
 """z = M⁻¹ r (packed): column solve (prec = :columns) or tile AMF (:amf)."""
-function _cut_prec!(z, m::CutKA, Cf, c, r, W::CutGMRES)
+function _cut_prec!(z, m::CutKA, Cf, c, r, W::CutGMRES; op::Symbol = :vertical)
+    op === :advection && return copyto!(z, r)                 # upwind transport: no preconditioner
     _unpack!(W.X, m, r)
-    if m.prec === :amf
+    if op === :vertical && m.prec === :mask                   # masked AMF: Θ Schur + upwind transport (cut_mask.jl)
+        mask_precondition!(W.Y, m.mprec[], m, Cf, c, W.X)
+        return _pack!(z, m, W.Y)
+    end
+    if op === :acoustic && m.mgp[] !== nothing                # acoustic multigrid (Schur, V-cycle)
+        mg = m.mgp[]
+        mg_precondition!(W.Y, mg, m, Cf, c, W.X, mg.X, mg.Y)
+        return _pack!(z, m, W.Y)
+    end
+    if m.prec === :amf && op === :vertical
         _amf_solve!(W.Y, m, c, W.X)
     else
         ka_column_solve!(W.Y, m, Cf, c, W.X)
@@ -862,13 +915,13 @@ end
 
 """Right-preconditioned restarted GMRES for (I - c J) x = b, x the initial guess; returns (iterations, matrix-vector
 products)."""
-function _cut_gmres!(x, m::CutKA, Cf, c, b, W::CutGMRES; tol = 1e-8, maxit = 300)
+function _cut_gmres!(x, m::CutKA, Cf, c, b, W::CutGMRES; tol = 1e-8, maxit = 300, op::Symbol = :vertical)
     mr = size(W.H, 2)
     V, Z, H, cs, sn, e, r, w = W.V, W.Z, W.H, W.cs, W.sn, W.e, W.r, W.w
     nb = _norm(m, b); nb == 0 && (fill!(x, 0.0); return 0, 0)
     it = 0; nmv = 0
     while true
-        _cut_apply!(r, m, Cf, c, x, W); @. r = b - r; nmv += 1
+        _cut_apply!(r, m, Cf, c, x, W; op); @. r = b - r; nmv += 1
         β = _norm(m, r)
         (β <= tol * nb || it >= maxit) && return it, nmv
         @views V[:, 1] .= r ./ β
@@ -876,8 +929,8 @@ function _cut_gmres!(x, m::CutKA, Cf, c, b, W::CutGMRES; tol = 1e-8, maxit = 300
         j = 0
         for jj in 1:mr
             j = jj; it += 1
-            @views _cut_prec!(Z[:, jj], m, Cf, c, V[:, jj], W)
-            @views _cut_apply!(w, m, Cf, c, Z[:, jj], W); nmv += 1
+            @views _cut_prec!(Z[:, jj], m, Cf, c, V[:, jj], W; op)
+            @views _cut_apply!(w, m, Cf, c, Z[:, jj], W; op); nmv += 1
             @views Vj = V[:, 1:jj]
             @views H[1:jj, jj] .= _project!(w, m, Vj) .+ _project!(w, m, Vj)     # CGS2
             H[jj+1, jj] = _norm(m, w)
@@ -958,7 +1011,8 @@ function ka_vertical_step!(Z, m::CutKA, Cf, h, k, y, W::CutGMRES; tol = 1e-8, kr
     _pack!(W.b, m, k)
     _cut_prec!(W.x, m, Cf, c, W.b, W)
     krylov in (:gmres, :bicgstab) || error("krylov: :gmres or :bicgstab")
-    it, nmv = krylov === :gmres ? _cut_gmres!(W.x, m, Cf, c, W.b, W; tol) : _cut_bicgstab!(W.x, m, Cf, c, W.b, W; tol)
+    it, nmv = (m.prec === :mask && m.mprec[].method.outer === :none) ? (0, 0) :      # AMF as the solve (ASAM)
+              krylov === :gmres ? _cut_gmres!(W.x, m, Cf, c, W.b, W; tol) : _cut_bicgstab!(W.x, m, Cf, c, W.b, W; tol)
     push!(m.its, it); push!(m.mv, nmv)
     _unpack!(y, m, W.x)
     ka_vertical!(W.Y, m, Cf, y; halo = true)
@@ -985,6 +1039,7 @@ function _cut_hevi_loop!(Z, m::CutKA, Cf, F, h, N, w::CutMISWork; tol, krylov = 
     g, dec, k = m.grid, m.dec, w.k
     core, ring = CutRegion(g, :core), CutRegion(g, :ring)
     ka_prec_stage!(m, Cf)
+    m.prec === :mask && mask_setup!(m.mprec[], m, Cf, FV3D.FV3D_HEVI_BETA[] * h)
     damp = smdiv > 0
     damp && (w.zl .= Z)
     # one Verlet sub-step: the halo of `vars` (the variables the kernel reads from the neighbours) of the input X in

@@ -28,7 +28,7 @@ using ..Common: Gas, pressure, MoistGas, moist_state, moist_exner, _moist_p, fis
                 pressure_phase_factor, exner_derivatives, theta_e, _Θof, KesslerParams, kessler_rates,
                 rain_velocity, liquid_content
 using ..FV2D: recon3, shiftvel, shift_back
-using ..TimeStepping: MISTableau, fast_substeps, nstages
+using ..TimeStepping: MISTableau, fast_substeps, nstages, RosTableau
 import ..FV3D
 
 export KAGrid, SerialDecomp, MoistKA, ka_state, global_state, ka_rhs!, ka_mis_step!, ka_run!, ka_step_end!,
@@ -43,5 +43,8 @@ include("fast.jl")
 include("mis.jl")
 include("convert.jl")
 include("cut.jl")
+include("cut_mg.jl")
+include("cut_mask.jl")
+include("cut_ros.jl")
 
 end

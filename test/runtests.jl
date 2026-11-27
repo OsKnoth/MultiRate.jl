@@ -1808,6 +1808,83 @@ end
                                                            gas, ρr, Θr))
 end
 
+@testset "Rosenbrock W-methods (ASAM form), acoustic multigrid, masked small step with switchable linear algebra" begin
+    F3 = MultiRate.FV3D; K = MultiRate.FV3DKA
+    # orders on a stiff ODE: W = J (RosEul 1, Ros2AMF 2, Ros3Pw 3); W-property on a non-stiff ODE (Ros2AMF, Ros3Pw 2)
+    mutable struct RosOde; ε::Float64; F::Any; pert::Float64; end
+    fo(m, y) = [-(y[1] - cos(y[2])) / m.ε - sin(y[2]) * y[3], y[3], -y[2] + 0.1 * y[1]]
+    Jo(m, y) = [-1/m.ε (-sin(y[2]) / m.ε - cos(y[2]) * y[3]) -sin(y[2]); 0 0 1; 0.1 -1 0]
+    TS.rhs_nonlinear!(out, m::RosOde, y) = (out .= fo(m, y); out)
+    TS.ros_prepare!(m::RosOde, y, γh) = (m.F = lu(I - γh * (Jo(m, y) + m.pert * [0 0.3 0; 0.2 0 0.1; 0.1 0 0.5])); m)
+    TS.ros_solve!(k, m::RosOde, r) = (k .= m.F \ r; k)
+    y0 = [1.0, 0.5, 0.2]
+    for (ε, pert, cases) in ((1e-3, 0.0, ((:RosEul, 1), (:Ros2AMF, 2), (:Ros3Pw, 3))), (1.0, 1.0, ((:Ros2AMF, 2), (:Ros3Pw, 2))))
+        m = RosOde(ε, nothing, 0.0)
+        ref = TS.run_ros(m, y0, 1 / 8192, 8192; tab = TS.ros_tableau(:Ros3P)); m.pert = pert
+        for (name, p) in cases
+            e1, e2 = (norm(TS.run_ros(m, y0, 1 / n, n; tab = TS.ros_tableau(name)) - ref) for n in (64, 128))
+            @test abs(log2(e1 / e2) - p) < 0.25
+        end
+    end
+    # small hill: FV3D Rosenbrock (exact and AMF) keeps the rest state, conserves; CutKA = FV3D; multigrid iterations
+    gas = CM.Gas(); ρr, Θr, θr = CM.stratified_reference(gas; θ0 = 300.0, N = 0.01)
+    F3.FV3D_PRESSURE_FORM[] = :product; F3.FV3D_MASK_JFORM[] = :conservative
+    hill(x, y) = 1500.0 * exp(-((x - 10e3)^2 + (y - 8e3)^2) / 3e3^2)
+    zf = [0.0, 500.0, 1000.0, 1500.0, 2000.0, 2700.0, 3700.0, 6000.0]
+    g3 = F3.Grid3D(16, 8, 7, 20e3, 16e3, 6e3; zs = hill, zf, limiter = :koren)
+    mk(ros) = F3.with_rosenbrock(F3.with_sponge(F3.Model3D(g3, gas, ρr, Θr), zeros(F3.nunknowns(g3)); zD = 4e3, αtop = 0.02); ros)
+    m3 = mk(:amf)
+    ρa = F3.hydrostatic_column(m3, Θr; ρbottom = ρr(g3.zc[1]))
+    rest = F3.project3d(m3, (x, y, z) -> (k = F3.level(g3, z); (ρa[k], 0.0, 0.0, 0.0, Θr(g3.zc[k]))))
+    q0 = F3.project3d(m3, (x, y, z) -> (k = F3.level(g3, z); (ρa[k] * (1 + 1e-3 * sin(x / 3e3) * cos(y / 4e3)), 10ρa[k],
+                                                              -3ρa[k], 0.0, Θr(g3.zc[k]))))
+    tab = TS.ros_tableau(:Ros2AMF)
+    for ros in (:exact, :amf)
+        mr = mk(ros)
+        @test maximum(abs, TS.run_ros(mr, rest, 60.0, 2; tab) - rest) < 1e-12 * maximum(abs, rest)
+        q = TS.run_ros(mr, q0, 10.0, 3; tab)
+        @test abs(F3.total3d(mr, q, :ρ) / F3.total3d(mr, q0, :ρ) - 1) < 1e-13
+        @test abs(F3.total3d(mr, q, :Θ) / F3.total3d(mr, q0, :Θ) - 1) < 1e-13
+    end
+    q3 = TS.run_ros(m3, q0, 10.0, 3; tab)
+    its = Dict{Symbol,Vector{Int}}()
+    for aprec in (:columns, :mg)
+        m = K.CutKA(K.CutGrid(g3); gas, sponge = (4e3, 0.02), jform = :conservative)
+        Q = K.ka_state(m, g3, q0)
+        _, w = K.ka_ros_run!(m, Q, 10.0, 3; tab, tol = 1e-11, aprec)
+        @test maximum(abs, K.global_state(m, g3, Q) - q3) < 1e-8 * maximum(abs, q3 - q0)
+        its[aprec] = w.its[1:2:end]
+    end
+    @test maximum(its[:mg]) <= 10 && minimum(its[:columns]) >= 5 * maximum(its[:mg])      # acoustic factor
+    # masked small step (vertical = :explicit, gravity explicit): N(q) = FV3D; the masked AMF preconditioner with its
+    # inner solvers gives the same steps as the column preconditioner, with fewer GMRES iterations; conserves
+    F3.FV3D_MASK_JFORM[] = :partial
+    m3p = F3.with_sponge(F3.Model3D(g3, gas, ρr, Θr), zeros(F3.nunknowns(g3)); zD = 4e3, αtop = 0.02)
+    N3 = TS.rhs_nonlinear(m3p, q0)
+    mtab = TS.mis_tableau(:MIS54)
+    ref = nothing; colits = 0.0
+    for (prec, mask) in ((:columns, (;)), (:mask, (acoustic = :hostlu, advection = :hostlu)), (:mask, (acoustic = :cg, advection = :gs, sweeps = 1)),
+                         (:mask, (acoustic = :cg, advection = :bicgstab, momenta = :krylov)))
+        m = K.CutKA(K.CutGrid(g3); gas, sponge = (4e3, 0.02), vertical = :explicit, prec, mask)
+        @test maximum(abs, K.global_state(m, g3, K.ka_rhs!(K.ka_zeros(m), m, K.ka_state(m, g3, q0))) - N3) < 1e-13 * maximum(abs, N3)
+        Q = K.ka_state(m, g3, q0); K.ka_run!(m, Q, 2.0, 3; tab = mtab, nsub = 6, tol = 1e-12)
+        q = K.global_state(m, g3, Q)
+        ref === nothing && (ref = q; colits = sum(m.its) / length(m.its))
+        @test maximum(abs, q - ref) < 1e-9 * maximum(abs, ref - q0)
+        @test abs(F3.total3d(m3p, q, :ρ) / F3.total3d(m3p, q0, :ρ) - 1) < 1e-13
+        @test abs(F3.total3d(m3p, q, :Θ) / F3.total3d(m3p, q0, :Θ) - 1) < 1e-13
+        prec === :mask && @test sum(m.its) / length(m.its) < 0.6 * colits
+    end
+    # the AMF product as the solve (outer = :none, ASAM): conservative, close to the converged step
+    m = K.CutKA(K.CutGrid(g3); gas, sponge = (4e3, 0.02), vertical = :explicit, prec = :mask,
+                mask = (acoustic = :hostlu, advection = :hostlu, momenta = :krylov, tol = 1e-10, outer = :none))
+    Q = K.ka_state(m, g3, q0); K.ka_run!(m, Q, 2.0, 3; tab = mtab, nsub = 6, tol = 1e-12)
+    q = K.global_state(m, g3, Q)
+    @test maximum(abs, q - ref) < 2e-3 * maximum(abs, ref - q0)
+    @test abs(F3.total3d(m3p, q, :Θ) / F3.total3d(m3p, q0, :Θ) - 1) < 1e-13
+    @test_throws ErrorException K.CutKA(K.CutGrid(g3); gas, prec = :mask)                      # needs vertical = :explicit
+end
+
 @testset "Buildings: CityGML LoD1/LoD2 → level set → cut-cell fractions (stretched levels)" begin
     BD = MultiRate.Buildings
     include(joinpath(@__DIR__, "buildings_citygml.jl"))

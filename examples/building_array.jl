@@ -61,8 +61,8 @@ ncut = count(0 .< g3.Vf .< 1)
 @printf("grid %d × %d × %d (dz %.0f … %.1f m), %d cut cells, %d masked, geometry %.1f s, building volume %.0f m³ (exact %.0f)\n",
         g3.nx, g3.ny, g3.nz, minimum(g3.dzc), maximum(g3.dzc), ncut, count(g3.mask), t,
         sum((1 - g3.Vf[i, j, k]) * Δx^2 * g3.dzc[k] for i in 1:g3.nx, j in 1:g3.ny, k in 1:g3.nz), 8 * a^2 * 16 + 8 * a^2 * 24)
-@printf("rotation %s, limiter %s, jform %s, levels %s, N %s, buildings %s, nudging strip %.0f m (α %.2f), β %s, smdiv %s, c Δt/Δx %.1f, U Δt/Δx %.2f\n", get(ENV, "BUILD_ROT", "alt"), limiter,
-        get(ENV, "BUILD_JFORM", "partial"), get(ENV, "BUILD_LEVELS", "stretched"), get(ENV, "BUILD_N", "0.01"), !NOBUILD, Lx - L, αn, get(ENV, "BUILD_BETA", "0.5"), get(ENV, "BUILD_SMDIV", "0.0"), 347Δt / Δx, 5Δt / Δx)
+@printf("rotation %s, limiter %s, jform %s, levels %s, N %s, buildings %s, nudging strip %.0f m (α %.2f), β %s, smdiv %s, vertical %s, prec %s %s, c Δt/Δx %.1f, U Δt/Δx %.2f\n", get(ENV, "BUILD_ROT", "alt"), limiter,
+        get(ENV, "BUILD_JFORM", "partial"), get(ENV, "BUILD_LEVELS", "stretched"), get(ENV, "BUILD_N", "0.01"), !NOBUILD, Lx - L, αn, get(ENV, "BUILD_BETA", "0.5"), get(ENV, "BUILD_SMDIV", "0.0"), get(ENV, "BUILD_VERTICAL", "implicit"), get(ENV, "BUILD_PREC", "columns"), get(ENV, "BUILD_MASK", ""), 347Δt / Δx, 5Δt / Δx)
 flush(stdout)
 
 # ------------------------------------------------------------------ model and initial state
@@ -82,17 +82,26 @@ if PLOTONLY
     q, nsteps, Δt = deserialize(ARGS[2])
 else
 m = K.CutKA(K.CutGrid(g3; backend = ONGPU ? CUDABackend() : KernelAbstractions.CPU()); gas, sponge = (200.0, 0.05), nudge = nud,
-            jform = F3.FV3D_MASK_JFORM[])
+            jform = F3.FV3D_MASK_JFORM[], vertical = Symbol(get(ENV, "BUILD_VERTICAL", "implicit")),
+            prec = Symbol(get(ENV, "BUILD_PREC", "columns")), mask = eval(Meta.parse(get(ENV, "BUILD_MASK", "(;)"))))
 Q = K.ka_state(m, g3, q0)
-tab = TS.mis_tableau(:MIS54)
+tab = TS.mis_tableau(Symbol(get(ENV, "BUILD_MIS", "MIS54")))
 w = K.CutMISWork(m, TS.nstages(tab))
 
 # ------------------------------------------------------------------ run
 nsteps = round(Int, T / Δt)
 umean(q) = sum(q[F3.iU(g3, i, j, k)] for i in 1:g3.nx, j in 1:g3.ny, k in 1:g3.nz) /
            sum(q[F3.iρ(g3, i, j, k)] * (g3.Vf[i, j, k] > 0) for i in 1:g3.nx, j in 1:g3.ny, k in 1:g3.nz)
+scheme = get(ENV, "BUILD_SCHEME", "mis")                            # mis | ros (Rosenbrock Ros2AMF, AMF, acoustic MG)
+tabr = TS.ros_tableau(Symbol(get(ENV, "BUILD_ROS", "Ros2AMF")))
+wr = scheme == "ros" ? K.CutRos(m, tabr.s; aprec = Symbol(get(ENV, "BUILD_APREC", "mg"))) : nothing
+rtol = parse(Float64, get(ENV, "BUILD_TOL", "1e-6"))
 tw = @elapsed for n in 1:nsteps
-    K.ka_mis_step!(m, Q, Δt, tab, w; nsub, tol = 1e-8, smdiv = parse(Float64, get(ENV, "BUILD_SMDIV", "0.0")))
+    if scheme == "ros"
+        K.ka_ros_step!(m, Q, Δt, tabr, wr; tol = rtol, ros = :amf)
+    else
+        K.ka_mis_step!(m, Q, Δt, tab, w; nsub, tol = 1e-8, smdiv = parse(Float64, get(ENV, "BUILD_SMDIV", "0.0")))
+    end
     if n % max(1, nsteps ÷ nout) == 0 || n == nsteps
         q = K.global_state(m, g3, Q)
         wv = F3.vertical_velocity(m3, q)
@@ -103,13 +112,24 @@ tw = @elapsed for n in 1:nsteps
         @printf("t = %6.1f s: max|w| %.3f m/s at %s (Vf %.2f), max|u| %.3f at %s (Ax %.2f, Vf %.2f|%.2f, mask %d), mean u %.3f m/s, GMRES its %.1f, Δρ %.1e ΔΘ %.1e\n",
                 n * Δt, wm, Tuple(iw) .+ (0, 0, 1), g3.Vf[iw[1], iw[2], iw[3]], um, Tuple(iu), g3.Ax[iu],
                 g3.Vf[F3.ip(g3, iu[1] - 1), iu[2], iu[3]], g3.Vf[iu], g3.mask[iu] || g3.mask[F3.ip(g3, iu[1] - 1), iu[2], iu[3]],
-                umean(q), sum(m.its) / length(m.its), F3.total3d(m3, q, :ρ) / F3.total3d(m3, q0, :ρ) - 1,
-                F3.total3d(m3, q, :Θ) / F3.total3d(m3, q0, :Θ) - 1)
+                umean(q), scheme == "ros" ? sum(wr.its) / length(wr.its) : sum(m.its) / length(m.its),
+                F3.total3d(m3, q, :ρ) / F3.total3d(m3, q0, :ρ) - 1, F3.total3d(m3, q, :Θ) / F3.total3d(m3, q0, :Θ) - 1)
+        if scheme == "ros"
+            @printf("              Rosenbrock GMRES its: acoustic %.1f, advection %.1f\n", sum(wr.its[1:2:end]) / length(wr.its[1:2:end]),
+                    sum(wr.its[2:2:end]) / length(wr.its[2:2:end]))
+            empty!(wr.its)
+        end
+        if m.prec === :mask && !isempty(m.mprec[].its)
+            its = m.mprec[].its
+            @printf("              masked AMF inner its: acoustic %.1f, advection %.1f\n", sum(first, its) / length(its), sum(last, its) / length(its))
+            empty!(its)
+        end
         empty!(m.its); flush(stdout)
         any(isnan, q) && error("NaN at step $n")
     end
 end
-@printf("%d MIS steps (Δt %.2f s, nsub %d) in %.0f s: %.2f s per step\n", nsteps, Δt, nsub, tw, tw / nsteps)
+@printf("%d %s steps (Δt %.2f s, nsub %d) in %.0f s: %.2f s per step, %.2f s per simulated second\n", nsteps,
+        scheme == "ros" ? "Rosenbrock" : string(tab.name), Δt, nsub, tw, tw / nsteps, tw / (nsteps * Δt))
 q = K.global_state(m, g3, Q)
 serialize(joinpath(out, "building_array_state$tag.bin"), (q, nsteps, Δt))
 println("state: ", joinpath(out, "building_array_state$tag.bin"))
