@@ -19,6 +19,13 @@
 #     julia --project=examples examples/leipzig_eisenbahnstrasse.jl plot examples/out/leipzig_state.bin
 #
 # LEIP_DIR: the directory of the CityGML files (default ~/CityLeipzig).
+# LEIP_CASE = street (default: the domain above, 8 district files) | large (4608 m × 2048 m centred on the street,
+# 1152 × 512 columns, all district files, nudging strip 192 m; run on 2 × 2 GPUs). Own grid and start files per case.
+# LEIP_PTOL, LEIP_PMAXIT: tolerance and iterations of the divergence-free projection of the start (host PCG;
+# default 1e-10, 5000 for street, 1e-6, 400 for large: the rest of the divergence is damped acoustically).
+# Acoustic factor: LEIP_APREC = mgp (default, scalar pressure matrix) | mg ((ρ, Θ) Schur); LEIP_JGRAV = explicit
+# (default: gravity in N(Y) only, not in W; the scalar matrix is then the exact Schur complement) | implicit;
+# LEIP_PVAR = theta (default) | p (pressure as a prognostic variable).
 
 using MultiRate, Printf, LinearAlgebra, SparseArrays, Serialization, KernelAbstractions
 const ONGPU = get(ENV, "BUILDINGS_GPU", "0") == "1"
@@ -35,17 +42,22 @@ const CM = MultiRate.Common
 const BD = MultiRate.Buildings
 include(joinpath(@__DIR__, "..", "test", "cutka_projection.jl"))
 out = joinpath(@__DIR__, "out"); mkpath(out)
-gridfile = joinpath(out, "leipzig_grid.bin")
 
 # ------------------------------------------------------------------ geometry
-const X0, Y0 = 318533.0, 5691170.0                                  # south-west corner (EPSG:25833)
-const Lx, Ly, Δx = 2304.0, 512.0, 4.0
-const LN = parse(Float64, get(ENV, "LEIP_NUDGE", "96"))             # nudging strip Lx - LN … Lx
+const CASE = get(ENV, "LEIP_CASE", "street")
+CASE in ("street", "large") || error("LEIP_CASE: street or large")
+const LARGE = CASE == "large"
+const X0, Y0 = LARGE ? (318533.0 - 1152.0, 5691170.0 - 768.0) : (318533.0, 5691170.0)   # south-west corner (EPSG:25833)
+const Lx, Ly, Δx = LARGE ? 4608.0 : 2304.0, LARGE ? 2048.0 : 512.0, 4.0
+const LN = parse(Float64, get(ENV, "LEIP_NUDGE", LARGE ? "192" : "96"))   # nudging strip Lx - LN … Lx
+const CTAG = LARGE ? "_large" : ""
+gridfile = joinpath(out, "leipzig_grid$CTAG.bin")
 zf = BD.stretched_levels(300.0; dz0 = 4.0, z1 = 32.0, r = 1.1)
 
 """The buildings inside the domain (all of their vertices within the margins), each on z = 0."""
 function street_buildings(dir)
-    files = filter(f -> any(occursin(s, f) for s in ("_01_", "_10_", "_11_", "_20_", "_21_", "_22_", "_23_", "_30_")),
+    files = filter(f -> endswith(f, ".gml") && (LARGE || any(occursin(s, f) for s in ("_01_", "_10_", "_11_", "_20_", "_21_",
+                                                                                        "_22_", "_23_", "_30_"))),
                    readdir(dir; join = true))
     t = @elapsed polys = BD.read_citygml(files)
     byb = Dict{Int,Vector{BD.BuildingPolygon}}()
@@ -94,14 +106,17 @@ T = MODE == "run" && length(ARGS) >= 1 ? parse(Float64, ARGS[1]) : 600.0
 Δt = MODE == "run" && length(ARGS) >= 2 ? parse(Float64, ARGS[2]) : 0.5
 nout = MODE == "run" && length(ARGS) >= 3 ? parse(Int, ARGS[3]) : 12
 scheme = get(ENV, "LEIP_SCHEME", "ros")                              # ros (Ros2AMF + MG) | mis (ConvexMIS42, masked AMF)
+aprec = Symbol(get(ENV, "LEIP_APREC", "mgp"))                         # mgp (scalar pressure form) | mg ((ρ, Θ) Schur)
+pvar = Symbol(get(ENV, "LEIP_PVAR", "theta"))                       # theta | p (pressure as a prognostic variable)
+jgrav = Symbol(get(ENV, "LEIP_JGRAV", "explicit"))                  # explicit (gravity only in N(Y), not in W) | implicit
 adprec = Symbol(get(ENV, "LEIP_ADPREC", "none")); sweeps = parse(Int, get(ENV, "LEIP_SWEEPS", "2"))
 rtol = parse(Float64, get(ENV, "LEIP_TOL", "1e-3"))                 # relative tolerance (drop) of the stage solves
 enorm = get(ENV, "LEIP_NORM", "energy") == "energy"                 # energy: residuals in Pa (ρ c², Θ γR, m c)
 atolp = parse(Float64, get(ENV, "LEIP_ATOL", "1e-4"))                  # absolute RMS residual / dynamic pressure ρU²/2
 tag = get(ENV, "LEIP_TAG", "")
-@root @printf("grid %d × %d × %d, %d cut cells, %d masked; U %.1f m/s, Δt %.2f s, c Δt/Δx %.1f, U Δt/Δx %.2f, scheme %s, %d × %d %s, advection preconditioner %s (%d sweeps), tol %.0e, norm %s, atol %.0e ρU²/2\n",
+@root @printf("grid %d × %d × %d, %d cut cells, %d masked; U %.1f m/s, Δt %.2f s, c Δt/Δx %.1f, U Δt/Δx %.2f, scheme %s, %d × %d %s, pvar %s, gravity in W %s, acoustic %s, advection preconditioner %s (%d sweeps), tol %.0e, norm %s, atol %.0e ρU²/2\n",
         g3.nx, g3.ny, g3.nz, count(0 .< g3.Vf .< 1), count(g3.mask), U0, Δt, 347Δt / Δx, U0 * Δt / Δx, scheme, PX, PY,
-        ONGPU ? "GPUs" : "CPU tiles", adprec, sweeps, rtol, enorm ? "energy" : "euclid", atolp)
+        ONGPU ? "GPUs" : "CPU tiles", pvar, jgrav, aprec, adprec, sweeps, rtol, enorm ? "energy" : "euclid", atolp)
 flush(stdout)
 
 # ------------------------------------------------------------------ model and initial state
@@ -119,9 +134,12 @@ if MODE == "plot"
     q, nsteps, Δt = deserialize(ARGS[2])
 else
 # the divergence-free start (PCG on the host, cached next to the grid: computed once by rank 0)
-q0file = joinpath(out, "leipzig_q0_$(U0).bin")
+q0file = joinpath(out, "leipzig_q0$(CTAG)_$(U0).bin")
+ptol = parse(Float64, get(ENV, "LEIP_PTOL", LARGE ? "1e-6" : "1e-10"))
+pmaxit = parse(Int, get(ENV, "LEIP_PMAXIT", LARGE ? "400" : "5000"))
 if RANK == 0 && !(isfile(q0file) && mtime(q0file) > mtime(gridfile))
-    t = @elapsed q0 = project_divfree(m3, F3.project3d(m3, (x, y, z) -> (k = F3.level(g3, z); (ρa[k], U0 * ρa[k], 0.0, 0.0, Θr(g3.zc[k])))))
+    t = @elapsed q0 = project_divfree(m3, F3.project3d(m3, (x, y, z) -> (k = F3.level(g3, z); (ρa[k], U0 * ρa[k], 0.0, 0.0, Θr(g3.zc[k]))));
+                                     tol = ptol, maxit = pmaxit)
     serialize(q0file, q0)
     @printf("divergence-free start: %.0f s\n", t); flush(stdout)
 end
@@ -136,11 +154,11 @@ else
 end
 kw = (gas, sponge = (200.0, 0.05), nudge = nud, jform = :partial, vertical = scheme == "ros" ? :implicit : :explicit,
       prec = scheme == "ros" ? :columns : :mask,
-      mask = scheme == "ros" ? (;) : (acoustic = :cg, advection = :gs, sweeps = 1, outer = :none, momenta = :krylov))
+      mask = scheme == "ros" ? (;) : (acoustic = :cg, advection = :gs, sweeps = 1, outer = :none, momenta = :krylov), pvar)
 m = PAR ? K.CutKA(cgrid, dec; kw...) : K.CutKA(cgrid; kw...)
 Q = K.ka_state(m, g3, q0)
 tabr = TS.ros_tableau(:Ros2AMF)
-wr = scheme == "ros" ? K.CutRos(m, tabr.s; aprec = :mg, adprec, sweeps, aggcols = parse(Int, get(ENV, "LEIP_AGG", "4096"))) : nothing
+wr = scheme == "ros" ? K.CutRos(m, tabr.s; aprec, adprec, jgrav, sweeps, aggcols = parse(Int, get(ENV, "LEIP_AGG", "4096"))) : nothing
 scheme == "ros" && enorm && K.ros_energy_norm!(wr)
 atol = atolp * 0.5 * ρa[1] * U0^2
 gstate(Q) = PAR ? K.allreduce_sum(dec, K.global_state(m, g3, Q)) : K.global_state(m, g3, Q)
@@ -172,8 +190,9 @@ tw = @elapsed for n in 1:nsteps
             @printf("              GMRES its per solve: acoustic %.1f (%d … %d), advection %.1f (%d … %d); wall s: setup %.1f, N(Y) %.1f, acoustic %.1f, advection %.1f\n",
                     sum(ia) / length(ia), extrema(ia)..., sum(id) / length(id), extrema(id)..., wr.tsec...)
         end
+        pvar === :p && @printf("              max |p - p(Θ)|/p (rank 0 tile) %.1e\n", K.pressure_defect(m, Q))
         any(isnan, q) && error("NaN at step $n")
-        serialize(joinpath(out, "leipzig_state$tag.bin"), (q, n, Δt))
+        serialize(joinpath(out, "leipzig_state$CTAG$tag.bin"), (q, n, Δt))
         flush(stdout)
         end
         scheme == "ros" ? empty!(wr.its) : empty!(m.its)
@@ -186,7 +205,7 @@ if scheme == "ros"
 else
     @root @printf("%d steps (Δt %.2f s) in %.0f s: %.2f s per step, %.2f s per simulated second\n", nsteps, Δt, tw, tw / nsteps, tw / (nsteps * Δt))
 end
-@root println("state: ", joinpath(out, "leipzig_state$tag.bin"))
+@root println("state: ", joinpath(out, "leipzig_state$CTAG$tag.bin"))
 PAR && MPI.Finalize()
 end
 

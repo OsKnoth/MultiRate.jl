@@ -7,7 +7,7 @@
 # z-faces, so that the correction is ρ_f times the gradient of λ; λ from the symmetric system D̃ K D̃ᵀ λ = D̃ U0.
 
 """Divergence-free projection of the momenta (as in the hill experiments of FV3D)."""
-function project_divfree(m, q)
+function project_divfree(m, q; tol = 1e-10, maxit = 5000)
     g = m.grid; nx, ny, nz = g.nx, g.ny, g.nz
     cid = zeros(Int, nx, ny, nz); nc = 0
     for k in 1:nz, j in 1:ny, i in 1:nx; g.Vf[i, j, k] > 0 && (cid[i, j, k] = (nc += 1)); end
@@ -35,7 +35,7 @@ function project_divfree(m, q)
     U0 = q[faces]
     Lp = D * Diagonal(w) * D'; rhs = D * U0
     rhs .-= sum(rhs) / nc                              # consistent with the constant null space (periodic, closed)
-    λ = _pcg_columns(Lp, rhs, cid)
+    λ = _pcg_columns(Lp, rhs, cid; tol, maxit)
     qp = copy(q); qp[faces] = U0 - w .* (D' * λ)
     return qp
 end

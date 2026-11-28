@@ -18,7 +18,21 @@
 # side once per V-cycle; the rest of the V-cycle runs on every rank without communication (periodic images), each rank
 # takes its part of the correction. Same arithmetic as on one GPU (zebra colours by the global column index).
 
+# Pressure form (`form = :pressure`, CutRos aprec = :mgp): the Schur complement on one unknown per cell. In S the ρ
+# unknowns enter only through gravity, g ρ_f on the z-faces; written isentropically, ρ' ≈ p'/c² = Θ'/θ_f (the
+# acoustic part of ρ', the buoyancy ρ θ'/θ left out: a non-stiff term of frequency N), the Θ row no longer couples
+# to ρ: a scalar 7-point system for Θ' ∝ p' (p' = (∂p/∂Θ) Θ'), the scalar Thomas algorithm in the columns, half the
+# halo data and a third of the stencil memory. ρ follows from its row, ρ = b_ρ - (S_ρΘ Θ), with the same gravity.
+# Only the preconditioner is approximated: GMRES runs on the exact J_ac (gravity on ρ), the Rosenbrock solution is
+# unchanged up to the tolerance.
+#
+# Prognostic pressure (CutKA pvar = :p): the momenta see only p and ρ (-δp/h - g ρ_f), the p row is P_c times the Θ
+# row (P_c = dp/dΘ of the cell). The Schur complement is on (ρ, p): the same stencil with the face coefficient 1 for
+# P_f and P_c θ_f for θ_f in the p row; in the pressure form ρ' ≈ p'/c², c² = P_c θ_f. Θ is not in the reduced system:
+# (I - cJ) gives k_p - P_c k_Θ = r_p - P_c r_Θ in every cell, so k_Θ = r_Θ + (k_p - r_p)/P_c.
+
 const MGS = 20                                      # stencil slots per cell
+const MGS1 = 7                                      # pressure form: slots SΘC … SΘT of the Θ row
 const SΘC, SΘW, SΘE, SΘS, SΘN, SΘB, SΘT, SρC, SρB, SρT = 1, 2, 3, 4, 5, 6, 7, 8, 9, 10
 
 """Tile of a multigrid level (an AbstractTileGrid for the halo exchange)."""
@@ -45,20 +59,27 @@ struct CutMG{L,A,B,O}
     gs::B; gr::B                                    # send / receive buffers of the gather
     goff::O                                         # (i0, j0) of the tiles of all ranks at level la (device)
     np::Int
+    nv::Int                                         # unknowns per cell: 2 (ρ, Θ) or 1 (pressure form)
+    Sr::A; bρ::A                                    # pressure form: ρ row on Θ (fine level, MGS1 slots), b_ρ
 end
+_mgns(mg::CutMG) = mg.nv == 2 ? MGS : MGS1
 
 """
-    CutMG(ma::CutKA; ν = 2, νc = 20, coarsest = 2, aggcols = 4096)
+    CutMG(ma::CutKA; ν = 2, νc = 20, coarsest = 2, aggcols = 4096, form = :rhotheta)
 
 Levels of horizontal 2 × 2 coarsening of the tile of `ma` while the tile sizes are even and at least `coarsest`;
 with several ranks, the levels with at most `aggcols` global columns are global on every rank (agglomeration; 0:
-never), coarsened further while even and at least `coarsest`.
+never), coarsened further while even and at least `coarsest`. `form`: `:rhotheta` (the exact Schur complement on
+(ρ, Θ), 2 × 2 blocks) or `:pressure` (scalar, isentropic gravity).
 """
-function CutMG(ma::CutKA; ν::Int = 2, νc::Int = 20, coarsest::Int = 2, aggcols::Int = 4096)
+function CutMG(ma::CutKA; ν::Int = 2, νc::Int = 20, coarsest::Int = 2, aggcols::Int = 4096, form::Symbol = :rhotheta)
+    form in (:rhotheta, :pressure) || error("form: :rhotheta or :pressure")
     g = ma.grid
     be = KA.get_backend(g)
     nxl, nyl, nz, i0, j0 = g.nxl, g.nyl, g.nz, g.i0, g.j0
-    level(t) = (z(n) = KA.zeros(be, Float64, t.nxh, t.nyh, nz, n); MGLevelKA(t, z(MGS), z(2), z(2), z(2), z(4), z(2)))
+    nv = form === :pressure ? 1 : 2
+    ns = nv == 2 ? MGS : MGS1
+    level(t) = (z(n) = KA.zeros(be, Float64, t.nxh, t.nyh, nz, n); MGLevelKA(t, z(ns), z(nv), z(nv), z(nv), z(nv^2), z(nv)))
     lv = []
     while true
         push!(lv, level(MGTile(nxl, nyl, nz, i0, j0)))
@@ -79,18 +100,21 @@ function CutMG(ma::CutKA; ν::Int = 2, νc::Int = 20, coarsest::Int = 2, aggcols
             (iseven(nx) && iseven(ny) && nx ÷ 2 >= coarsest && ny ÷ 2 >= coarsest) || break
             nx, ny = nx ÷ 2, ny ÷ 2
         end
-        n = t.nxl * t.nyl * nz * MGS
+        n = t.nxl * t.nyl * nz * ns
         gs = KA.zeros(be, Float64, n); gr = KA.zeros(be, Float64, n * np)
         offs = zeros(Int, 2np); allgather!(offs, ma.dec, [t.i0, t.j0])
         goff = KA.zeros(be, Int, 2np); copyto!(goff, offs)
     end
-    return CutMG(lv, ν, νc, ka_zeros(ma), ka_zeros(ma), la, glev, gs, gr, goff, np)
+    t1 = lv[1].t
+    Sr = nv == 1 ? KA.zeros(be, Float64, t1.nxh, t1.nyh, nz, MGS1) : KA.zeros(be, Float64, 0, 0, 0, 0)
+    bρ = nv == 1 ? KA.zeros(be, Float64, t1.nxh, t1.nyh, nz, 1) : KA.zeros(be, Float64, 0, 0, 0, 0)
+    return CutMG(lv, ν, νc, ka_zeros(ma), ka_zeros(ma), la, glev, gs, gr, goff, np, nv, Sr, bρ)
 end
 
 # ------------------------------------------------------------------ stencils
 
 """Fine stencil of S = I - c² J_tm D⁻¹ J_mt (all faces of the all-masked twin; coefficients of the model)."""
-@kernel function _mg_fine!(St, @Const(Cf), G, damp, c, grav, dx, dy, nz)
+@kernel function _mg_fine!(St, @Const(Cf), G, damp, c, grav, dx, dy, nz, pv)
     i, j, k = @index(Global, NTuple)
     I, J = i + HALO, j + HALO
     @inbounds begin
@@ -99,11 +123,13 @@ end
         iV = G.iV[I, J, k]
         if iV > 0
             c2 = c * c
+            Pc = pv ? Cf[I, J, k, KPC] : 1.0              # pvar = :p: unknown p, face coefficient 1, p row P_c θ_f
+            fP(K) = pv ? 1.0 : K
             # horizontal faces: ± c² iV a P / h² (Θ_c - Θ_n), the Θ row with the face θ
-            for (a, P, θf, slot, h) in ((G.Ax[I, J, k], Cf[I, J, k, KPX], Cf[I, J, k, KθX], SΘW, dx),
-                                        (G.Ax[I+1, J, k], Cf[I+1, J, k, KPX], Cf[I+1, J, k, KθX], SΘE, dx),
-                                        (G.Ay[I, J, k], Cf[I, J, k, KPY], Cf[I, J, k, KθY], SΘS, dy),
-                                        (G.Ay[I, J+1, k], Cf[I, J+1, k, KPY], Cf[I, J+1, k, KθY], SΘN, dy))
+            for (a, P, θf, slot, h) in ((G.Ax[I, J, k], fP(Cf[I, J, k, KPX]), Pc * Cf[I, J, k, KθX], SΘW, dx),
+                                        (G.Ax[I+1, J, k], fP(Cf[I+1, J, k, KPX]), Pc * Cf[I+1, J, k, KθX], SΘE, dx),
+                                        (G.Ay[I, J, k], fP(Cf[I, J, k, KPY]), Pc * Cf[I, J, k, KθY], SΘS, dy),
+                                        (G.Ay[I, J+1, k], fP(Cf[I, J+1, k, KPY]), Pc * Cf[I, J+1, k, KθY], SΘN, dy))
                 if a > 0
                     w = c2 * iV * a * P / h^2
                     St[I, J, k, SΘC] += w; St[I, J, k, slot] -= w
@@ -113,7 +139,7 @@ end
             # lower face k (the cell above it): + c² iV A/(Δz_k D) [P (Θ_k - Θ_{k-1})/Δz̃ + g (w ρ_{k-1} + (1-w) ρ_k)]
             if k >= 2 && G.Az[I, J, k] > 0
                 β = c2 * iV * G.Az[I, J, k] / (G.dzc[k] * (1 + c * damp[k]))
-                P, θf, wl = Cf[I, J, k, KPZ], Cf[I, J, k, KθZ], G.wlo[k]
+                P, θf, wl = fP(Cf[I, J, k, KPZ]), Pc * Cf[I, J, k, KθZ], G.wlo[k]
                 for (row, f) in ((0, 1.0), (10, θf))
                     St[I, J, k, row + SΘC] += f * β * P / G.dzf[k]; St[I, J, k, row + SΘB] -= f * β * P / G.dzf[k]
                     St[I, J, k, row + SρB] += f * β * grav * wl; St[I, J, k, row + SρC] += f * β * grav * (1 - wl)
@@ -122,7 +148,7 @@ end
             # upper face k + 1 (the cell below it): - c² iV A/(Δz_k D) [P (Θ_{k+1} - Θ_k)/Δz̃ + g (w ρ_k + (1-w) ρ_{k+1})]
             if k < nz && G.Az[I, J, k+1] > 0
                 β = c2 * iV * G.Az[I, J, k+1] / (G.dzc[k] * (1 + c * damp[k+1]))
-                P, θf, wl = Cf[I, J, k+1, KPZ], Cf[I, J, k+1, KθZ], G.wlo[k+1]
+                P, θf, wl = fP(Cf[I, J, k+1, KPZ]), Pc * Cf[I, J, k+1, KθZ], G.wlo[k+1]
                 for (row, f) in ((0, 1.0), (10, θf))
                     St[I, J, k, row + SΘT] -= f * β * P / G.dzf[k+1]; St[I, J, k, row + SΘC] += f * β * P / G.dzf[k+1]
                     St[I, J, k, row + SρC] -= f * β * grav * wl; St[I, J, k, row + SρT] -= f * β * grav * (1 - wl)
@@ -217,6 +243,156 @@ neighbours at their current values (Θ halo filled)."""
     end
 end
 
+# ------------------------------------------------------------------ pressure form (scalar)
+
+"""Fine stencils of the pressure form: St the Θ row on Θ (MGS1 slots, diagonal included), Sr the ρ row on Θ (its ρ
+diagonal is 1); gravity isentropic, g ρ_f ≈ g (w Θ_{k-1} + (1-w) Θ_k)/θ_f."""
+@kernel function _mg_fine1!(St, Sr, @Const(Cf), G, damp, c, grav, dx, dy, nz, pv)
+    i, j, k = @index(Global, NTuple)
+    I, J = i + HALO, j + HALO
+    @inbounds begin
+        for s in 1:MGS1; St[I, J, k, s] = 0.0; Sr[I, J, k, s] = 0.0; end
+        St[I, J, k, SΘC] = 1.0
+        iV = G.iV[I, J, k]
+        if iV > 0
+            c2 = c * c
+            # unknown Θ (pvar = :theta) or p (:p): face coefficient P_f or 1, row factor θ_f or P_c θ_f, isentropic
+            # ρ' = Θ'/θ_f or p'/(P θ_f) of the two cells of a z-face
+            Pc = pv ? Cf[I, J, k, KPC] : 1.0
+            fP(K) = pv ? 1.0 : K
+            for (a, P, θf, slot, h) in ((G.Ax[I, J, k], fP(Cf[I, J, k, KPX]), Cf[I, J, k, KθX], SΘW, dx),
+                                        (G.Ax[I+1, J, k], fP(Cf[I+1, J, k, KPX]), Cf[I+1, J, k, KθX], SΘE, dx),
+                                        (G.Ay[I, J, k], fP(Cf[I, J, k, KPY]), Cf[I, J, k, KθY], SΘS, dy),
+                                        (G.Ay[I, J+1, k], fP(Cf[I, J+1, k, KPY]), Cf[I, J+1, k, KθY], SΘN, dy))
+                if a > 0
+                    w = c2 * iV * a * P / h^2
+                    Sr[I, J, k, SΘC] += w; Sr[I, J, k, slot] -= w
+                    St[I, J, k, SΘC] += Pc * θf * w; St[I, J, k, slot] -= Pc * θf * w
+                end
+            end
+            if k >= 2 && G.Az[I, J, k] > 0
+                β = c2 * iV * G.Az[I, J, k] / (G.dzc[k] * (1 + c * damp[k]))
+                P, θf, wl = fP(Cf[I, J, k, KPZ]), Cf[I, J, k, KθZ], G.wlo[k]
+                cB, cC = pv ? Cf[I, J, k-1, KPC] * θf : θf, Pc * θf
+                a, b = β * (P / G.dzf[k] + grav * (1 - wl) / cC), β * (P / G.dzf[k] - grav * wl / cB)
+                Sr[I, J, k, SΘC] += a; Sr[I, J, k, SΘB] -= b
+                St[I, J, k, SΘC] += Pc * θf * a; St[I, J, k, SΘB] -= Pc * θf * b
+            end
+            if k < nz && G.Az[I, J, k+1] > 0
+                β = c2 * iV * G.Az[I, J, k+1] / (G.dzc[k] * (1 + c * damp[k+1]))
+                P, θf, wl = fP(Cf[I, J, k+1, KPZ]), Cf[I, J, k+1, KθZ], G.wlo[k+1]
+                cC, cT = Pc * θf, pv ? Cf[I, J, k+1, KPC] * θf : θf
+                a, b = β * (P / G.dzf[k+1] - grav * wl / cC), β * (P / G.dzf[k+1] + grav * (1 - wl) / cT)
+                Sr[I, J, k, SΘC] += a; Sr[I, J, k, SΘT] -= b
+                St[I, J, k, SΘC] += Pc * θf * a; St[I, J, k, SΘT] -= Pc * θf * b
+            end
+        end
+    end
+end
+
+"""Galerkin coarse stencil of the pressure form."""
+@kernel function _mg_coarsen1!(Sc, @Const(Sf))
+    ic, jc, k = @index(Global, NTuple)
+    Ic, Jc = ic + HALO, jc + HALO
+    @inbounds begin
+        for s in 1:MGS1; Sc[Ic, Jc, k, s] = 0.0; end
+        for b in 0:1, a in 0:1
+            I, J = HALO + 2ic - 1 + a, HALO + 2jc - 1 + b
+            Sc[Ic, Jc, k, SΘC] += Sf[I, J, k, SΘC]
+            Sc[Ic, Jc, k, SΘB] += Sf[I, J, k, SΘB]; Sc[Ic, Jc, k, SΘT] += Sf[I, J, k, SΘT]
+            Sc[Ic, Jc, k, a == 1 ? SΘC : SΘW] += Sf[I, J, k, SΘW]
+            Sc[Ic, Jc, k, a == 0 ? SΘC : SΘE] += Sf[I, J, k, SΘE]
+            Sc[Ic, Jc, k, b == 1 ? SΘC : SΘS] += Sf[I, J, k, SΘS]
+            Sc[Ic, Jc, k, b == 0 ? SΘC : SΘN] += Sf[I, J, k, SΘN]
+        end
+    end
+end
+
+"""(S x) of cell (I, J, k), scalar 7-point stencil on field 1 of x."""
+@inline function _mg_row1(St, x, I, J, k, nz)
+    s = St[I, J, k, SΘC] * x[I, J, k, 1] +
+        St[I, J, k, SΘW] * x[I-1, J, k, 1] + St[I, J, k, SΘE] * x[I+1, J, k, 1] +
+        St[I, J, k, SΘS] * x[I, J-1, k, 1] + St[I, J, k, SΘN] * x[I, J+1, k, 1]
+    k > 1 && (s += St[I, J, k, SΘB] * x[I, J, k-1, 1])
+    k < nz && (s += St[I, J, k, SΘT] * x[I, J, k+1, 1])
+    return s
+end
+@kernel function _mg_residual1!(r, @Const(St), @Const(x), @Const(b), nz)
+    i, j, k = @index(Global, NTuple)
+    I, J = i + HALO, j + HALO
+    @inbounds r[I, J, k, 1] = b[I, J, k, 1] - _mg_row1(St, x, I, J, k, nz)
+end
+
+"""Zebra half-sweep of the pressure form: scalar Thomas algorithm in the columns of one colour."""
+@kernel function _mg_zebra1!(x, @Const(St), @Const(b), C, g, nz, i0, j0, colour)
+    i, j = @index(Global, NTuple)
+    I, J = i + HALO, j + HALO
+    @inbounds if iseven(i0 + i + j0 + j) == colour
+        for k in 1:nz
+            f = b[I, J, k, 1] - (St[I, J, k, SΘW] * x[I-1, J, k, 1] + St[I, J, k, SΘE] * x[I+1, J, k, 1] +
+                                 St[I, J, k, SΘS] * x[I, J-1, k, 1] + St[I, J, k, SΘN] * x[I, J+1, k, 1])
+            d = St[I, J, k, SΘC]
+            if k > 1
+                l = St[I, J, k, SΘB]
+                d -= l * C[I, J, k-1, 1]; f -= l * g[I, J, k-1, 1]
+            end
+            k < nz && (C[I, J, k, 1] = St[I, J, k, SΘT] / d)
+            g[I, J, k, 1] = f / d
+        end
+        x[I, J, nz, 1] = g[I, J, nz, 1]
+        for k in nz-1:-1:1
+            x[I, J, k, 1] = g[I, J, k, 1] - C[I, J, k, 1] * x[I, J, k+1, 1]
+        end
+    end
+end
+
+"""b = r_Θ + c (J_tm D⁻¹ r_m)_Θ, bρ likewise (pressure form)."""
+@kernel function _mg_reduce1!(b, bρ, @Const(R), @Const(Y), c, pv)
+    i, j, k = @index(Global, NTuple)
+    I, J = i + HALO, j + HALO
+    @inbounds begin
+        v = pv ? CP : CT
+        b[I, J, k, 1] = R[I, J, k, v] + c * Y[I, J, k, v]
+        bρ[I, J, k, 1] = R[I, J, k, CR] + c * Y[I, J, k, CR]
+    end
+end
+"""X = (ρ, Θ, 0): Θ the multigrid solution, ρ = b_ρ - S_ρΘ Θ (Θ halo of x filled)."""
+@kernel function _mg_rho1!(X, @Const(Sr), @Const(bρ), @Const(x), pv)
+    i, j, k = @index(Global, NTuple)
+    I, J = i + HALO, j + HALO
+    @inbounds begin
+        nz = size(x, 3)
+        pv && (X[I, J, k, CT] = 0.0)                   # pvar = :p: the momenta see p, not Θ
+        if k <= nz
+            X[I, J, k, CR] = bρ[I, J, k, 1] - _mg_row1(Sr, x, I, J, k, nz); X[I, J, k, pv ? CP : CT] = x[I, J, k, 1]
+        else
+            X[I, J, k, CR] = 0.0; X[I, J, k, pv ? CP : CT] = 0.0
+        end
+        X[I, J, k, CU] = 0.0; X[I, J, k, CV] = 0.0; X[I, J, k, CW] = 0.0
+    end
+end
+"""Z: ρ, Θ from X, the momenta by back substitution (pressure form)."""
+@kernel function _mg_backsub1!(Z, @Const(R), @Const(Y), @Const(X), damp, c, nz, @Const(Cf), pv)
+    i, j, k = @index(Global, NTuple)
+    I, J = i + HALO, j + HALO
+    @inbounds begin
+        Z[I, J, k, CR] = X[I, J, k, CR]
+        if pv                                          # k_Θ = r_Θ + (k_p - r_p)/P_c
+            Z[I, J, k, CP] = X[I, J, k, CP]
+            Z[I, J, k, CT] = k <= nz ? R[I, J, k, CT] + (X[I, J, k, CP] - R[I, J, k, CP]) / Cf[I, J, k, KPC] : 0.0
+        else
+            Z[I, J, k, CT] = X[I, J, k, CT]
+        end
+        if k <= nz
+            Z[I, J, k, CU] = R[I, J, k, CU] + c * Y[I, J, k, CU]
+            Z[I, J, k, CV] = R[I, J, k, CV] + c * Y[I, J, k, CV]
+            Z[I, J, k, CW] = (R[I, J, k, CW] + c * Y[I, J, k, CW]) / (1 + c * damp[k])
+        else
+            Z[I, J, k, CU] = R[I, J, k, CU]; Z[I, J, k, CV] = R[I, J, k, CV]; Z[I, J, k, CW] = R[I, J, k, CW]
+        end
+    end
+end
+
 """b_c = R r (sum over the 2 × 2 fine cells)."""
 @kernel function _mg_restrict!(bc, @Const(r))
     ic, jc, k, v = @index(Global, NTuple)
@@ -237,16 +413,21 @@ _mgl!(ma, k!, nd, args...) = _launch!(ma, k!, nd, args...)
 function mg_setup!(mg::CutMG, ma::CutKA, Cf, c)
     g = ma.grid
     L1 = mg.levels[1]
-    _mgl!(ma, _mg_fine!, (g.nxl, g.nyl, g.nz), L1.St, Cf, _geo(g), ma.damp, Float64(c), ma.gas.g, g.dx, g.dy, g.nz)
+    if mg.nv == 2
+        _mgl!(ma, _mg_fine!, (g.nxl, g.nyl, g.nz), L1.St, Cf, _geo(g), ma.damp, Float64(c), ma.gas.g, g.dx, g.dy, g.nz, ma.pv)
+    else
+        _mgl!(ma, _mg_fine1!, (g.nxl, g.nyl, g.nz), L1.St, mg.Sr, Cf, _geo(g), ma.damp, Float64(c), ma.gas.g, g.dx, g.dy, g.nz, ma.pv)
+    end
+    coarsen! = mg.nv == 2 ? _mg_coarsen! : _mg_coarsen1!
     for l in 2:length(mg.levels)
         t = mg.levels[l].t
-        _mgl!(ma, _mg_coarsen!, (t.nxl, t.nyl, t.nz), mg.levels[l].St, mg.levels[l-1].St)
+        _mgl!(ma, coarsen!, (t.nxl, t.nyl, t.nz), mg.levels[l].St, mg.levels[l-1].St)
     end
     if mg.la > 0                                                   # the global levels: gather, coarsen locally
-        _mg_gather!(mg, ma, mg.glev[1].St, mg.levels[mg.la].St, MGS)
+        _mg_gather!(mg, ma, mg.glev[1].St, mg.levels[mg.la].St, _mgns(mg))
         for l in 2:length(mg.glev)
             t = mg.glev[l].t
-            _mgl!(ma, _mg_coarsen!, (t.nxl, t.nyl, t.nz), mg.glev[l].St, mg.glev[l-1].St)
+            _mgl!(ma, coarsen!, (t.nxl, t.nyl, t.nz), mg.glev[l].St, mg.glev[l-1].St)
         end
     end
     return mg
@@ -289,9 +470,10 @@ end
 """ν zebra sweeps on level L (x updated); dec: the decomposition of the level (serial for the global levels)."""
 function _mg_smooth!(mg::CutMG, ma::CutKA, L, ν, dec = ma.dec)
     t = L.t
+    zebra! = mg.nv == 2 ? _mg_zebra! : _mg_zebra1!
     for _ in 1:ν, colour in (true, false)
-        exchange!(dec, L.x, t, (2,))
-        _mgl!(ma, _mg_zebra!, (t.nxl, t.nyl), L.x, L.St, L.b, L.C, L.g, t.nz, t.i0, t.j0, colour)
+        exchange!(dec, L.x, t, (mg.nv,))
+        _mgl!(ma, zebra!, (t.nxl, t.nyl), L.x, L.St, L.b, L.C, L.g, t.nz, t.i0, t.j0, colour)
     end
     return L
 end
@@ -300,9 +482,9 @@ end
 function mg_vcycle!(mg::CutMG, ma::CutKA, l::Int = 1)
     if mg.la > 0 && l == mg.la
         L = mg.levels[l]; t = L.t
-        _mg_gather!(mg, ma, mg.glev[1].b, L.b, 2)
+        _mg_gather!(mg, ma, mg.glev[1].b, L.b, mg.nv)
         _vcycle!(mg, ma, mg.glev, SerialDecomp(), 1)
-        _mgl!(ma, _mg_pick!, (t.nxl, t.nyl, t.nz, 2), L.x, mg.glev[1].x, t.i0, t.j0)
+        _mgl!(ma, _mg_pick!, (t.nxl, t.nyl, t.nz, mg.nv), L.x, mg.glev[1].x, t.i0, t.j0)
         return L
     end
     return _vcycle!(mg, ma, mg.levels, ma.dec, l)
@@ -315,12 +497,12 @@ function _vcycle!(mg::CutMG, ma::CutKA, lev, dec, l::Int)
         return _mg_smooth!(mg, ma, L, mg.νc, dec)
     end
     _mg_smooth!(mg, ma, L, mg.ν, dec)
-    exchange!(dec, L.x, t, (2,))
-    _mgl!(ma, _mg_residual!, (t.nxl, t.nyl, t.nz), L.r, L.St, L.x, L.b, t.nz)
+    exchange!(dec, L.x, t, (mg.nv,))
+    _mgl!(ma, mg.nv == 2 ? _mg_residual! : _mg_residual1!, (t.nxl, t.nyl, t.nz), L.r, L.St, L.x, L.b, t.nz)
     Lc = lev[l+1]
-    _mgl!(ma, _mg_restrict!, (Lc.t.nxl, Lc.t.nyl, t.nz, 2), Lc.b, L.r)
+    _mgl!(ma, _mg_restrict!, (Lc.t.nxl, Lc.t.nyl, t.nz, mg.nv), Lc.b, L.r)
     lev === mg.levels ? mg_vcycle!(mg, ma, l + 1) : _vcycle!(mg, ma, lev, dec, l + 1)
-    _mgl!(ma, _mg_prolong!, (t.nxl, t.nyl, t.nz, 2), L.x, Lc.x)
+    _mgl!(ma, _mg_prolong!, (t.nxl, t.nyl, t.nz, mg.nv), L.x, Lc.x)
     _mg_smooth!(mg, ma, L, mg.ν, dec)
     return L
 end
@@ -335,11 +517,20 @@ function mg_precondition!(Z, mg::CutMG, ma::CutKA, Cf, c, R, X, Y)
     L1 = mg.levels[1]
     _mgl!(ma, _mg_dinv!, (g.nxl, g.nyl, nz + 1), X, R, ma.damp, Float64(c))              # X = (0, D⁻¹ r_m)
     ka_vertical!(Y, ma, Cf, X; halo = true, parts = :acoustic, sponge = true)           # J_tm D⁻¹ r_m
-    _mgl!(ma, _mg_reduce!, (g.nxl, g.nyl, nz), L1.b, R, Y, Float64(c))                   # b = r_t + c J_tm D⁻¹ r_m
+    if mg.nv == 1                                                                       # pressure form
+        _mgl!(ma, _mg_reduce1!, (g.nxl, g.nyl, nz), L1.b, mg.bρ, R, Y, Float64(c), ma.pv)
+        mg_vcycle!(mg, ma, 1)
+        exchange!(ma.dec, L1.x, L1.t, (1,))
+        _mgl!(ma, _mg_rho1!, (g.nxl, g.nyl, nz + 1), X, mg.Sr, mg.bρ, L1.x, ma.pv)       # X = (ρ, Θ or p, 0)
+        ka_vertical!(Y, ma, Cf, X; halo = true, parts = :acoustic, sponge = true)       # J_mt (ρ, Θ or p)
+        _mgl!(ma, _mg_backsub1!, (g.nxl, g.nyl, nz + 1), Z, R, Y, X, ma.damp, Float64(c), nz, Cf, ma.pv)
+        return Z
+    end
+    _mgl!(ma, _mg_reduce!, (g.nxl, g.nyl, nz), L1.b, R, Y, Float64(c), ma.pv)           # b = r_t + c J_tm D⁻¹ r_m
     mg_vcycle!(mg, ma, 1)
-    _mgl!(ma, _mg_tofield!, (g.nxl, g.nyl, nz + 1), X, L1.x)                            # X = (x_t, 0)
+    _mgl!(ma, _mg_tofield!, (g.nxl, g.nyl, nz + 1), X, L1.x, ma.pv)                     # X = (x_t, 0)
     ka_vertical!(Y, ma, Cf, X; halo = true, parts = :acoustic, sponge = true)           # J_mt x_t
-    _mgl!(ma, _mg_backsub!, (g.nxl, g.nyl, nz + 1), Z, R, Y, L1.x, ma.damp, Float64(c))
+    _mgl!(ma, _mg_backsub!, (g.nxl, g.nyl, nz + 1), Z, R, Y, L1.x, ma.damp, Float64(c), Cf, ma.pv)
     return Z
 end
 
@@ -349,33 +540,42 @@ end
     I, J = i + HALO, j + HALO
     @inbounds begin
         X[I, J, k, CR] = 0.0; X[I, J, k, CT] = 0.0
+        size(X, 4) > NVC && (X[I, J, k, CP] = 0.0)
         X[I, J, k, CU] = R[I, J, k, CU]; X[I, J, k, CV] = R[I, J, k, CV]
         X[I, J, k, CW] = R[I, J, k, CW] / (1 + c * damp[k])
     end
 end
-@kernel function _mg_reduce!(b, @Const(R), @Const(Y), c)
+@kernel function _mg_reduce!(b, @Const(R), @Const(Y), c, pv)
     i, j, k = @index(Global, NTuple)
     I, J = i + HALO, j + HALO
     @inbounds begin
+        v = pv ? CP : CT
         b[I, J, k, 1] = R[I, J, k, CR] + c * Y[I, J, k, CR]
-        b[I, J, k, 2] = R[I, J, k, CT] + c * Y[I, J, k, CT]
+        b[I, J, k, 2] = R[I, J, k, v] + c * Y[I, J, k, v]
     end
 end
-@kernel function _mg_tofield!(X, @Const(x))
+@kernel function _mg_tofield!(X, @Const(x), pv)
     i, j, k = @index(Global, NTuple)
     I, J = i + HALO, j + HALO
     @inbounds begin
         nz = size(x, 3)
-        X[I, J, k, CR] = k <= nz ? x[I, J, k, 1] : 0.0; X[I, J, k, CT] = k <= nz ? x[I, J, k, 2] : 0.0
+        pv && (X[I, J, k, CT] = 0.0)
+        X[I, J, k, CR] = k <= nz ? x[I, J, k, 1] : 0.0; X[I, J, k, pv ? CP : CT] = k <= nz ? x[I, J, k, 2] : 0.0
         X[I, J, k, CU] = 0.0; X[I, J, k, CV] = 0.0; X[I, J, k, CW] = 0.0
     end
 end
-@kernel function _mg_backsub!(Z, @Const(R), @Const(Y), @Const(x), damp, c)
+@kernel function _mg_backsub!(Z, @Const(R), @Const(Y), @Const(x), damp, c, @Const(Cf), pv)
     i, j, k = @index(Global, NTuple)
     I, J = i + HALO, j + HALO
     @inbounds begin
         nz = size(x, 3)
-        Z[I, J, k, CR] = k <= nz ? x[I, J, k, 1] : 0.0; Z[I, J, k, CT] = k <= nz ? x[I, J, k, 2] : 0.0
+        Z[I, J, k, CR] = k <= nz ? x[I, J, k, 1] : 0.0
+        if pv                                          # k_Θ = r_Θ + (k_p - r_p)/P_c
+            Z[I, J, k, CP] = k <= nz ? x[I, J, k, 2] : 0.0
+            Z[I, J, k, CT] = k <= nz ? R[I, J, k, CT] + (x[I, J, k, 2] - R[I, J, k, CP]) / Cf[I, J, k, KPC] : 0.0
+        else
+            Z[I, J, k, CT] = k <= nz ? x[I, J, k, 2] : 0.0
+        end
         if k <= nz
             Z[I, J, k, CU] = R[I, J, k, CU] + c * Y[I, J, k, CU]
             Z[I, J, k, CV] = R[I, J, k, CV] + c * Y[I, J, k, CV]

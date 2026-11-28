@@ -1848,7 +1848,7 @@ end
     end
     q3 = TS.run_ros(m3, q0, 10.0, 3; tab)
     its = Dict{Symbol,Vector{Int}}()
-    for aprec in (:columns, :mg)
+    for aprec in (:columns, :mg, :mgp)
         m = K.CutKA(K.CutGrid(g3); gas, sponge = (4e3, 0.02), jform = :conservative)
         Q = K.ka_state(m, g3, q0)
         _, w = K.ka_ros_run!(m, Q, 10.0, 3; tab, tol = 1e-11, aprec)
@@ -1856,6 +1856,30 @@ end
         its[aprec] = w.its[1:2:end]
     end
     @test maximum(its[:mg]) <= 10 && minimum(its[:columns]) >= 5 * maximum(its[:mg])      # acoustic factor
+    @test maximum(its[:mgp]) <= 2 * maximum(its[:mg])               # pressure form: isentropic gravity, scalar stencil
+    # prognostic pressure (pvar = :p): N(q) of p is P_c N(q) of Θ; with gravity explicit in W (jgrav = :explicit) the
+    # pressure form is the exact Schur complement (iterations of :mg); conservative; p - p(Θ) a time-discretisation error
+    mp = K.CutKA(K.CutGrid(g3); gas, sponge = (4e3, 0.02), jform = :conservative, pvar = :p)
+    Qp = K.ka_state(mp, g3, q0); A = Array(K.ka_rhs!(K.ka_zeros(mp), mp, Qp)); B = Array(Qp); H = K.HALO
+    @test maximum(abs(A[i, j, k, K.CP] - F3.dpdΘ_face(gas, B[i, j, k, K.CT], B[i, j, k, K.CT]) * A[i, j, k, K.CT])
+                  for i in H+1:H+16, j in H+1:H+8, k in 1:7) < 1e-9 * maximum(abs, A[:, :, :, K.CP])
+    pits = Dict{Tuple{Symbol,Symbol},Vector{Int}}(); pq = Dict{Tuple{Symbol,Symbol},Vector{Float64}}()
+    for aprec in (:mg, :mgp), jgrav in (:implicit, :explicit)
+        Qp = K.ka_state(mp, g3, q0)
+        _, w = K.ka_ros_run!(mp, Qp, 10.0, 3; tab, tol = 1e-11, aprec, jgrav)
+        pq[(aprec, jgrav)] = q = K.global_state(mp, g3, Qp); pits[(aprec, jgrav)] = w.its[1:2:end]
+        @test abs(F3.total3d(m3, q, :ρ) / F3.total3d(m3, q0, :ρ) - 1) < 1e-13
+        @test abs(F3.total3d(m3, q, :Θ) / F3.total3d(m3, q0, :Θ) - 1) < 1e-13
+        @test K.pressure_defect(mp, Qp) < 1e-3
+    end
+    @test maximum(abs, pq[(:mg, :implicit)] - pq[(:mgp, :implicit)]) < 1e-9 * maximum(abs, q3 - q0)
+    @test maximum(abs, pq[(:mg, :explicit)] - pq[(:mgp, :explicit)]) < 1e-9 * maximum(abs, q3 - q0)
+    @test pits[(:mgp, :explicit)] == pits[(:mg, :explicit)]
+    # explicit gravity in W: 4 % of the change at Δt = 10 s, far inside the time error (54 % against Δt = 0.625 s)
+    @test maximum(abs, pq[(:mg, :explicit)] - pq[(:mg, :implicit)]) < 0.1 * maximum(abs, q3 - q0)
+    @test maximum(abs, pq[(:mg, :implicit)] - q3) < 0.1 * maximum(abs, q3 - q0)      # other pressure gradient: δp, not P_f δΘ
+    Qp = K.ka_state(mp, g3, q0); K.ka_ros_run!(mp, Qp, 10.0, 1; tab, tol = 1e-11, aprec = :mg, preset = true)
+    @test K.pressure_defect(mp, Qp) < 1e-14
     # stopping criterion in the acoustic energy norm (residuals in Pa: ρ c², Θ γR, m c): a drop of 1e-3 or an RMS
     # residual of 1e-2 Pa is close to the converged steps with fewer iterations; conservative for any tolerance
     m = K.CutKA(K.CutGrid(g3); gas, sponge = (4e3, 0.02), jform = :conservative)

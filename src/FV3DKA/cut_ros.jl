@@ -26,20 +26,28 @@ end
            admom = :shift)
 
 Rosenbrock work for s stages; the twin model on the all-masked grid (same tile, decomposition, sponge). `aprec`: the
-preconditioner of the acoustic factor, `:columns` (column solve) or `:mg` (Schur + geometric multigrid, cut_mg.jl,
+preconditioner of the acoustic factor, `:columns` (column solve), `:mg` (Schur + geometric multigrid, cut_mg.jl,
 ν zebra sweeps per level, νc on the coarsest; with MPI the levels of at most `aggcols` global columns agglomerated on
-every rank, 0: never). `adprec`: the preconditioner of the advection factor, `:none`, `:gs`
+every rank, 0: never) or `:mgp` (the same multigrid on the scalar pressure form: isentropic gravity in the
+Schur complement, 7-point stencil). `adprec`: the preconditioner of the advection factor, `:none`, `:gs`
 (`sweeps` red–black Gauss–Seidel sweeps on T) or `:jacobi` (`sweeps` damped Jacobi sweeps); `admom`: the momenta in it
-(`:shift`: T on the shifted cell momenta, back to the faces; `:identity`).
+(`:shift`: T on the shifted cell momenta, back to the faces; `:identity`). `jgrav = :explicit`: gravity left out of W
+(W-method; gravity stays in N(Y)): the acoustic Schur complement has no ρ coupling, `:mgp` is then exact.
 """
 function CutRos(m::CutKA, s::Int; restart::Int = 30, aprec::Symbol = :columns, ν::Int = 2, νc::Int = 20,
-                aggcols::Int = 4096, adprec::Symbol = :none, sweeps::Int = 2, admom::Symbol = :shift)
+                aggcols::Int = 4096, adprec::Symbol = :none, sweeps::Int = 2, admom::Symbol = :shift, jgrav::Symbol = :implicit)
+    jgrav in (:implicit, :explicit) || error("jgrav: :implicit or :explicit")
     adprec in (:none, :gs, :jacobi) || error("adprec: :none, :gs or :jacobi")
     g = m.grid
     ga = CutGrid(FV3D._allmasked(g.g3); px = g.px, py = g.py, cx = g.i0 ÷ g.nxl, cy = g.j0 ÷ g.nyl, backend = KA.get_backend(g))
-    ma = CutKA(ga, m.dec; gas = m.gas, jform = m.complete ? :conservative : :partial, prec = :columns)
+    # jgrav = :explicit: gravity only in N(Y), not in W (twin model with g = 0): the acoustic factor couples p (Θ) and
+    # the momenta only, its Schur complement is scalar and exact (aprec = :mgp), ρ follows from its row
+    gw = jgrav === :explicit ? Gas(R = m.gas.R, γ = m.gas.γ, p00 = m.gas.p00, g = 0.0) : m.gas
+    ma = CutKA(ga, m.dec; gas = gw, jform = m.complete ? :conservative : :partial, prec = :columns, pvar = m.pv ? :p : :theta)
+    m.pv && aprec === :columns && error("pvar = :p: aprec = :mg or :mgp")
     copyto!(ma.damp, m.damp)
-    aprec === :mg && (ma.mgp[] = CutMG(ma; ν, νc, aggcols))
+    aprec in (:columns, :mg, :mgp) || error("aprec: :columns, :mg or :mgp")
+    aprec in (:mg, :mgp) && (ma.mgp[] = CutMG(ma; ν, νc, aggcols, form = aprec === :mgp ? :pressure : :rhotheta))
     adprec === :none || (ma.mprec[] = MaskAMF(ma; acoustic = :skip, advection = adprec, momenta = admom, sweeps, maxit = sweeps))
     z() = ka_zeros(m); zc() = ka_zeros(m, NCC)
     return CutRos(ma, zc(), z(), zc(), z(), z(), [z() for _ in 1:s], z(), z(), z(), z(), CutGMRES(ma, restart), Int[], zeros(4))
@@ -61,7 +69,7 @@ function _ros_solve!(y, w::CutRos, c, r, op::Symbol; tol, atol = 0.0)
     g = ma.grid
     _pack!(gm.b, ma, r)
     _cut_prec!(gm.x, ma, w.Cf, c, gm.b, gm; op)
-    na = g.nx * g.ny * g.nz * NVC
+    na = g.nx * g.ny * g.nz * nvc(ma)
     it, _ = _cut_gmres!(gm.x, ma, w.Cf, c, gm.b, gm; tol, atol = atol * sqrt(na), op)
     push!(w.its, it)
     fill!(y, 0.0); _unpack!(y, ma, gm.x)
@@ -71,12 +79,14 @@ function _ros_solve!(y, w::CutRos, c, r, op::Symbol; tol, atol = 0.0)
 end
 
 """
-    ka_ros_step!(m::CutKA, Q, Δt, tab::RosTableau, w::CutRos; tol = 1e-8, atol = 0.0, ros = :amf)
+    ka_ros_step!(m::CutKA, Q, Δt, tab::RosTableau, w::CutRos; tol = 1e-8, atol = 0.0, ros = :amf, preset = false)
 
 One Rosenbrock step of the cut-cell model (TimeStepping `ros_step!`), in place: W at qⁿ, the stages
-rᵢ = Δt N(Yᵢ) + Σ βᵢⱼ kⱼ, kᵢ = (I - γΔt W)⁻¹ rᵢ (AMF or full), Yᵢ₊₁ = qⁿ + Σ αᵢⱼ kⱼ.
+rᵢ = Δt N(Yᵢ) + Σ βᵢⱼ kⱼ, kᵢ = (I - γΔt W)⁻¹ rᵢ (AMF or full), Yᵢ₊₁ = qⁿ + Σ αᵢⱼ kⱼ. pvar = :p: the pressure evolves
+with its own equation; `preset = true` resets p ← p(Θ) after the step (as the moist MIS step).
 """
-function ka_ros_step!(m::CutKA, Q, Δt, tab::RosTableau, w::CutRos; tol::Real = 1e-8, atol::Real = 0.0, ros::Symbol = :amf)
+function ka_ros_step!(m::CutKA, Q, Δt, tab::RosTableau, w::CutRos; tol::Real = 1e-8, atol::Real = 0.0, ros::Symbol = :amf,
+                      preset::Bool = false)
     ros in (:amf, :full) || error("ros: :amf or :full")
     γh = tab.γ * Δt
     be = KA.get_backend(m)
@@ -110,15 +120,17 @@ function ka_ros_step!(m::CutKA, Q, Δt, tab::RosTableau, w::CutRos; tol::Real = 
         end
     end
     Q .= w.Y
+    m.pv && preset && ka_pressure_reset!(m, Q)
     return Q
 end
 
 """nsteps Rosenbrock steps of the cut-cell model (in place); `monitor(n, Q)` every `every` steps."""
 function ka_ros_run!(m::CutKA, Q, Δt, nsteps; tab::RosTableau, tol::Real = 1e-8, ros::Symbol = :amf, monitor = nothing,
-                     every::Int = 1, aprec::Symbol = :columns, adprec::Symbol = :none)
-    w = CutRos(m, tab.s; aprec, adprec)
+                     every::Int = 1, aprec::Symbol = :columns, adprec::Symbol = :none, preset::Bool = false,
+                     jgrav::Symbol = :implicit)
+    w = CutRos(m, tab.s; aprec, adprec, jgrav)
     for n in 1:nsteps
-        ka_ros_step!(m, Q, Δt, tab, w; tol, ros)
+        ka_ros_step!(m, Q, Δt, tab, w; tol, ros, preset)
         monitor !== nothing && n % every == 0 && monitor(n, Q)
     end
     return Q, w

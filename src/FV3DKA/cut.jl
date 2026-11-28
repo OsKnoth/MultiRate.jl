@@ -11,11 +11,15 @@
 
 const CR, CU, CV, CW, CT = 1, 2, 3, 4, 5
 const NVC = 5
+# pvar = :p: the pressure p as a sixth variable, ∂p/∂t = P_c ∂Θ/∂t (chain rule of p(Θ), P_c = dp/dΘ = γ p/Θ of the
+# cell, frozen in the Jacobian; as the moist model), the momenta with -δp/h of the variable p on the open faces
+const CP = 6
 const KθX, KθY, KθZ, KPX, KPY, KPZ = 1, 2, 3, 4, 5, 6
 const KAXP, KAXM, KAYP, KAYM, KAZP, KAZM = 7, 8, 9, 10, 11, 12
 """Slot of the cell velocity M_side/ρ of the shifted momentum (direction d, side 1 = L, 2 = R)."""
 @inline kvel(d, side) = 12 + 2 * (d - 1) + side
-const NCC = 18
+const KPC = 19                                     # cell dp/dΘ (pvar = :p)
+const NCC = 19
 
 # ------------------------------------------------------------------ tile geometry
 
@@ -146,7 +150,7 @@ masked AMF preconditioner with switchable inner solvers, `mask = (acoustic = :cg
 advection = :bicgstab | :jacobi | :hostlu, tol, maxit)` (cut_mask.jl). `vertical`: `:implicit` (HEVI: the vertical acoustics and
 gravity implicit in every column; for Δz ≪ Δx, hills) or `:explicit` (implicit only on the faces of the masked cells,
 outside the mask all three directions explicit in the Verlet sub-steps, gravity explicit everywhere; for Δz ≈ Δx,
-buildings).
+buildings). `pvar = :p`: the pressure as a sixth prognostic variable (state slot CP; Rosenbrock only, `CutRos`).
 """
 struct CutKA{G<:CutGrid,D<:AbstractDecomp,A1,W<:CutWork}
     grid::G
@@ -164,10 +168,16 @@ struct CutKA{G<:CutGrid,D<:AbstractDecomp,A1,W<:CutWork}
     vimp::Bool                                     # vertical = :implicit (HEVI: all z-faces implicit) or :explicit (mask only)
     mprec::Base.RefValue{Any}                      # prec = :mask: the masked AMF preconditioner (cut_mask.jl)
     nudge::Any                                     # nudging zone: rates (cells, x-, y-faces) and profiles on the device
+    pv::Bool                                       # pvar = :p: pressure as a prognostic variable (CP)
 end
+"""Number of state variables: 5 (ρ, U, V, W, Θ) or 6 (and p, pvar = :p)."""
+nvc(m::CutKA) = m.pv ? NVC + 1 : NVC
+_svars(m::CutKA) = m.pv ? (CR, CU, CV, CW, CT, CP) : (CR, CU, CV, CW, CT)
 function CutKA(g::CutGrid, dec::AbstractDecomp = SerialDecomp(); gas::Gas = Gas(), sponge = nothing, jform::Symbol = :partial,
-               prec::Symbol = :columns, nudge = nothing, vertical::Symbol = :implicit, mask = (;))
+               prec::Symbol = :columns, nudge = nothing, vertical::Symbol = :implicit, mask = (;), pvar::Symbol = :theta)
     jform in (:partial, :conservative) || error("jform: :partial or :conservative")
+    pvar in (:theta, :p) || error("pvar: :theta or :p")
+    pvar === :p && prec === :mask && error("pvar = :p: Rosenbrock only (no masked small step)")
     prec === :mask && vertical !== :explicit && error("prec = :mask needs vertical = :explicit (gravity explicit)")
     vertical in (:implicit, :explicit) || error("vertical: :implicit (HEVI) or :explicit (implicit only in the mask)")
     prec in (:amf, :columns, :mask) || error("prec: :amf, :columns or :mask")
@@ -184,7 +194,7 @@ function CutKA(g::CutGrid, dec::AbstractDecomp = SerialDecomp(); gas::Gas = Gas(
     z4(n) = KA.zeros(be, Float64, g.nxh, g.nyh, g.nz + 1, n)
     work = CutWork(z3(), z3(), z3(), z3(), z3(), z4(4), z4(6), z4(6), z4(7), z4(7), z4(6), z4(6), z3(), z3(), z3())
     dd = KA.allocate(be, Float64, g.nz + 1); copyto!(dd, damp)
-    init_exchange!(dec, g, max(NVC + 4, NCC))
+    init_exchange!(dec, g, max(NVC + 5, NCC))
     nd = nothing
     if nudge !== nothing
         g3 = g.g3
@@ -197,13 +207,13 @@ function CutKA(g::CutGrid, dec::AbstractDecomp = SerialDecomp(); gas::Gas = Gas(
               u = prof(nudge.u), v = prof(get(nudge, :v, 0.0)), θ = prof(nudge.θ))
     end
     mk = CutKA(g, dec, gas, dd, KA.zeros(be, Float64, g.nz + 1), jform === :conservative, work, Int[], Int[], prec, prec === :amf ? CutAMF(g, gas) : nothing, Ref{Any}(nothing),
-                 vertical === :implicit, Ref{Any}(nothing), nd)
+                 vertical === :implicit, Ref{Any}(nothing), nd, pvar === :p)
     prec === :mask && (mk.mprec[] = MaskAMF(mk; mask...))
     return mk
 end
 KA.get_backend(m::CutKA) = KA.get_backend(m.grid)
 """A zero state (or a coefficient array, nv = NCC) on the device of the model."""
-ka_zeros(m::CutKA, nv::Int = NVC) = KA.zeros(KA.get_backend(m), Float64, m.grid.nxh, m.grid.nyh, m.grid.nz + 1, nv)
+ka_zeros(m::CutKA, nv::Int = nvc(m)) = KA.zeros(KA.get_backend(m), Float64, m.grid.nxh, m.grid.nyh, m.grid.nz + 1, nv)
 
 # ------------------------------------------------------------------ face values (FV3D/advection.jl, recon = :ash)
 
@@ -329,6 +339,9 @@ end
             Cf[I, J, k, KPZ] = FV3D.dpdΘ_face(gas, Q[I, J, k-1, CT], Q[I, J, k, CT])
             Cf[I, J, k, KAZP] = max(F, 0.0) / Q[I, J, k-1, CR]; Cf[I, J, k, KAZM] = min(F, 0.0) / Q[I, J, k, CR]
         end
+        if k <= nz && i <= nxl && j <= nyl
+            Cf[I, J, k, KPC] = FV3D.dpdΘ_face(gas, Q[I, J, k, CT], Q[I, J, k, CT])    # cell dp/dΘ = γ p/Θ
+        end
         if k <= nz && i <= nxl && j <= nyl && G.Vf[I, J, k] > 0      # cell velocities of the shifted momenta
             ρc = Q[I, J, k, CR]
             for d in 1:3
@@ -442,17 +455,21 @@ _ka_nudge!(S, m, nd, Q, G) = (g = m.grid; _launch!(m, _kc_nudge!, (g.nxl, g.nyl,
     oΘ = -(s * ((Cf[I+1, J, k, KθX] * Fe - Cf[I, J, k, KθX] * Fw) / dx + (Cf[I, J+1, k, KθY] * Fn - Cf[I, J, k, KθY] * Fs) / dy))
     return oρ, oΘ
 end
-"""U, V rows of the faces I, J: -Pf δΠ/Δx through the unmasked (sel = 1) or masked (sel = 2) faces."""
-@inline function _cmomentum_h(Z, Cf, G, dx, dy, I, J, k, sel)
+"""Pressure differences across the x-, y-, η-face (I, J, k): P_f δΘ (pvar = :theta) or δp of the variable p."""
+@inline _δpx(Z, Cf, I, J, k, pv) = pv ? Z[I, J, k, CP] - Z[I-1, J, k, CP] : Cf[I, J, k, KPX] * (Z[I, J, k, CT] - Z[I-1, J, k, CT])
+@inline _δpy(Z, Cf, I, J, k, pv) = pv ? Z[I, J, k, CP] - Z[I, J-1, k, CP] : Cf[I, J, k, KPY] * (Z[I, J, k, CT] - Z[I, J-1, k, CT])
+@inline _δpz(Z, Cf, I, J, k, pv) = pv ? Z[I, J, k, CP] - Z[I, J, k-1, CP] : Cf[I, J, k, KPZ] * (Z[I, J, k, CT] - Z[I, J, k-1, CT])
+"""U, V rows of the faces I, J: -Pf δΠ/Δx (or -δp/Δx) through the unmasked (sel = 1) or masked (sel = 2) faces."""
+@inline function _cmomentum_h(Z, Cf, G, dx, dy, I, J, k, sel, pv)
     wx = sel == 1 ? 1.0 - G.Mx[I, J, k] : G.Mx[I, J, k]
     wy = sel == 1 ? 1.0 - G.My[I, J, k] : G.My[I, J, k]
-    oU = -(wx * (G.Ax[I, J, k] > 0) * Cf[I, J, k, KPX] * (Z[I, J, k, CT] - Z[I-1, J, k, CT]) / dx)
-    oV = -(wy * (G.Ay[I, J, k] > 0) * Cf[I, J, k, KPY] * (Z[I, J, k, CT] - Z[I, J-1, k, CT]) / dy)
+    oU = -(wx * (G.Ax[I, J, k] > 0) * _δpx(Z, Cf, I, J, k, pv) / dx)
+    oV = -(wy * (G.Ay[I, J, k] > 0) * _δpy(Z, Cf, I, J, k, pv) / dy)
     return oU, oV
 end
 
 """out = :hthermo (ρ, Θ: fluxes through the unmasked faces, forcing; W: forcing, sponge) on the interior."""
-@kernel function _kc_hthermo!(out, @Const(Z), @Const(Cf), @Const(F), G, damp, dx, dy, nz, vimp, RG)
+@kernel function _kc_hthermo!(out, @Const(Z), @Const(Cf), @Const(F), G, damp, dx, dy, nz, vimp, pv, RG)
     ic, k = @index(Global, NTuple)
     I, J = _cIJ(RG, ic)
     @inbounds begin
@@ -465,28 +482,30 @@ end
             oΘ -= s * ((k < nz ? Cf[I, J, k+1, KθZ] : 0.0) * Ft - (k >= 2 ? Cf[I, J, k, KθZ] : 0.0) * Fb) / dz
         end
         out[I, J, k, CR] = oρ + F[I, J, k, CR]; out[I, J, k, CT] = oΘ + F[I, J, k, CT]
+        pv && (out[I, J, k, CP] = Cf[I, J, k, KPC] * (oΘ + F[I, J, k, CT]))
         out[I, J, k, CU] = 0.0; out[I, J, k, CV] = 0.0
         out[I, J, k, CW] = k >= 2 ? F[I, J, k, CW] - damp[k] * Z[I, J, k, CW] : 0.0
     end
 end
 """out = :hmomentum (U, V: pressure gradient through the unmasked faces, forcing) on the interior."""
-@kernel function _kc_hmomentum!(out, @Const(Z), @Const(Cf), @Const(F), G, dx, dy, nz, grav, vimp, RG)
+@kernel function _kc_hmomentum!(out, @Const(Z), @Const(Cf), @Const(F), G, dx, dy, nz, grav, vimp, pv, RG)
     ic, k = @index(Global, NTuple)
     I, J = _cIJ(RG, ic)
     @inbounds begin
-        oU, oV = _cmomentum_h(Z, Cf, G, dx, dy, I, J, k, 1)
+        oU, oV = _cmomentum_h(Z, Cf, G, dx, dy, I, J, k, 1, pv)
         out[I, J, k, CU] = oU + F[I, J, k, CU]; out[I, J, k, CV] = oV + F[I, J, k, CV]
         out[I, J, k, CR] = 0.0; out[I, J, k, CT] = 0.0
+        pv && (out[I, J, k, CP] = 0.0)
         # vertical = :explicit: vertical pressure gradient on the unmasked z-faces, gravity on all z-faces
         out[I, J, k, CW] = (!vimp && k >= 2 && G.Az[I, J, k] > 0) ?
-            -((1 - _wzI(G, nz, I, J, k, false)) * Cf[I, J, k, KPZ] * (Z[I, J, k, CT] - Z[I, J, k-1, CT]) / G.dzf[k] +
+            -((1 - _wzI(G, nz, I, J, k, false)) * _δpz(Z, Cf, I, J, k, pv) / G.dzf[k] +
               grav * _ρf(G, Z, I, J, k)) : 0.0
     end
 end
 
 """Implicit part without the masked momentum advection on the interior: vertical fluxes, vertical pressure gradient and
 gravity, the fluxes and pressure gradients through the masked x-, y-faces and the masked θ transport."""
-@kernel function _kc_vertical!(out, @Const(Z), @Const(Cf), G, dx, dy, nz, grav, ac, tr, damp, vimp, RG)
+@kernel function _kc_vertical!(out, @Const(Z), @Const(Cf), G, dx, dy, nz, grav, ac, tr, damp, vimp, pv, RG)
     ic, k = @index(Global, NTuple)
     I, J = _cIJ(RG, ic)
     @inbounds begin
@@ -522,10 +541,11 @@ gravity, the fluxes and pressure gradients through the masked x-, y-faces and th
             oΘ -= s * fθ(Cf[I, J, k+1, KAZP], Cf[I, J, k+1, KAZM], Cf[I, J, k+1, KθZ], (I, J, k), (I, J, k + 1)) / dz
         end
         out[I, J, k, CR] = oρ; out[I, J, k, CT] = oΘ
-        oU, oV = ac ? _cmomentum_h(Z, Cf, G, dx, dy, I, J, k, 2) : (0.0, 0.0)
+        pv && (out[I, J, k, CP] = Cf[I, J, k, KPC] * oΘ)
+        oU, oV = ac ? _cmomentum_h(Z, Cf, G, dx, dy, I, J, k, 2, pv) : (0.0, 0.0)
         out[I, J, k, CU] = oU; out[I, J, k, CV] = oV
         out[I, J, k, CW] = (ac && k >= 2 && G.Az[I, J, k] > 0) ?
-            -(_wzI(G, nz, I, J, k, vimp) * (Cf[I, J, k, KPZ] * (Z[I, J, k, CT] - Z[I, J, k-1, CT]) / G.dzf[k] +
+            -(_wzI(G, nz, I, J, k, vimp) * (_δpz(Z, Cf, I, J, k, pv) / G.dzf[k] +
               (vimp ? grav * _ρf(G, Z, I, J, k) : 0.0)) + damp[k] * Z[I, J, k, CW]) : 0.0
     end
 end
@@ -625,10 +645,10 @@ function ka_vertical!(out, m::CutKA, Cf, Z; halo::Bool = false, parts::Symbol = 
     ac, tr = parts !== :advection, parts !== :acoustic   # :acoustic, :advection (Rosenbrock AMF factors), :all
     damp = sponge ? m.damp : m.zdamp
     core, ring = CutRegion(g, :core), CutRegion(g, :ring)
-    hz = halo ? start_halo!(dec, Z, g, (CR, CU, CV, CW, CT)) : nothing
+    hz = halo ? start_halo!(dec, Z, g, _svars(m)) : nothing
     for R in (core, ring)
         R === ring && finish_halo!(dec, hz)
-        _launch_r!(m, _kc_vertical!, R, nz, out, Z, Cf, G, g.dx, g.dy, nz, m.gas.g, ac, tr, damp, m.vimp)
+        _launch_r!(m, _kc_vertical!, R, nz, out, Z, Cf, G, g.dx, g.dy, nz, m.gas.g, ac, tr, damp, m.vimp, m.pv)
         tr && _launch_r!(m, _kc_mshift!, R, nz, w.M, Z, G, nz)
     end
     tr || return out
@@ -646,9 +666,9 @@ function ka_vertical!(out, m::CutKA, Cf, Z; halo::Bool = false, parts::Symbol = 
 end
 """out = :hthermo (k: ρ, Θ, W) / :hmomentum (U, V) on the columns of the region R (default: the interior)."""
 ka_hthermo!(out, m::CutKA, Cf, Z, F, R::CutRegion = CutRegion(m.grid, :all)) =
-    (g = m.grid; _launch_r!(m, _kc_hthermo!, R, g.nz, out, Z, Cf, F, _geo(g), m.damp, g.dx, g.dy, g.nz, m.vimp); out)
+    (g = m.grid; _launch_r!(m, _kc_hthermo!, R, g.nz, out, Z, Cf, F, _geo(g), m.damp, g.dx, g.dy, g.nz, m.vimp, m.pv); out)
 ka_hmomentum!(out, m::CutKA, Cf, Z, F, R::CutRegion = CutRegion(m.grid, :all)) =
-    (g = m.grid; _launch_r!(m, _kc_hmomentum!, R, g.nz, out, Z, Cf, F, _geo(g), g.dx, g.dy, g.nz, m.gas.g, m.vimp); out)
+    (g = m.grid; _launch_r!(m, _kc_hmomentum!, R, g.nz, out, Z, Cf, F, _geo(g), g.dx, g.dy, g.nz, m.gas.g, m.vimp, m.pv); out)
 
 """
     ka_rhs!(out, m::CutKA, Q, Cf, S, tmp)
@@ -668,15 +688,43 @@ end
 """Tile state Q (device of m, halo included) of the state vector x of FV3D.Model3D on the same grid."""
 function ka_state(m::CutKA, g3::FV3D.Grid3D, x::AbstractVector)
     g = m.grid
-    Q = zeros(g.nxh, g.nyh, g.nz + 1, NVC)
+    Q = zeros(g.nxh, g.nyh, g.nz + 1, nvc(m))
     for k in 1:g.nz, J in 1:g.nyh, I in 1:g.nxh
         i, j = mod1(g.i0 + I - HALO, g.nx), mod1(g.j0 + J - HALO, g.ny)
         Q[I, J, k, CR] = x[FV3D.iρ(g3, i, j, k)]; Q[I, J, k, CU] = x[FV3D.iU(g3, i, j, k)]
         Q[I, J, k, CV] = x[FV3D.iV(g3, i, j, k)]; Q[I, J, k, CT] = x[FV3D.iΘ(g3, i, j, k)]
+        m.pv && (Q[I, J, k, CP] = FV3D.pressure(m.gas, Q[I, J, k, CT]))           # p of the equation of state
         k >= 2 && (Q[I, J, k, CW] = x[FV3D.iW(g3, i, j, k)])
     end
     D = ka_zeros(m); copyto!(D, Q)
     return D
+end
+"""
+    ka_pressure_reset!(m::CutKA, Q)
+
+pvar = :p: p ← p(Θ) of the equation of state on the interior.
+"""
+ka_pressure_reset!(m::CutKA, Q) = (g = m.grid; _launch!(m, _kc_preset!, (g.nxl, g.nyl, g.nz), Q, m.gas); Q)
+@kernel function _kc_preset!(Q, gas)
+    i, j, k = @index(Global, NTuple)
+    @inbounds Q[i+HALO, j+HALO, k, CP] = FV3D.pressure(gas, Q[i+HALO, j+HALO, k, CT])
+end
+"""
+    pressure_defect(m::CutKA, Q)
+
+pvar = :p: max |p - p(Θ)| / p over the fluid cells of the tile (host; the drift of the pressure equation).
+"""
+function pressure_defect(m::CutKA, Q)
+    g = m.grid
+    KA.synchronize(KA.get_backend(m))
+    A = Array(_interior(m, Q)); Vf = Array(g.Vf)[HALO+1:HALO+g.nxl, HALO+1:HALO+g.nyl, 1:g.nz]
+    d = 0.0
+    for k in 1:g.nz, j in 1:g.nyl, i in 1:g.nxl
+        Vf[i, j, k] > 0 || continue
+        p = FV3D.pressure(m.gas, A[i, j, k, CT])
+        d = max(d, abs(A[i, j, k, CP] - p) / p)
+    end
+    return d
 end
 """State vector of FV3D.Model3D with the interior of the tile Q (other tiles: `fill`)."""
 function global_state(m::CutKA, g3::FV3D.Grid3D, Q; fill::Real = 0.0)
@@ -739,7 +787,7 @@ system (block Jacobi over the columns, no communication).
         end
     end
 end
-ka_column_solve!(Y, m::CutKA, Cf, c, R) = (g = m.grid; w = m.work;
+ka_column_solve!(Y, m::CutKA, Cf, c, R) = (m.pv && error("pvar = :p: no column solve (Rosenbrock with aprec = :mg or :mgp)"); g = m.grid; w = m.work;
     _launch!(m, _kc_csolve!, (g.nxl, g.nyl), Y, R, Cf, _geo(g), w.Wc, w.cpw, w.idw, Float64(c), g.nz, m.gas.g, m.vimp); Y)
 
 # ------------------------------------------------------------------ AMF preconditioner of the tile (host)
@@ -847,8 +895,8 @@ end
 
 """Interior of a state array as a vector (view of the packed block (nxl, nyl, nz+1, NVC))."""
 _interior(m::CutKA, Q) = (g = m.grid; view(Q, HALO+1:HALO+g.nxl, HALO+1:HALO+g.nyl, :, :))
-_pack!(v, m::CutKA, Q) = (g = m.grid; reshape(v, g.nxl, g.nyl, g.nz + 1, NVC) .= _interior(m, Q); v)
-_unpack!(Q, m::CutKA, v) = (g = m.grid; _interior(m, Q) .= reshape(v, g.nxl, g.nyl, g.nz + 1, NVC); Q)
+_pack!(v, m::CutKA, Q) = (g = m.grid; reshape(v, g.nxl, g.nyl, g.nz + 1, nvc(m)) .= _interior(m, Q); v)
+_unpack!(Q, m::CutKA, v) = (g = m.grid; _interior(m, Q) .= reshape(v, g.nxl, g.nyl, g.nz + 1, nvc(m)); Q)
 
 """Work of the implicit step: packed vectors, Krylov basis, two state arrays."""
 struct CutGMRES{V,Mx}
@@ -861,7 +909,7 @@ struct CutGMRES{V,Mx}
 end
 function CutGMRES(m::CutKA, restart::Int = 30)
     g = m.grid
-    n = g.nxl * g.nyl * (g.nz + 1) * NVC
+    n = g.nxl * g.nyl * (g.nz + 1) * nvc(m)
     be = KA.get_backend(m)
     vz() = KA.zeros(be, Float64, n)
     return CutGMRES(KA.zeros(be, Float64, n, restart + 1), KA.zeros(be, Float64, n, restart), zeros(restart + 1, restart),
@@ -879,9 +927,10 @@ pressure (e.g. a fraction of the dynamic pressure ρU²/2), independent of the b
 function energy_norm!(W::CutGMRES, m::CutKA; θ0::Real = 300.0)
     g, gas = m.grid, m.gas
     c2 = gas.γ * gas.R * θ0
-    w2 = zeros(NVC); w2[CR] = c2^2; w2[CT] = (gas.γ * gas.R)^2; w2[CU] = w2[CV] = w2[CW] = c2
+    w2 = zeros(nvc(m)); w2[CR] = c2^2; w2[CT] = (gas.γ * gas.R)^2; w2[CU] = w2[CV] = w2[CW] = c2
+    m.pv && (w2[CP] = 1.0)                                    # p: pascal
     n = g.nxl * g.nyl * (g.nz + 1)
-    h = reduce(vcat, (fill(w2[v], n) for v in 1:NVC))
+    h = reduce(vcat, (fill(w2[v], n) for v in 1:nvc(m)))
     wt = similar(W.tw); copyto!(wt, h)
     return CutGMRES(W.V, W.Z, W.H, W.cs, W.sn, W.e, W.r, W.w, W.x, W.b, W.rh, W.p, W.v, W.s, W.t, W.ph, W.sh, W.X, W.Y,
                     wt, W.tw)
@@ -1030,6 +1079,7 @@ _axpy!(Z, m::CutKA, a, k) = (_interior(m, Z) .+= a .* _interior(m, k); Z)
     @inbounds begin
         Y[I, J, k, CR] = K[I, J, k, CR] + c * T[I, J, k, CR]
         Y[I, J, k, CT] = K[I, J, k, CT] + c * T[I, J, k, CT]
+        size(Y, 4) > NVC && (Y[I, J, k, CP] = K[I, J, k, CP] + c * T[I, J, k, CP])     # pvar = :p
     end
 end
 
@@ -1110,6 +1160,7 @@ One MIS step (TimeStepping `frozen_mis_step!` with fast = :hevi) of the cut-cell
 """
 function ka_mis_step!(m::CutKA, q, Δt, tab::MISTableau, w::CutMISWork; nsub::Int = 12, tol::Real = 1e-8,
                       krylov::Symbol = :gmres, smdiv::Real = 0.0)
+    m.pv && error("pvar = :p: Rosenbrock only (ka_ros_step!)")
     for i in 1:nstages(tab)
         i == 1 ? (w.Y .= q) : (@. w.Y = q + w.ΔY[i-1])
         ka_frozen_data!(w.C[i], w.S[i], m, w.Y)
